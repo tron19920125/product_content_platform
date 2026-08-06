@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import io
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
+
+from product_content_platform.api import create_app
+
+
+class ProductionFlowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.client = TestClient(
+            create_app(
+                database_path=root / "platform.db",
+                asset_root=root / "assets",
+                production_root=root / "production",
+                export_root=root / "exports",
+            )
+        )
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp_dir.cleanup()
+
+    def _create_planned_project(self) -> str:
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "project_name": "X11完整生产",
+                "profile": {
+                    "sku": "X11",
+                    "name": "COLMO X11洗衣机",
+                    "category": "洗衣机",
+                    "model": "CGU12W-X11",
+                    "selling_points": ["AI轻干洗2.0", "智能护理"],
+                    "parameters": {"容量": "12kg", "洗净比": "1.1"},
+                    "reference_assets": [],
+                    "brand_requirements": "",
+                    "output_requirements": "电商详情页",
+                },
+            },
+        )
+        project_id = response.json()["id"]
+        image = Image.new("RGB", (500, 700), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((100, 70, 400, 640), 28, fill="#d8ded9", outline="#58665d", width=8)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        uploaded = self.client.post(
+            f"/api/projects/{project_id}/assets?file_name=x11.png&usage=product",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(201, uploaded.status_code)
+        plan = self.client.post(f"/api/projects/{project_id}/plan").json()
+        confirmed = self.client.put(
+            f"/api/projects/{project_id}/plan",
+            json={"items": plan["items"], "confirmed": True},
+        )
+        self.assertEqual(200, confirmed.status_code)
+        return project_id
+
+    def test_full_production_review_and_export(self) -> None:
+        project_id = self._create_planned_project()
+
+        started = self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+
+        self.assertEqual(202, started.status_code)
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        self.assertEqual(5, len(snapshot["pages"]))
+        self.assertTrue(all(row["job"]["status"] == "completed" for row in snapshot["pages"]))
+        self.assertTrue(all(len(row["candidates"]) == 2 for row in snapshot["pages"]))
+        first_candidate = snapshot["pages"][0]["candidates"][0]
+        self.assertEqual(200, self.client.get(first_candidate["base_url"]).status_code)
+        self.assertEqual(200, self.client.get(first_candidate["text_layer_url"]).status_code)
+        self.assertEqual(200, self.client.get(first_candidate["composed_url"]).status_code)
+
+        for row in snapshot["pages"]:
+            candidate = row["candidates"][0]
+            reviewed = self.client.post(
+                f"/api/candidates/{candidate['id']}/review",
+                json={"decision": "approved", "reviewer": "qa-test", "override_reason": ""},
+            )
+            self.assertEqual(200, reviewed.status_code, reviewed.text)
+
+        completed = self.client.get(f"/api/projects/{project_id}").json()
+        self.assertEqual("completed", completed["status"])
+        exported = self.client.post(f"/api/projects/{project_id}/export")
+        self.assertEqual(201, exported.status_code, exported.text)
+        archive = self.client.get(exported.json()["download_url"])
+        self.assertEqual(200, archive.status_code)
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as delivery:
+            names = set(delivery.namelist())
+            self.assertIn("project_summary.json", names)
+            self.assertIn("pages/01_hero/final.png", names)
+            self.assertIn("pages/01_hero/base.png", names)
+            self.assertIn("pages/01_hero/text_layer.png", names)
+            self.assertIn("pages/01_hero/qa.json", names)
+
+    def test_prompt_and_recipe_publish_workflow(self) -> None:
+        prompt = self.client.post(
+            "/api/prompts",
+            json={
+                "name": "新品 Prompt",
+                "body": "为{{product_name}}制作{{page_title}}页面",
+                "variables": ["product_name", "page_title"],
+                "change_note": "测试版本",
+            },
+        )
+        self.assertEqual(201, prompt.status_code)
+        prompt_id = prompt.json()["id"]
+        self.assertEqual("draft", prompt.json()["status"])
+        self.assertEqual(200, self.client.post(f"/api/prompts/{prompt_id}/publish").status_code)
+
+        recipe = self.client.post(
+            "/api/recipes",
+            json={
+                "name": "新品配方",
+                "prompt_version_id": prompt_id,
+                "model": "local-preview",
+                "model_params": {"size": "900x1200"},
+                "template_ids": ["hero-center", "split-left"],
+                "candidate_count": 1,
+            },
+        )
+        self.assertEqual(201, recipe.status_code, recipe.text)
+        recipe_id = recipe.json()["id"]
+        published = self.client.post(f"/api/recipes/{recipe_id}/publish")
+        self.assertEqual(200, published.status_code, published.text)
+        self.assertEqual("published", published.json()["status"])
+
+    def test_multi_sku_batch_production_review_and_export(self) -> None:
+        def profile(sku: str) -> dict[str, object]:
+            return {
+                "sku": sku, "name": f"COLMO {sku}", "category": "洗衣机", "model": sku,
+                "selling_points": ["智能护理", "低温柔洗"], "parameters": {"容量": "12kg"},
+                "reference_assets": [], "brand_requirements": "", "output_requirements": "",
+            }
+
+        batch = self.client.post(
+            "/api/batches",
+            json={
+                "name": "多SKU完整生产",
+                "common_config": {"recipe_id": "commerce-detail-v1"},
+                "skus": [{"profile": profile("X11")}, {"profile": profile("T1")}],
+            },
+        ).json()
+        batch_id = batch["id"]
+
+        started = self.client.post(
+            f"/api/batches/{batch_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+
+        self.assertEqual(202, started.status_code, started.text)
+        after_generation = self.client.get(f"/api/batches/{batch_id}").json()
+        self.assertEqual(2, after_generation["progress"]["needs_review"])
+        for item in after_generation["items"]:
+            snapshot = self.client.get(f"/api/projects/{item['project_id']}/production").json()
+            for row in snapshot["pages"]:
+                approved = self.client.post(
+                    f"/api/candidates/{row['candidates'][0]['id']}/review",
+                    json={"decision": "approved", "override_reason": "", "reviewer": "batch-test"},
+                )
+                self.assertEqual(200, approved.status_code, approved.text)
+
+        completed = self.client.get(f"/api/batches/{batch_id}").json()
+        self.assertEqual(2, completed["progress"]["completed"])
+        exported = self.client.post(f"/api/batches/{batch_id}/export")
+        self.assertEqual(201, exported.status_code, exported.text)
+        archive = self.client.get(exported.json()["download_url"])
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as delivery:
+            names = set(delivery.namelist())
+            self.assertIn("batch_summary.json", names)
+            self.assertIn("X11/pages/01_hero/final.png", names)
+            self.assertIn("T1/pages/05_parameters/qa.json", names)
+
+    def test_recompose_reuses_base_and_requires_new_review(self) -> None:
+        project_id = self._create_planned_project()
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        before = self.client.get(f"/api/projects/{project_id}/production").json()
+        first_page = before["pages"][0]
+        source_candidate = first_page["candidates"][0]
+        self.client.post(
+            f"/api/candidates/{source_candidate['id']}/review",
+            json={"decision": "approved", "override_reason": "", "reviewer": "layout-test"},
+        )
+        plan = self.client.get(f"/api/projects/{project_id}/plan").json()
+        plan["items"][0]["title"] = "修改后的分层标题"
+        self.client.put(
+            f"/api/projects/{project_id}/plan",
+            json={"items": plan["items"], "confirmed": True},
+        )
+
+        recomposed = self.client.post(
+            f"/api/projects/{project_id}/pages/{first_page['page']['id']}/recompose"
+        )
+
+        self.assertEqual(200, recomposed.status_code, recomposed.text)
+        first_after = recomposed.json()["pages"][0]
+        self.assertEqual("rejected", first_after["decision"]["decision"])
+        new_candidate = first_after["candidates"][0]
+        old_base = self.client.get(source_candidate["base_url"]).content
+        new_base = self.client.get(new_candidate["base_url"]).content
+        self.assertEqual(old_base, new_base)
+        self.assertNotEqual(
+            self.client.get(source_candidate["text_layer_url"]).content,
+            self.client.get(new_candidate["text_layer_url"]).content,
+        )
+
+    def test_project_edit_clone_page_regenerate_and_recipe_candidate(self) -> None:
+        project_id = self._create_planned_project()
+        project = self.client.get(f"/api/projects/{project_id}").json()
+        project["profile"]["selling_points"].append("新增卖点")
+        updated = self.client.put(
+            f"/api/projects/{project_id}",
+            json={"project_name": "X11 更新版", "profile": project["profile"]},
+        )
+        self.assertEqual(200, updated.status_code, updated.text)
+        self.assertEqual("X11 更新版", updated.json()["name"])
+
+        clone = self.client.post(f"/api/projects/{project_id}/clone")
+        self.assertEqual(201, clone.status_code, clone.text)
+        self.assertEqual(5, len(self.client.get(f"/api/projects/{clone.json()['id']}/plan").json()["items"]))
+
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        for row in snapshot["pages"]:
+            self.client.post(
+                f"/api/candidates/{row['candidates'][0]['id']}/review",
+                json={"decision": "approved", "override_reason": "", "reviewer": "flow-test"},
+            )
+        recipe = self.client.post(
+            f"/api/projects/{project_id}/recipe-candidate", json={"name": "X11 验证配方"}
+        )
+        self.assertEqual(201, recipe.status_code, recipe.text)
+        self.assertEqual("draft", recipe.json()["status"])
+
+        page_id = snapshot["pages"][0]["page"]["id"]
+        regenerated = self.client.post(
+            f"/api/projects/{project_id}/pages/{page_id}/regenerate",
+            json={"recipe_id": "commerce-detail-v1", "force": True},
+        )
+        self.assertEqual(202, regenerated.status_code, regenerated.text)
+        after = self.client.get(f"/api/projects/{project_id}/production").json()
+        self.assertFalse(after["ready_for_export"])
+        self.assertEqual("rejected", after["pages"][0]["decision"]["decision"])
+
+
+if __name__ == "__main__":
+    unittest.main()

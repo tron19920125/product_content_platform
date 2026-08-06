@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from product_content_platform.domain import (
+    Candidate,
+    GenerationJob,
+    PageItem,
+    ProductProfile,
+    Project,
+    PromptVersion,
+    QAResult,
+    Recipe,
+    ReviewDecision,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProducedCandidate:
+    candidate_index: int
+    base_path: str
+    text_layer_path: str
+    composed_path: str
+    prompt: str
+    score: int
+    rank: int
+    qa_status: str
+    issues: tuple[dict[str, Any], ...]
+    evidence: dict[str, Any]
+    suggested_fix: str = ""
+    repair_applied: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class BaseImageGenerator(Protocol):
+    def generate(
+        self,
+        *,
+        prompt: str,
+        profile: ProductProfile,
+        reference_paths: list[Path],
+        output_path: Path,
+        variant: int,
+    ) -> dict[str, Any]: ...
+
+
+class PageProductionEngine(Protocol):
+    def execute(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        reference_paths: list[Path],
+    ) -> list[ProducedCandidate]: ...
+
+    def recompose(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        source_candidate: Candidate,
+        reference_paths: list[Path],
+    ) -> ProducedCandidate: ...
+
+    def resolve(self, relative_path: str) -> Path: ...
+
+
+class ArchiveExporter(Protocol):
+    def create(
+        self,
+        archive_name: str,
+        files: dict[str, Path],
+        documents: dict[str, Any],
+    ) -> Path: ...
+
+    def resolve(self, file_name: str) -> Path: ...
+
+
+class ProductionRepository(Protocol):
+    def ensure_seed_data(self, prompt: PromptVersion, recipe: Recipe) -> None: ...
+    def save_prompt_version(self, prompt: PromptVersion) -> None: ...
+    def update_prompt_status(self, prompt_id: str, status: Any) -> None: ...
+    def get_prompt_version(self, prompt_id: str) -> PromptVersion | None: ...
+    def list_prompt_versions(self) -> list[PromptVersion]: ...
+    def save_recipe(self, recipe: Recipe) -> None: ...
+    def get_recipe(self, recipe_id: str) -> Recipe | None: ...
+    def list_recipes(self) -> list[Recipe]: ...
+    def create_jobs(self, jobs: list[GenerationJob]) -> None: ...
+    def get_job(self, job_id: str) -> GenerationJob | None: ...
+    def list_jobs(self, project_id: str | None = None) -> list[GenerationJob]: ...
+    def update_job(self, job: GenerationJob) -> None: ...
+    def save_job_results(self, job: GenerationJob, candidates: list[Candidate], qa_results: list[QAResult]) -> None: ...
+    def get_candidate(self, candidate_id: str) -> Candidate | None: ...
+    def list_candidates(self, project_id: str, page_id: str | None = None) -> list[Candidate]: ...
+    def get_qa_result(self, candidate_id: str) -> QAResult | None: ...
+    def save_decision(self, decision: ReviewDecision) -> None: ...
+    def list_decisions(self, project_id: str) -> list[ReviewDecision]: ...

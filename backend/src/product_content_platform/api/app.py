@@ -1,0 +1,839 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from product_content_platform.adapters import (
+    FixedContentCatalog,
+    AzureImageGenerator,
+    ProductQualityToolkit,
+    LocalArchiveExporter,
+    LocalAssetStore,
+    LocalBaseImageGenerator,
+    LocalProductionEngine,
+    SkuImportParser,
+    SQLitePlatformRepository,
+    SQLiteProductionRepository,
+)
+from product_content_platform.application import (
+    BatchSkuInput,
+    PlatformApplication,
+    ProductionApplication,
+    ProjectInput,
+)
+from product_content_platform.domain import (
+    Asset,
+    AssetUsage,
+    Batch,
+    BatchItemStatus,
+    Candidate,
+    DomainValidationError,
+    EntityNotFoundError,
+    GenerationJob,
+    PageItem,
+    PagePlan,
+    PageStatus,
+    PageType,
+    ProductProfile,
+    Project,
+    PromptVersion,
+    QAResult,
+    Recipe,
+    ReviewDecision,
+    ReviewDecisionType,
+)
+from product_content_platform.settings import Settings
+
+
+class ProductProfilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sku: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    model: str = ""
+    selling_points: list[str] = Field(default_factory=list)
+    parameters: dict[str, str] = Field(default_factory=dict)
+    reference_assets: list[str] = Field(default_factory=list)
+    brand_requirements: str = ""
+    output_requirements: str = ""
+
+    def to_domain(self) -> ProductProfile:
+        return ProductProfile.from_dict(self.model_dump())
+
+
+class ProjectCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str = Field(min_length=1)
+    profile: ProductProfilePayload
+
+
+class ProjectUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str = ""
+    profile: ProductProfilePayload
+
+
+class BatchSkuPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: ProductProfilePayload
+    override_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    common_config: dict[str, Any] = Field(default_factory=dict)
+    skus: list[BatchSkuPayload] = Field(min_length=1)
+
+
+class BatchItemStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: BatchItemStatus
+    error: str = ""
+
+
+class PageItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    order: int = Field(ge=1)
+    page_type: PageType
+    title: str = Field(min_length=1)
+    body: str = ""
+    visual_goal: str = ""
+    template_id: str = Field(min_length=1)
+    heading_level: int = Field(default=1, ge=1, le=5)
+    status: PageStatus = PageStatus.DRAFT
+
+    def to_domain(self) -> PageItem:
+        return PageItem(**self.model_dump())
+
+
+class PagePlanUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PageItemPayload] = Field(min_length=1)
+    confirmed: bool = False
+
+
+class PromptCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    variables: list[str] = Field(default_factory=list)
+    prompt_asset_id: str = ""
+    change_note: str = ""
+
+
+class RecipeCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    prompt_version_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    model_params: dict[str, Any] = Field(default_factory=dict)
+    template_ids: list[str] = Field(min_length=1)
+    qa_policy: str = "commerce-basic-v1"
+    candidate_count: int = Field(default=2, ge=1, le=3)
+
+
+class ProductionStartPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recipe_id: str = "commerce-detail-v1"
+    force: bool = False
+
+
+class ReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: ReviewDecisionType
+    override_reason: str = ""
+    reviewer: str = "local-user"
+
+
+class RecipeCandidatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+
+
+def create_app(
+    *,
+    database_path: Path | None = None,
+    asset_root: Path | None = None,
+    production_root: Path | None = None,
+    export_root: Path | None = None,
+) -> FastAPI:
+    settings = Settings.from_environment()
+    effective_database = database_path or settings.database_path
+    repository = SQLitePlatformRepository(effective_database)
+    platform = PlatformApplication(repository)
+    effective_asset_root = asset_root or (effective_database.parent / "assets" if database_path else settings.asset_root)
+    effective_production_root = production_root or (effective_database.parent / "production" if database_path else settings.production_root)
+    effective_export_root = export_root or (effective_database.parent / "exports" if database_path else settings.export_root)
+    assets = LocalAssetStore(effective_asset_root)
+    imports = SkuImportParser()
+    catalog = FixedContentCatalog()
+    production_repository = SQLiteProductionRepository(effective_database)
+    generator = (
+        AzureImageGenerator()
+        if settings.generation_mode == "azure"
+        else LocalBaseImageGenerator()
+    )
+    engine = LocalProductionEngine(
+        effective_production_root,
+        generator,
+        ProductQualityToolkit(mode=settings.qa_mode),
+    )
+    exporter = LocalArchiveExporter(effective_export_root)
+    production = ProductionApplication(
+        platform, production_repository, engine, exporter, assets.resolve
+    )
+    production.seed_defaults("azure-gpt-image" if settings.generation_mode == "azure" else "local-preview")
+
+    app = FastAPI(title="Product Content Platform", version="0.1.0")
+    app.state.platform = platform
+    app.state.assets = assets
+    app.state.production = production
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/api/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(payload: ProjectCreatePayload) -> dict[str, Any]:
+        try:
+            project = platform.create_project(
+                ProjectInput(project_name=payload.project_name, profile=payload.profile.to_domain())
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return project_to_dict(project)
+
+    @app.get("/api/projects")
+    def list_projects() -> list[dict[str, Any]]:
+        return [project_to_dict(project) for project in platform.list_projects()]
+
+    @app.get("/api/projects/{project_id}")
+    def get_project(project_id: str) -> dict[str, Any]:
+        try:
+            return project_to_dict(platform.get_project(project_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/projects/{project_id}")
+    def update_project(project_id: str, payload: ProjectUpdatePayload) -> dict[str, Any]:
+        try:
+            return project_to_dict(platform.update_project(project_id, payload.profile.to_domain(), payload.project_name))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/clone", status_code=201)
+    def clone_project(project_id: str) -> dict[str, Any]:
+        try:
+            return project_to_dict(platform.clone_project(project_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/assets", status_code=201)
+    async def upload_project_asset(
+        project_id: str,
+        request: Request,
+        file_name: str = Query(min_length=1),
+        usage: AssetUsage = AssetUsage.PRODUCT,
+        source: str = Query(default="user_upload", min_length=1, max_length=80),
+        authorization_status: str = Query(default="unconfirmed", pattern="^(unconfirmed|authorized|restricted)$"),
+    ) -> dict[str, Any]:
+        content = await request.body()
+        try:
+            platform.get_project(project_id)
+            storage_path = assets.save(file_name, content)
+            asset = platform.register_asset(
+                project_id,
+                usage,
+                file_name,
+                request.headers.get("content-type", "application/octet-stream"),
+                storage_path,
+                len(content),
+                source,
+                authorization_status,
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return asset_to_dict(asset)
+
+    @app.get("/api/projects/{project_id}/assets")
+    def list_project_assets(project_id: str) -> list[dict[str, Any]]:
+        try:
+            return [asset_to_dict(asset) for asset in platform.list_assets(project_id)]
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/assets/{asset_id}/content")
+    def get_asset_content(asset_id: str) -> FileResponse:
+        try:
+            asset = platform.get_asset(asset_id)
+            path = assets.resolve(asset.storage_path)
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return FileResponse(path, media_type=asset.mime_type, filename=asset.file_name)
+
+    @app.post("/api/projects/{project_id}/plan", status_code=201)
+    def generate_project_plan(project_id: str) -> dict[str, Any]:
+        try:
+            return plan_to_dict(platform.generate_plan(project_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/plan")
+    def get_project_plan(project_id: str) -> dict[str, Any]:
+        try:
+            return plan_to_dict(platform.get_plan(project_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/projects/{project_id}/plan")
+    def save_project_plan(project_id: str, payload: PagePlanUpdatePayload) -> dict[str, Any]:
+        template_ids = {item["id"] for item in catalog.templates()}
+        unknown = sorted({item.template_id for item in payload.items if item.template_id not in template_ids})
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"未知模板: {', '.join(unknown)}")
+        try:
+            return plan_to_dict(
+                platform.save_plan(project_id, [item.to_domain() for item in payload.items], payload.confirmed)
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/templates")
+    def list_templates() -> list[dict[str, Any]]:
+        return catalog.templates()
+
+    @app.get("/api/recipes")
+    def list_recipes(published_only: bool = False) -> list[dict[str, Any]]:
+        return [recipe_to_dict(item) for item in production.list_recipes(published_only)]
+
+    @app.post("/api/recipes", status_code=201)
+    def create_recipe(payload: RecipeCreatePayload) -> dict[str, Any]:
+        try:
+            recipe = production.create_recipe(**payload.model_dump())
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return recipe_to_dict(recipe)
+
+    @app.post("/api/recipes/{recipe_id}/publish")
+    def publish_recipe(recipe_id: str) -> dict[str, Any]:
+        try:
+            return recipe_to_dict(production.publish_recipe(recipe_id))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/prompts")
+    def list_prompts() -> list[dict[str, Any]]:
+        return [prompt_to_dict(item) for item in production.list_prompt_versions()]
+
+    @app.post("/api/prompts", status_code=201)
+    def create_prompt(payload: PromptCreatePayload) -> dict[str, Any]:
+        try:
+            return prompt_to_dict(production.create_prompt_version(**payload.model_dump()))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/prompts/{prompt_id}/publish")
+    def publish_prompt(prompt_id: str) -> dict[str, Any]:
+        try:
+            return prompt_to_dict(production.publish_prompt(prompt_id))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/production/start", status_code=202)
+    def start_project_production(
+        project_id: str,
+        payload: ProductionStartPayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            jobs = production.start_project(project_id, payload.recipe_id, payload.force)
+            background_tasks.add_task(production.process_project, project_id)
+            return {"project_id": project_id, "jobs": [job_to_dict(job) for job in jobs]}
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/production")
+    def get_project_production(project_id: str) -> dict[str, Any]:
+        try:
+            return production_snapshot_to_dict(production.get_project_production(project_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/pages/{page_id}/recompose")
+    def recompose_page(project_id: str, page_id: str) -> dict[str, Any]:
+        try:
+            return production_snapshot_to_dict(production.recompose_page(project_id, page_id))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/pages/{page_id}/regenerate", status_code=202)
+    def regenerate_page(
+        project_id: str,
+        page_id: str,
+        payload: ProductionStartPayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            job = production.regenerate_page(project_id, page_id, payload.recipe_id)
+            background_tasks.add_task(production.process_project, project_id)
+            return job_to_dict(job) or {}
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/review")
+    def review_candidate(candidate_id: str, payload: ReviewPayload) -> dict[str, Any]:
+        try:
+            decision = production.review_candidate(
+                candidate_id, payload.decision, payload.override_reason, payload.reviewer
+            )
+            return decision_to_dict(decision)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/candidates/{candidate_id}/files/{kind}")
+    def get_candidate_file(candidate_id: str, kind: str) -> FileResponse:
+        try:
+            path = production.candidate_file(candidate_id, kind)
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FileResponse(path, media_type="image/png")
+
+    @app.post("/api/projects/{project_id}/export", status_code=201)
+    def export_project(project_id: str) -> dict[str, str]:
+        try:
+            path = production.export_project(project_id)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"file_name": path.name, "download_url": f"/api/exports/{path.name}"}
+
+    @app.post("/api/projects/{project_id}/recipe-candidate", status_code=201)
+    def create_recipe_from_project(project_id: str, payload: RecipeCandidatePayload) -> dict[str, Any]:
+        try:
+            return recipe_to_dict(production.create_recipe_from_project(project_id, payload.name))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/exports/{file_name}")
+    def download_export(file_name: str) -> FileResponse:
+        try:
+            path = exporter.resolve(file_name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="导出文件不存在") from exc
+        return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    @app.get("/api/jobs")
+    def list_jobs(project_id: str | None = None) -> list[dict[str, Any]]:
+        return [job_to_dict(job) for job in production.list_jobs(project_id)]
+
+    @app.post("/api/jobs/recover", status_code=202)
+    def recover_jobs(background_tasks: BackgroundTasks) -> dict[str, Any]:
+        queued_projects = sorted({job.project_id for job in production.list_jobs() if job.status.value == "queued"})
+        background_tasks.add_task(production.recover_pending)
+        return {"queued_projects": queued_projects}
+
+    @app.post("/api/batches", status_code=201)
+    def create_batch(payload: BatchCreatePayload) -> dict[str, Any]:
+        try:
+            batch = platform.create_batch(
+                payload.name,
+                [
+                    BatchSkuInput(
+                        profile=item.profile.to_domain(),
+                        override_config=item.override_config,
+                    )
+                    for item in payload.skus
+                ],
+                payload.common_config,
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return batch_to_dict(batch)
+
+    @app.get("/api/batches")
+    def list_batches() -> list[dict[str, Any]]:
+        return [batch_to_dict(batch) for batch in platform.list_batches()]
+
+    @app.get("/api/batches-import-template")
+    def download_batch_import_template() -> Response:
+        content = (
+            "\ufeffSKU,商品名称,品类,型号,卖点,参数,品牌要求,输出要求\n"
+            "X11,COLMO X11洗衣机,洗衣机,CGU12W-X11,低温柔洗|智能投放,容量=12kg|洗净比=1.1,,电商详情页\n"
+        )
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="sku_import_template.csv"'},
+        )
+
+    @app.post("/api/batches-import", status_code=201)
+    async def import_batch(
+        request: Request,
+        name: str = Query(min_length=1),
+        file_name: str = Query(min_length=1),
+        default_category: str = "",
+    ) -> dict[str, Any]:
+        try:
+            profiles = imports.parse(file_name, await request.body(), default_category)
+            batch = platform.create_batch(
+                name,
+                [BatchSkuInput(profile=profile) for profile in profiles],
+                {"recipe_id": "commerce-detail-v1", "source": "file_import"},
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return batch_to_dict(batch)
+
+    @app.get("/api/batches/{batch_id}/production")
+    def get_batch_production(batch_id: str) -> dict[str, Any]:
+        try:
+            return batch_snapshot_to_dict(production.batch_snapshot(batch_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/batches/{batch_id}/production/start", status_code=202)
+    def start_batch_production(
+        batch_id: str,
+        payload: ProductionStartPayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            snapshot = production.start_batch(batch_id, payload.recipe_id, failed_only=False)
+            background_tasks.add_task(production.process_batch, batch_id)
+            return batch_snapshot_to_dict(snapshot)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/batches/{batch_id}/production/retry", status_code=202)
+    def retry_batch_production(
+        batch_id: str,
+        payload: ProductionStartPayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            snapshot = production.start_batch(batch_id, payload.recipe_id, failed_only=True)
+            background_tasks.add_task(production.process_batch, batch_id)
+            return batch_snapshot_to_dict(snapshot)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/batches/{batch_id}/pause")
+    def pause_batch(batch_id: str) -> dict[str, Any]:
+        try:
+            return batch_snapshot_to_dict(production.pause_batch(batch_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/batches/{batch_id}/resume", status_code=202)
+    def resume_batch(batch_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        try:
+            snapshot = production.resume_batch(batch_id)
+            background_tasks.add_task(production.process_batch, batch_id)
+            return batch_snapshot_to_dict(snapshot)
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/batches/{batch_id}/export", status_code=201)
+    def export_batch(batch_id: str) -> dict[str, str]:
+        try:
+            path = production.export_batch(batch_id)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"file_name": path.name, "download_url": f"/api/exports/{path.name}"}
+
+    @app.get("/api/batches/{batch_id}")
+    def get_batch(batch_id: str) -> dict[str, Any]:
+        try:
+            return batch_to_dict(platform.get_batch(batch_id))
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.patch("/api/batches/{batch_id}/items/{item_id}")
+    def update_batch_item(
+        batch_id: str,
+        item_id: str,
+        payload: BatchItemStatusPayload,
+    ) -> dict[str, Any]:
+        try:
+            batch = platform.set_batch_item_status(batch_id, item_id, payload.status, payload.error)
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return batch_to_dict(batch)
+
+    return app
+
+
+def project_to_dict(project: Project) -> dict[str, Any]:
+    return {
+        "id": project.id,
+        "name": project.name,
+        "status": project.status.value,
+        "profile": project.profile.to_dict(),
+        "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+
+
+def asset_to_dict(asset: Asset) -> dict[str, Any]:
+    return {
+        "id": asset.id,
+        "project_id": asset.project_id,
+        "usage": asset.usage.value,
+        "file_name": asset.file_name,
+        "mime_type": asset.mime_type,
+        "size_bytes": asset.size_bytes,
+        "source": asset.source,
+        "authorization_status": asset.authorization_status,
+        "content_url": f"/api/assets/{asset.id}/content",
+        "created_at": asset.created_at.isoformat(),
+    }
+
+
+def plan_to_dict(plan: PagePlan) -> dict[str, Any]:
+    return {
+        "id": plan.id,
+        "project_id": plan.project_id,
+        "version": plan.version,
+        "confirmed": plan.confirmed,
+        "items": [
+            {
+                "id": item.id,
+                "order": item.order,
+                "page_type": item.page_type.value,
+                "title": item.title,
+                "body": item.body,
+                "visual_goal": item.visual_goal,
+                "template_id": item.template_id,
+                "heading_level": item.heading_level,
+                "status": item.status.value,
+            }
+            for item in plan.items
+        ],
+        "created_at": plan.created_at.isoformat(),
+        "updated_at": plan.updated_at.isoformat(),
+    }
+
+
+def batch_to_dict(batch: Batch) -> dict[str, Any]:
+    return {
+        "id": batch.id,
+        "name": batch.name,
+        "status": batch.status.value,
+        "common_config": batch.common_config,
+        "items": [
+            {
+                "id": item.id,
+                "batch_id": item.batch_id,
+                "project_id": item.project_id,
+                "sku": item.sku,
+                "status": item.status.value,
+                "override_config": item.override_config,
+                "error": item.error,
+            }
+            for item in batch.items
+        ],
+        "progress": batch.progress,
+        "created_at": batch.created_at.isoformat(),
+        "updated_at": batch.updated_at.isoformat(),
+    }
+
+
+def prompt_to_dict(prompt: PromptVersion) -> dict[str, Any]:
+    return {
+        "id": prompt.id,
+        "prompt_asset_id": prompt.prompt_asset_id,
+        "name": prompt.name,
+        "version": prompt.version,
+        "body": prompt.body,
+        "variables": list(prompt.variables),
+        "status": prompt.status.value,
+        "change_note": prompt.change_note,
+        "created_at": prompt.created_at.isoformat(),
+    }
+
+
+def recipe_to_dict(recipe: Recipe) -> dict[str, Any]:
+    return {
+        "id": recipe.id,
+        "name": recipe.name,
+        "status": recipe.status.value,
+        "prompt_version_id": recipe.prompt_version_id,
+        "model": recipe.model,
+        "model_params": recipe.model_params,
+        "template_ids": list(recipe.template_ids),
+        "page_types": ["hero", "selling_point", "function", "scene", "parameters"],
+        "qa_policy": recipe.qa_policy,
+        "candidate_count": recipe.candidate_count,
+        "version": 1,
+        "created_at": recipe.created_at.isoformat(),
+        "updated_at": recipe.updated_at.isoformat(),
+    }
+
+
+def job_to_dict(job: GenerationJob | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    return {
+        "id": job.id,
+        "project_id": job.project_id,
+        "page_id": job.page_id,
+        "recipe_id": job.recipe_id,
+        "status": job.status.value,
+        "attempt": job.attempt,
+        "max_attempts": job.max_attempts,
+        "error": job.error,
+        "trace": job.trace,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+    }
+
+
+def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
+    return {
+        "id": candidate.id,
+        "job_id": candidate.job_id,
+        "project_id": candidate.project_id,
+        "page_id": candidate.page_id,
+        "candidate_index": candidate.candidate_index,
+        "score": candidate.score,
+        "rank": candidate.rank,
+        "status": candidate.status.value,
+        "prompt": candidate.prompt,
+        "metadata": candidate.metadata,
+        "base_url": f"/api/candidates/{candidate.id}/files/base",
+        "text_layer_url": f"/api/candidates/{candidate.id}/files/text",
+        "composed_url": f"/api/candidates/{candidate.id}/files/composed",
+        "created_at": candidate.created_at.isoformat(),
+    }
+
+
+def qa_to_dict(qa: QAResult | None) -> dict[str, Any] | None:
+    if qa is None:
+        return None
+    return {
+        "id": qa.id,
+        "candidate_id": qa.candidate_id,
+        "status": qa.status.value,
+        "score": qa.score,
+        "issues": list(qa.issues),
+        "evidence": qa.evidence,
+        "suggested_fix": qa.suggested_fix,
+        "repair_applied": qa.repair_applied,
+        "created_at": qa.created_at.isoformat(),
+    }
+
+
+def decision_to_dict(decision: ReviewDecision | None) -> dict[str, Any] | None:
+    if decision is None:
+        return None
+    return {
+        "id": decision.id,
+        "project_id": decision.project_id,
+        "page_id": decision.page_id,
+        "candidate_id": decision.candidate_id,
+        "decision": decision.decision.value,
+        "override_reason": decision.override_reason,
+        "reviewer": decision.reviewer,
+        "created_at": decision.created_at.isoformat(),
+    }
+
+
+def production_snapshot_to_dict(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project": project_to_dict(snapshot["project"]),
+        "plan": plan_to_dict(snapshot["plan"]),
+        "ready_for_export": snapshot["ready_for_export"],
+        "pages": [
+            {
+                "page": {
+                    "id": row["page"].id,
+                    "order": row["page"].order,
+                    "page_type": row["page"].page_type.value,
+                    "title": row["page"].title,
+                    "body": row["page"].body,
+                    "visual_goal": row["page"].visual_goal,
+                    "template_id": row["page"].template_id,
+                    "heading_level": row["page"].heading_level,
+                    "status": row["page"].status.value,
+                },
+                "job": job_to_dict(row["job"]),
+                "candidates": [
+                    {**candidate_to_dict(candidate), "qa": qa_to_dict(row["qa_results"].get(candidate.id))}
+                    for candidate in row["candidates"]
+                ],
+                "decision": decision_to_dict(row["decision"]),
+            }
+            for row in snapshot["pages"]
+        ],
+    }
+
+
+def batch_snapshot_to_dict(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "batch": batch_to_dict(snapshot["batch"]),
+        "items": [
+            {"item": batch_to_dict(snapshot["batch"])["items"][index], "project": project_to_dict(row["project"])}
+            for index, row in enumerate(snapshot["items"])
+        ],
+    }
+
+
+app = create_app()
