@@ -19,7 +19,7 @@ from product_content_platform.quality.review_requirements import requirements_wi
 from product_content_platform.quality.text_review import bbox_center_inside_region, parse_bbox
 
 
-DEFAULT_RESOURCE_ENDPOINT = "https://ai-chengbian2072ai349864755390.cognitiveservices.azure.com"
+DEFAULT_RESOURCE_ENDPOINT = ""
 DEFAULT_REVIEW_MODEL = "gpt-5.6-sol"
 DEFAULT_REVIEW_DEPLOYMENT = DEFAULT_REVIEW_MODEL
 DEFAULT_REVIEW_API_VERSION = "2025-04-01-preview"
@@ -148,6 +148,10 @@ def default_review_endpoint(
     deployment: str = DEFAULT_REVIEW_DEPLOYMENT,
     api_version: str = DEFAULT_REVIEW_API_VERSION,
 ) -> str:
+    if not resource_endpoint:
+        raise LlmReviewerError(
+            "Set AZURE_OPENAI_REVIEW_ENDPOINT or AZURE_OPENAI_RESOURCE_ENDPOINT."
+        )
     base = resource_endpoint.rstrip("/")
     # Keep the deployment argument for callers that used the previous helper signature.
     _ = deployment
@@ -294,8 +298,16 @@ def call_azure_chat_review(
     )
     resolved_token = bearer_token or os.environ.get("AZURE_OPENAI_BEARER_TOKEN", "")
     resolved_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY", "")
+    if token_provider:
+        try:
+            resolved_token = token_provider()
+        except Exception as exc:
+            raise LlmReviewerError(f"LLM 审查认证失败：{exc}") from exc
     if not resolved_token and not resolved_key:
-        raise LlmReviewerError("Missing LLM review credentials. Set AZURE_OPENAI_BEARER_TOKEN or AZURE_OPENAI_API_KEY.")
+        raise LlmReviewerError(
+            "Missing LLM review credentials. Configure Managed Identity, "
+            "AZURE_OPENAI_BEARER_TOKEN, or AZURE_OPENAI_API_KEY."
+        )
 
     uses_responses_api = _is_responses_endpoint(url)
     request_payload = (

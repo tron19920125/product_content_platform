@@ -90,8 +90,11 @@ class AzureImageGenerator:
         variant: int,
     ) -> dict[str, Any]:
         from product_content_platform.integrations.azure_image_client import edit_image, generate_image
+        from product_content_platform.integrations.azure_credentials import token_provider_from_env
 
         token = os.environ.get("AZURE_OPENAI_BEARER_TOKEN", "")
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+        token_provider = token_provider_from_env()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if reference_paths:
             result = edit_image(
@@ -100,14 +103,20 @@ class AzureImageGenerator:
                 additional_reference_paths=reference_paths[1:3],
                 output_dir=output_path.parent,
                 bearer_token=token,
-                quality=os.environ.get("PCP_IMAGE_QUALITY", "low"),
+                api_key=api_key,
+                token_provider=token_provider,
+                quality=os.environ.get("PCP_IMAGE_QUALITY", "high"),
+                size=os.environ.get("PCP_IMAGE_SIZE", "2048x2048"),
             )
         else:
             result = generate_image(
                 prompt=prompt,
                 output_dir=output_path.parent,
                 bearer_token=token,
-                quality=os.environ.get("PCP_IMAGE_QUALITY", "low"),
+                api_key=api_key,
+                token_provider=token_provider,
+                quality=os.environ.get("PCP_IMAGE_QUALITY", "high"),
+                size=os.environ.get("PCP_IMAGE_SIZE", "2048x2048"),
             )
         shutil.copyfile(result.image_path, output_path)
         with Image.open(output_path) as image:

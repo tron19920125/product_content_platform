@@ -195,10 +195,18 @@ def read_image_text(
     resolved_endpoint = endpoint or os.environ.get("AZURE_AI_VISION_ENDPOINT", "")
     resolved_key = api_key or os.environ.get("AZURE_AI_VISION_KEY", "")
     resolved_token = bearer_token or os.environ.get("AZURE_AI_VISION_BEARER_TOKEN", "")
+    if token_provider:
+        try:
+            resolved_token = token_provider()
+        except Exception as exc:
+            raise AzureVisionOcrError(f"Azure Vision OCR 认证失败：{exc}") from exc
     if not resolved_endpoint:
         raise AzureVisionOcrError("Missing Azure Vision endpoint. Set AZURE_AI_VISION_ENDPOINT.")
     if not resolved_key and not resolved_token:
-        raise AzureVisionOcrError("Missing Azure Vision credentials. Set AZURE_AI_VISION_KEY or AZURE_AI_VISION_BEARER_TOKEN.")
+        raise AzureVisionOcrError(
+            "Missing Azure Vision credentials. Configure Managed Identity, "
+            "AZURE_AI_VISION_KEY, or AZURE_AI_VISION_BEARER_TOKEN."
+        )
 
     resolved_image_path = Path(image_path)
     image_bytes = resolved_image_path.read_bytes()

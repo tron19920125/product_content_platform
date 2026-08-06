@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-DEFAULT_RESOURCE_ENDPOINT = "https://ai-chengbian2072ai349864755390.cognitiveservices.azure.com"
-DEFAULT_DEPLOYMENT = "gpt-image-2"
-DEFAULT_API_VERSION = "2024-02-01"
-DEFAULT_EDIT_API_VERSION = "2025-04-01-preview"
+DEFAULT_RESOURCE_ENDPOINT = ""
+DEFAULT_DEPLOYMENT = ""
+DEFAULT_API_VERSION = "preview"
+DEFAULT_EDIT_API_VERSION = "preview"
 IMAGE_REQUEST_MAX_ATTEMPTS = 4
 IMAGE_REQUEST_RETRY_DELAYS = (1.0, 2.0, 4.0)
 IMAGE_REQUEST_MAX_RETRY_AFTER_SECONDS = 180.0
@@ -37,6 +37,7 @@ TRANSIENT_IMAGE_ERRORS = (
     urllib.error.URLError,
 )
 _IMAGE_REQUEST_LOCK = threading.Lock()
+TokenProvider = Callable[[], str]
 
 
 class AzureImageGenerationError(RuntimeError):
@@ -53,21 +54,40 @@ class GeneratedImage:
 
 
 def default_generation_endpoint(
-    resource_endpoint: str = DEFAULT_RESOURCE_ENDPOINT,
-    deployment: str = DEFAULT_DEPLOYMENT,
-    api_version: str = DEFAULT_API_VERSION,
+    resource_endpoint: str | None = None,
+    deployment: str | None = None,
+    api_version: str | None = None,
 ) -> str:
-    base = resource_endpoint.rstrip("/")
-    return f"{base}/openai/deployments/{deployment}/images/generations?api-version={api_version}"
+    resolved_resource = resource_endpoint or os.environ.get("AZURE_OPENAI_RESOURCE_ENDPOINT", "")
+    resolved_deployment = deployment or os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "")
+    resolved_api_version = api_version or os.environ.get("AZURE_OPENAI_IMAGE_API_VERSION", DEFAULT_API_VERSION)
+    if not resolved_resource or not resolved_deployment:
+        raise AzureImageGenerationError(
+            "Set AZURE_OPENAI_IMAGE_ENDPOINT, or configure both "
+            "AZURE_OPENAI_RESOURCE_ENDPOINT and AZURE_OPENAI_IMAGE_DEPLOYMENT."
+        )
+    base = resolved_resource.rstrip("/")
+    return f"{base}/openai/v1/images/generations?api-version={resolved_api_version}"
 
 
 def default_edit_endpoint(
-    resource_endpoint: str = DEFAULT_RESOURCE_ENDPOINT,
-    deployment: str = DEFAULT_DEPLOYMENT,
-    api_version: str = DEFAULT_EDIT_API_VERSION,
+    resource_endpoint: str | None = None,
+    deployment: str | None = None,
+    api_version: str | None = None,
 ) -> str:
-    base = resource_endpoint.rstrip("/")
-    return f"{base}/openai/deployments/{deployment}/images/edits?api-version={api_version}"
+    resolved_resource = resource_endpoint or os.environ.get("AZURE_OPENAI_RESOURCE_ENDPOINT", "")
+    resolved_deployment = deployment or os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "")
+    resolved_api_version = api_version or os.environ.get(
+        "AZURE_OPENAI_IMAGE_EDIT_API_VERSION",
+        DEFAULT_EDIT_API_VERSION,
+    )
+    if not resolved_resource or not resolved_deployment:
+        raise AzureImageGenerationError(
+            "Set AZURE_OPENAI_IMAGE_EDIT_ENDPOINT, or configure both "
+            "AZURE_OPENAI_RESOURCE_ENDPOINT and AZURE_OPENAI_IMAGE_DEPLOYMENT."
+        )
+    base = resolved_resource.rstrip("/")
+    return f"{base}/openai/v1/images/edits?api-version={resolved_api_version}"
 
 
 def to_edit_endpoint(endpoint: str) -> str:
@@ -82,15 +102,16 @@ def generate_image(
     *,
     prompt: str,
     output_dir: Path,
-    bearer_token: str,
+    bearer_token: str | None = None,
+    api_key: str | None = None,
+    token_provider: TokenProvider | None = None,
     endpoint: str | None = None,
-    size: str = "1024x1024",
-    quality: str = "low",
+    size: str = "2048x2048",
+    quality: str = "high",
     output_format: str = "png",
     timeout: int = 600,
 ) -> GeneratedImage:
-    if not bearer_token:
-        raise AzureImageGenerationError("Missing Azure OpenAI bearer token.")
+    resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
     request_payload = {
         "prompt": prompt,
         "size": size,
@@ -99,9 +120,18 @@ def generate_image(
         "output_format": output_format,
     }
     url = endpoint or os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT") or default_generation_endpoint()
+    if "/openai/v1/images/" in url:
+        request_payload["model"] = _image_deployment()
     body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
     started = time.perf_counter()
-    response_payload = _post_generation_with_retry(url, body, bearer_token, timeout)
+    response_payload = _post_generation_with_retry(
+        url,
+        body,
+        resolved_token,
+        resolved_key,
+        token_provider,
+        timeout,
+    )
 
     elapsed_seconds = round(time.perf_counter() - started, 3)
     result = save_generated_image(response_payload, output_dir, f"generated_{time.strftime('%Y%m%d_%H%M%S')}")
@@ -135,16 +165,17 @@ def edit_image(
     reference_image_path: Path,
     additional_reference_paths: list[Path] | None = None,
     output_dir: Path,
-    bearer_token: str,
+    bearer_token: str | None = None,
+    api_key: str | None = None,
+    token_provider: TokenProvider | None = None,
     endpoint: str | None = None,
-    size: str = "1024x1024",
-    quality: str = "low",
+    size: str = "2048x2048",
+    quality: str = "high",
     input_fidelity: str = "high",
     output_format: str = "png",
     timeout: int = 600,
 ) -> GeneratedImage:
-    if not bearer_token:
-        raise AzureImageGenerationError("Missing Azure OpenAI bearer token.")
+    resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
     if not reference_image_path.exists():
         raise AzureImageGenerationError(f"Reference image does not exist: {reference_image_path}")
     reference_image_paths = [reference_image_path, *(additional_reference_paths or [])]
@@ -168,9 +199,19 @@ def edit_image(
         or default_edit_endpoint()
     )
     url = to_edit_endpoint(raw_url)
+    if "/openai/v1/images/" in url:
+        request_payload["model"] = _image_deployment()
     content_type, body = build_multipart_body(request_payload, reference_image_paths)
     started = time.perf_counter()
-    response_payload = _post_multipart_with_retry(url, body, content_type, bearer_token, timeout)
+    response_payload = _post_multipart_with_retry(
+        url,
+        body,
+        content_type,
+        resolved_token,
+        resolved_key,
+        token_provider,
+        timeout,
+    )
 
     elapsed_seconds = round(time.perf_counter() - started, 3)
     result = save_generated_image(response_payload, output_dir, f"edited_{time.strftime('%Y%m%d_%H%M%S')}")
@@ -202,14 +243,62 @@ def edit_image(
     )
 
 
-def _post_generation_with_retry(url: str, body: bytes, bearer_token: str, timeout: int) -> dict[str, Any]:
+def _resolve_credentials(
+    bearer_token: str | None,
+    api_key: str | None,
+    token_provider: TokenProvider | None,
+) -> tuple[str, str]:
+    resolved_token = bearer_token or os.environ.get("AZURE_OPENAI_BEARER_TOKEN", "")
+    resolved_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY", "")
+    if not token_provider and not resolved_token and not resolved_key:
+        raise AzureImageGenerationError(
+            "Missing Azure OpenAI credentials. Configure Managed Identity, "
+            "AZURE_OPENAI_BEARER_TOKEN, or AZURE_OPENAI_API_KEY."
+        )
+    return resolved_token, resolved_key
+
+
+def _image_deployment() -> str:
+    deployment = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "").strip()
+    if not deployment:
+        raise AzureImageGenerationError(
+            "AZURE_OPENAI_IMAGE_DEPLOYMENT is required for the Azure OpenAI v1 image endpoint."
+        )
+    return deployment
+
+
+def _auth_headers(
+    bearer_token: str,
+    api_key: str,
+    token_provider: TokenProvider | None,
+) -> dict[str, str]:
+    if token_provider:
+        try:
+            bearer_token = token_provider()
+        except Exception as exc:
+            raise AzureImageGenerationError(f"Azure OpenAI authentication refresh failed: {exc}") from exc
+        if not bearer_token:
+            raise AzureImageGenerationError("Azure OpenAI token provider returned an empty token.")
+    if bearer_token:
+        return {"Authorization": f"Bearer {bearer_token}"}
+    return {"api-key": api_key}
+
+
+def _post_generation_with_retry(
+    url: str,
+    body: bytes,
+    bearer_token: str,
+    api_key: str,
+    token_provider: TokenProvider | None,
+    timeout: int,
+) -> dict[str, Any]:
     def make_request() -> urllib.request.Request:
         return urllib.request.Request(
             url,
             data=body,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {bearer_token}",
+                **_auth_headers(bearer_token, api_key, token_provider),
             },
             method="POST",
         )
@@ -258,6 +347,8 @@ def _post_multipart_with_retry(
     body: bytes,
     content_type: str,
     bearer_token: str,
+    api_key: str,
+    token_provider: TokenProvider | None,
     timeout: int,
 ) -> dict[str, Any]:
     def make_request() -> urllib.request.Request:
@@ -266,7 +357,7 @@ def _post_multipart_with_retry(
             data=body,
             headers={
                 "Content-Type": content_type,
-                "Authorization": f"Bearer {bearer_token}",
+                **_auth_headers(bearer_token, api_key, token_provider),
             },
             method="POST",
         )

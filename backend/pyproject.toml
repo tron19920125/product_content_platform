@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Local-first product content production and QA platform"
 requires-python = ">=3.11"
 dependencies = [
+  "azure-identity>=1.25,<2",
   "fastapi>=0.115,<1",
   "pillow>=11,<13",
   "pydantic>=2.8,<3",

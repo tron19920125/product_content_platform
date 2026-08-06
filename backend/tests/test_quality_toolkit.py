@@ -59,10 +59,10 @@ class ProductQualityToolkitTest(unittest.TestCase):
     def test_azure_mode_connects_real_ocr_plan_and_multimodal_seams(self) -> None:
         toolkit = ProductQualityToolkit(self.workspace_root, mode="azure")
         toolkit._create_review_plan = lambda *args, **kwargs: _Payload({"source": "llm", "requirements": []})
-        toolkit._read_image_text = lambda path: [
+        toolkit._read_image_text = lambda path, **kwargs: [
             toolkit._ocr_line(text="智能护理 容量12kg", confidence=.99, bbox=(.1, .1, .5, .3))
         ]
-        toolkit._review_image_with_llm = lambda evidence: _Payload(
+        toolkit._review_image_with_llm = lambda evidence, **kwargs: _Payload(
             {"status": "pass", "issues": [], "score_breakdown": {"text_accuracy": 100}}
         )
 

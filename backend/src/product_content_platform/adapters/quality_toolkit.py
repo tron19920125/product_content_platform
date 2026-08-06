@@ -18,6 +18,7 @@ class ProductQualityToolkit:
         from product_content_platform.quality.review_planner import create_review_plan, fallback_review_plan
         from product_content_platform.quality.text_review import OcrLine, TextReviewSpec, review_text_ocr
         from product_content_platform.quality.visual_review import review_edit_visuals
+        from product_content_platform.integrations.azure_credentials import token_provider_from_env
 
         self.mode = mode
         self._compose_repair_prompt = compose_repair_prompt
@@ -32,6 +33,7 @@ class ProductQualityToolkit:
         self._review_text_ocr = review_text_ocr
         self._fallback_review_plan = fallback_review_plan
         self._review_edit_visuals = review_edit_visuals
+        self._token_provider = token_provider_from_env() if mode == "azure" else None
 
     def review_plan(self, prompt: str, reference_path: Path | None = None) -> dict[str, Any]:
         if self.mode == "azure":
@@ -39,6 +41,7 @@ class ProductQualityToolkit:
                 prompt,
                 mode="generate",
                 product_reference_image_path=str(reference_path or ""),
+                token_provider=self._token_provider,
             ).to_dict()
         return self._fallback_review_plan(prompt, mode="generate").to_dict()
 
@@ -105,8 +108,12 @@ class ProductQualityToolkit:
                 "llm_review": {},
             }
 
-        generated_lines = self._read_image_text(output_path)
-        reference_lines = self._read_image_text(reference_path) if reference_path else []
+        generated_lines = self._read_image_text(output_path, token_provider=self._token_provider)
+        reference_lines = (
+            self._read_image_text(reference_path, token_provider=self._token_provider)
+            if reference_path
+            else []
+        )
         text_review = self._review_text_ocr(
             generated_lines,
             self._text_spec(
@@ -130,7 +137,8 @@ class ProductQualityToolkit:
                 visual_review=visual_review,
                 generation=generation,
                 review_plan=review_plan,
-            )
+            ),
+            token_provider=self._token_provider,
         ).to_dict()
         return {
             "provider": "azure-ai-vision+azure-openai",
