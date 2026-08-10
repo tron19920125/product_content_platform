@@ -572,10 +572,21 @@ class ProductionApplication:
         jobs = [row["job"] for row in snapshot["pages"] if row["job"] is not None]
         source_recipe = self._get_recipe(jobs[0].recipe_id, published_required=True)
         decisions = [row["decision"].candidate_id for row in snapshot["pages"]]
+        selected_candidates = [
+            candidate
+            for candidate_id in decisions
+            if (candidate := self._repository.get_candidate(candidate_id)) is not None
+        ]
+        runtime_models = {
+            str((candidate.metadata.get("generator") or {}).get("provider") or "").strip()
+            for candidate in selected_candidates
+        }
+        runtime_models.discard("")
+        runtime_model = next(iter(runtime_models)) if len(runtime_models) == 1 else source_recipe.model
         recipe = Recipe(
             id=str(uuid4()), name=name.strip() or f"{project.profile.category} · {project.name} 配方",
             status=PublishStatus.DRAFT, prompt_version_id=source_recipe.prompt_version_id,
-            model=source_recipe.model,
+            model=runtime_model,
             model_params={
                 **source_recipe.model_params,
                 "example_project_id": project_id,
@@ -810,6 +821,7 @@ class ProductionApplication:
             files[f"{page_dir}/final.png"] = self._engine.resolve(candidate.composed_path)
             files[f"{page_dir}/base.png"] = self._engine.resolve(candidate.base_path)
             files[f"{page_dir}/text_layer.png"] = self._engine.resolve(candidate.text_layer_path)
+            layer_files = ["base.png", "text_layer.png", "final.png"]
             generator = candidate.metadata.get("generator") or {}
             for kind in ("background", "product_layer"):
                 file_name = str(generator.get(f"{kind}_file") or "")
@@ -817,11 +829,18 @@ class ProductionApplication:
                     extra_path = self._engine.resolve(str(Path(candidate.base_path).parent / file_name))
                     if extra_path.exists():
                         files[f"{page_dir}/{file_name}"] = extra_path
+                        layer_files.insert(0, file_name)
             documents[f"{page_dir}/qa.json"] = self._qa_payload(qa)
             manifest_pages.append({
                 "page_id": page.id, "order": page.order, "page_type": page.page_type.value,
                 "title": page.title, "candidate_id": candidate.id, "score": candidate.score,
                 "qa_status": qa.status.value, "prompt": candidate.prompt,
+                "recipe_id": candidate.metadata.get("recipe_id", ""),
+                "prompt_version_id": candidate.metadata.get("prompt_version_id", ""),
+                "model": candidate.metadata.get("model", ""),
+                "generator_provider": generator.get("provider", ""),
+                "effective_generation": candidate.metadata.get("effective_generation", {}),
+                "layer_files": layer_files,
                 "override_reason": decision.override_reason,
             })
         return files, documents, manifest_pages

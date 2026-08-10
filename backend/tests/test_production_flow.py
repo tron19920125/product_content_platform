@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 import zipfile
@@ -124,6 +125,15 @@ class ProductionFlowTest(unittest.TestCase):
             self.assertIn("pages/01_hero/base.png", names)
             self.assertIn("pages/01_hero/text_layer.png", names)
             self.assertIn("pages/01_hero/qa.json", names)
+            summary = json.loads(delivery.read("project_summary.json"))
+            first_page = summary["pages"][0]
+            self.assertEqual("commerce-detail-v1", first_page["recipe_id"])
+            self.assertEqual("local-preview", first_page["generator_provider"])
+            self.assertEqual("2048x2048", first_page["effective_generation"]["size"])
+            self.assertEqual(
+                ["base.png", "text_layer.png", "final.png"],
+                first_page["layer_files"],
+            )
 
     def test_lifestyle_demo_recipe_runs_custom_template_with_quality_override(self) -> None:
         project_id = self._create_planned_project()
@@ -383,6 +393,27 @@ class ProductionFlowTest(unittest.TestCase):
         )
         self.assertEqual(201, recipe.status_code, recipe.text)
         self.assertEqual("draft", recipe.json()["status"])
+        published_recipe = self.client.post(f"/api/recipes/{recipe.json()['id']}/publish")
+        self.assertEqual(200, published_recipe.status_code, published_recipe.text)
+        clone_plan = self.client.get(f"/api/projects/{clone.json()['id']}/plan").json()
+        confirmed_clone = self.client.put(
+            f"/api/projects/{clone.json()['id']}/plan",
+            json={"items": clone_plan["items"], "confirmed": True},
+        )
+        self.assertEqual(200, confirmed_clone.status_code, confirmed_clone.text)
+        clone_started = self.client.post(
+            f"/api/projects/{clone.json()['id']}/production/start",
+            json={"recipe_id": published_recipe.json()["id"], "force": False},
+        )
+        self.assertEqual(202, clone_started.status_code, clone_started.text)
+        clone_snapshot = self.client.get(
+            f"/api/projects/{clone.json()['id']}/production"
+        ).json()
+        self.assertTrue(all(
+            row["job"]["status"] == "completed"
+            and row["job"]["recipe_id"] == published_recipe.json()["id"]
+            for row in clone_snapshot["pages"]
+        ))
 
         page_id = snapshot["pages"][0]["page"]["id"]
         regenerated = self.client.post(
