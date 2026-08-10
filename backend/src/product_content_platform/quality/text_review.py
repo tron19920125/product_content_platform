@@ -75,6 +75,11 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", "", normalized).casefold()
 
 
+def normalize_required_text(value: str) -> str:
+    """Normalize OCR copy matching while ignoring punctuation OCR commonly drops."""
+    return re.sub(r"[^\w]+", "", normalize_text(value), flags=re.UNICODE)
+
+
 def normalize_number(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     return re.sub(r"\s+", "", normalized)
@@ -123,7 +128,9 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
     issues: list[dict[str, Any]] = []
 
     for expected in spec.required_text:
-        if normalize_text(expected) not in normalized_text:
+        normalized_expected = normalize_required_text(expected)
+        normalized_required_source = normalize_required_text(extracted_text)
+        if normalized_expected not in normalized_required_source:
             issues.append(
                 {
                     "code": "missing_required_text",
@@ -133,7 +140,10 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
                 }
             )
         elif spec.expected_text_region is not None:
-            matching_lines = [line for line in lines if normalize_text(expected) in normalize_text(line.text)]
+            matching_lines = [
+                line for line in lines
+                if normalized_expected in normalize_required_text(line.text)
+            ]
             for line in matching_lines:
                 if line.bbox is None:
                     issues.append(

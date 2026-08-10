@@ -240,9 +240,8 @@ td small { color: #89928c; margin-top: 4px; }
 .page-job-state.failed > span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: white; background: #b84d43; font-size: 11px; font-weight: 800; }
 .page-job-state.failed strong { color: #953b33; }
 .queue-dot { width: 10px; height: 10px; margin: 4px; border-radius: 50%; background: #d8a746; box-shadow: 0 0 0 4px #d8a74622; }
-.indeterminate-track { position: absolute; inset: auto 0 0; height: 3px; overflow: hidden; background: #dce9f4; }
-.indeterminate-track i { position: absolute; width: 34%; height: 100%; background: linear-gradient(90deg, transparent, #3f80b8, transparent); animation: progress-slide 1.25s ease-in-out infinite; }
-@keyframes progress-slide { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
+.page-job-progress { position: absolute; inset: auto 0 0; height: 4px; overflow: hidden; background: #dce9f4; }
+.page-job-progress span { display: block; height: 100%; border-radius: 0 99px 99px 0; background: linear-gradient(90deg, #3979b1, #55a177); transition: width .35s ease; }
 .ghost-button.mini { padding: 5px 8px; font-size: 10px; }
 .candidate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .candidate-card { overflow: hidden; border: 1px solid #e0e6e1; border-radius: 12px; background: #fbfcfb; transition: .18s ease; }
@@ -252,6 +251,9 @@ td small { color: #89928c; margin-top: 4px; }
 .candidate-image > span { position: absolute; left: 10px; top: 10px; padding: 5px 8px; border-radius: 99px; color: white; background: #12251dcc; font-size: 10px; }
 .qa-overlay-toggle { position: absolute; right: 10px; top: 10px; padding: 5px 8px; border: 1px solid #ffffff55; border-radius: 99px; color: white; background: #12251dcc; font-size: 10px; }
 .qa-overlay-toggle:hover, .qa-overlay-toggle.active { background: #315b44; }
+.qa-technical-state { display: grid; gap: 3px; margin: 10px 0; }
+.qa-technical-state b { font-size: 11px; }
+.qa-technical-state span { line-height: 1.5; }
 .qa-box { position: absolute; pointer-events: none; border: 1px solid; }
 .qa-box.safe { border-color: #d4ff52aa; border-style: dashed; }
 .qa-box.subject { border-color: #55c894cc; }

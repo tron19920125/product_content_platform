@@ -500,11 +500,15 @@ class ProductionApplication:
             for asset in self._platform.list_assets(project_id)
             if asset.mime_type.startswith("image/")
         ]
+        recomposition_started_at = now()
         job = GenerationJob(
             id=str(uuid4()), project_id=project_id, page_id=page_id, recipe_id=recipe.id,
             status=JobStatus.RUNNING, attempt=1,
             trace={
                 "stage": "recomposing",
+                "stage_label": "重新排版并执行质检",
+                "progress": 10,
+                "started_at": recomposition_started_at.isoformat(),
                 "plan_version": plan.version,
                 "source_candidate_id": source.id,
                 "reference_count": len(references),
@@ -531,7 +535,14 @@ class ProductionApplication:
         )
         completed = replace(
             job, status=JobStatus.COMPLETED,
-            trace={**job.trace, "stage": "completed", "candidate_count": 1}, updated_at=now(),
+            trace={
+                **job.trace,
+                "stage": "completed",
+                "stage_label": "重新排版与质检已完成",
+                "progress": 100,
+                "candidate_count": 1,
+                "completed_at": now().isoformat(),
+            }, updated_at=now(),
         )
         self._repository.save_job_results(completed, [candidate], [qa])
         self._invalidate_decisions(project_id, "文字重新排版后需要重新确认", page_ids={page_id})
@@ -682,22 +693,57 @@ class ProductionApplication:
         prompt = self._get_prompt(recipe.prompt_version_id)
         current = job
         while current.attempt < current.max_attempts:
+            attempt_started_at = now()
             current = replace(
                 current, status=JobStatus.RUNNING, attempt=current.attempt + 1, error="",
                 trace={
                     **current.trace,
-                    "stage": "generating",
-                    "started_at": now().isoformat(),
+                    "stage": "preparing",
+                    "progress": 1,
+                    "stage_label": "准备生产任务",
+                    "started_at": current.trace.get("started_at") or attempt_started_at.isoformat(),
+                    "attempt_started_at": attempt_started_at.isoformat(),
                     "reference_count": len(reference_paths),
                     "reference_files": [path.name for path in reference_paths],
                 },
-                updated_at=now(),
+                updated_at=attempt_started_at,
             )
             self._repository.update_job(current)
+
+            def report_progress(stage: str, percent: int, details: dict[str, Any]) -> None:
+                nonlocal current
+                changed_at = now()
+                history = list(current.trace.get("stage_history") or [])
+                if not history or history[-1].get("stage") != stage:
+                    history.append({
+                        "stage": stage,
+                        "progress": max(0, min(100, int(percent))),
+                        "started_at": changed_at.isoformat(),
+                    })
+                stage_details = {
+                    key: value for key, value in details.items()
+                    if value is not None and key not in {"stage", "progress", "started_at"}
+                }
+                current = replace(
+                    current,
+                    trace={
+                        **current.trace,
+                        **stage_details,
+                        "stage": stage,
+                        "progress": max(0, min(100, int(percent))),
+                        "stage_label": str(stage_details.get("label") or stage),
+                        "stage_started_at": changed_at.isoformat(),
+                        "stage_history": history,
+                    },
+                    updated_at=changed_at,
+                )
+                self._repository.update_job(current)
+
             try:
                 produced = self._engine.execute(
                     project=project, page=page, recipe=recipe, prompt_version=prompt,
                     reference_paths=reference_paths,
+                    progress=report_progress,
                 )
                 candidates: list[Candidate] = []
                 qa_results: list[QAResult] = []
@@ -723,7 +769,14 @@ class ProductionApplication:
                     )
                 completed = replace(
                     current, status=JobStatus.COMPLETED,
-                    trace={**current.trace, "stage": "completed", "candidate_count": len(candidates), "completed_at": now().isoformat()},
+                    trace={
+                        **current.trace,
+                        "stage": "completed",
+                        "stage_label": "生成与质检已完成",
+                        "progress": 100,
+                        "candidate_count": len(candidates),
+                        "completed_at": now().isoformat(),
+                    },
                     updated_at=now(),
                 )
                 self._repository.save_job_results(completed, candidates, qa_results)
@@ -731,7 +784,12 @@ class ProductionApplication:
             except Exception as exc:
                 current = replace(
                     current, status=JobStatus.FAILED, error=str(exc),
-                    trace={**current.trace, "stage": "failed", "failed_at": now().isoformat()}, updated_at=now(),
+                    trace={
+                        **current.trace,
+                        "stage": "failed",
+                        "stage_label": "生产失败",
+                        "failed_at": now().isoformat(),
+                    }, updated_at=now(),
                 )
                 self._repository.update_job(current)
                 if current.attempt >= current.max_attempts:

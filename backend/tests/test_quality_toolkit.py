@@ -110,6 +110,21 @@ class ProductQualityToolkitTest(unittest.TestCase):
         self.assertEqual([], result.extracted_numbers)
         self.assertEqual("expected_text_region", result.checked["number_scope"])
 
+    def test_required_copy_tolerates_ocr_line_break_and_dropped_punctuation(self) -> None:
+        result = review_text_ocr(
+            [
+                OcrLine(text="静谧洗护", confidence=.99, bbox=(.08, .08, .35, .15)),
+                OcrLine(text="自成风景", confidence=.99, bbox=(.08, .16, .35, .23)),
+            ],
+            TextReviewSpec(
+                required_text=["静谧洗护，自成风景"],
+                expected_text_region=(.05, .05, .50, .30),
+            ),
+        )
+
+        self.assertEqual("pass", result.status)
+        self.assertEqual([], result.issues)
+
     def test_number_allowlist_still_rejects_unapproved_copy_number_inside_region(self) -> None:
         result = review_text_ocr(
             [OcrLine(text="专业呵护 36", confidence=.99, bbox=(.08, .17, .35, .21))],

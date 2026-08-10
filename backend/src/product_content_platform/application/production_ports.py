@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from product_content_platform.domain import (
     Candidate,
@@ -59,6 +59,7 @@ class PageProductionEngine(Protocol):
         recipe: Recipe,
         prompt_version: PromptVersion,
         reference_paths: list[Path],
+        progress: Callable[[str, int, dict[str, Any]], None] | None = None,
     ) -> list[ProducedCandidate]: ...
 
     def recompose(

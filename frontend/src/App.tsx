@@ -396,6 +396,9 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   const activeJobs = pages.filter((row) => row.job && ["queued", "running"].includes(row.job.status)).length;
   const failedJobs = pages.filter((row) => row.job?.status === "failed").length;
   const completedJobs = pages.filter((row) => row.job?.status === "completed").length;
+  const overallProgress = pages.length
+    ? Math.round(pages.reduce((total, row) => total + jobProgress(row.job), 0) / pages.length)
+    : 0;
   const isProductionActive = activeJobs > 0;
   const canExport = snapshot?.ready_for_export ?? false;
   const immediateActionLabel = productionActionLabel(busy);
@@ -431,7 +434,7 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
       ? <div className="notice success reference-binding" role="status"><strong>已绑定 {referenceAssets.length} 张参考图</strong><span>本次生产会输入：{referenceAssets.map((asset) => asset.file_name).join("、")}</span></div>
       : <div className="notice warning reference-binding" role="status"><strong>未检测到已上传并绑定的参考图</strong><span>本次会使用纯文本生图。请先在上方“参考素材”区域选择图片并点击“上传并绑定”。</span></div>}
     {immediateActionLabel && <OperationFeedback label={immediateActionLabel} detail="请求正在提交，请勿重复点击。" compact />}
-    {snapshot && hasJobs && <ProductionProgress total={pages.length} completed={completedJobs} failed={failedJobs} active={activeJobs} />}
+    {snapshot && hasJobs && <ProductionProgress total={pages.length} completed={completedJobs} failed={failedJobs} active={activeJobs} percent={overallProgress} />}
     {error && <div className="notice error">{error}</div>}
     {message && <div className="notice success">{message}</div>}
     {downloadUrl && <div className="notice success">正式结果已生成：<a href={downloadUrl}>下载 ZIP 交付包</a></div>}
@@ -439,10 +442,9 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   </section>;
 }
 
-function ProductionProgress({ total, completed, failed, active }: { total: number; completed: number; failed: number; active: number }) {
+function ProductionProgress({ total, completed, failed, active, percent }: { total: number; completed: number; failed: number; active: number; percent: number }) {
   const processed = completed + failed;
   const queued = Math.max(0, total - processed - active);
-  const percent = total ? Math.round(processed / total * 100) : 0;
   const title = active > 0 ? "生产与质检正在进行" : failed > 0 ? "生产已结束，存在失败页面" : "图片生产已完成";
   return <div className={`production-progress ${failed > 0 && active === 0 ? "has-error" : ""}`} role="status" aria-live="polite">
     <div className="progress-heading"><div><span className={active > 0 ? "spinner" : "progress-status-dot"} aria-hidden="true" /><div><strong>{title}</strong><small>进度按页面计算，页面内部还会依次完成生图、OCR 与 LLM 质检。</small></div></div><b>{percent}%</b></div>
@@ -453,6 +455,7 @@ function ProductionProgress({ total, completed, failed, active }: { total: numbe
 
 function PageJobState({ job, candidates }: { job: ProductionSnapshot["pages"][number]["job"]; candidates: ProductionSnapshot["pages"][number]["candidates"] }) {
   const startedAt = typeof job?.trace.started_at === "string" ? job.trace.started_at : "";
+  const completedAt = typeof job?.trace.completed_at === "string" ? job.trace.completed_at : "";
   const candidateReferenceCount = candidates.some((candidate) => {
     const generator = candidate.metadata?.generator as Record<string, unknown> | undefined;
     return typeof generator?.source_reference === "string" && generator.source_reference.length > 0;
@@ -467,13 +470,20 @@ function PageJobState({ job, candidates }: { job: ProductionSnapshot["pages"][nu
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [job?.status, startedAt]);
+  const elapsedUntil = completedAt ? Date.parse(completedAt) : clock;
   const elapsedSeconds = startedAt
-    ? Math.max(0, Math.floor((clock - Date.parse(startedAt)) / 1000))
+    ? Math.max(0, Math.floor((elapsedUntil - Date.parse(startedAt)) / 1000))
     : 0;
   if (!job) return null;
-  if (job.status === "running") return <div className="page-job-state running" role="status"><span className="spinner" aria-hidden="true" /><div><strong>正在生成图片并执行质检</strong><small>{referenceState} · 第 {job.attempt}/{job.max_attempts} 次尝试 · 已运行 {formatElapsed(elapsedSeconds)}，正在等待 Azure 返回。单页高质量生图可能需要数分钟。</small></div><div className="indeterminate-track"><i /></div></div>;
+  const progress = jobProgress(job);
+  const stage = typeof job.trace.stage === "string" ? job.trace.stage : "running";
+  const stageLabel = typeof job.trace.stage_label === "string" ? job.trace.stage_label : jobStageLabel(stage);
+  const candidateIndex = typeof job.trace.candidate_index === "number" ? job.trace.candidate_index : 0;
+  const candidateTotal = typeof job.trace.candidate_count === "number" ? job.trace.candidate_count : 0;
+  const candidateState = candidateIndex && candidateTotal ? ` · 候选 ${candidateIndex}/${candidateTotal}` : "";
+  if (job.status === "running") return <div className="page-job-state running" role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{stageLabel}</strong><small>{referenceState}{candidateState} · 第 {job.attempt}/{job.max_attempts} 次尝试 · 已运行 {formatElapsed(elapsedSeconds)} · {progress}%</small></div><div className="page-job-progress" role="progressbar" aria-label={stageLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div></div>;
   if (job.status === "queued") return <div className="page-job-state queued" role="status"><span className="queue-dot" aria-hidden="true" /><div><strong>等待处理</strong><small>{referenceState} · 前面的页面完成后会自动开始。</small></div></div>;
-  if (job.status === "completed") return <div className="page-job-state completed"><span className="progress-status-dot" aria-hidden="true" /><div><strong>生成与质检已完成</strong><small>{referenceState} · 已生成 {candidateCount} 个候选，请选择并确认最终图片。</small></div></div>;
+  if (job.status === "completed") return <div className="page-job-state completed"><span className="progress-status-dot" aria-hidden="true" /><div><strong>生成与质检已完成</strong><small>{referenceState} · 用时 {formatElapsed(elapsedSeconds)} · 已生成 {candidateCount} 个候选，请选择并确认最终图片。</small></div></div>;
   return <div className="page-job-state failed"><span aria-hidden="true">!</span><div><strong>本页生产失败</strong><small>可查看下方错误详情，修复后点击“重试生产”。</small></div></div>;
 }
 
@@ -483,10 +493,36 @@ function formatElapsed(totalSeconds: number) {
   return minutes > 0 ? `${minutes}分${String(seconds).padStart(2, "0")}秒` : `${seconds}秒`;
 }
 
+function jobProgress(job: ProductionSnapshot["pages"][number]["job"]) {
+  if (!job) return 0;
+  if (["completed", "failed"].includes(job.status)) return 100;
+  const value = job.trace.progress;
+  return typeof value === "number" ? Math.max(0, Math.min(100, Math.round(value))) : job.status === "running" ? 5 : 0;
+}
+
+function jobStageLabel(stage: string) {
+  return ({
+    preparing: "准备 Prompt、模板与参考素材",
+    generating_background: "Azure 正在生成无商品场景底图",
+    compositing_product: "合成参考商品图层",
+    compositing_text: "执行确定性文字排版",
+    checking_base_text: "OCR 检查底图留白区",
+    checking_reference: "核对参考商品与布局",
+    ocr_output: "OCR 校验最终营销文案",
+    ocr_reference: "OCR 读取参考商品面板",
+    llm_review: "LLM 审查视觉质量与参考一致性",
+    candidate_completed: "候选图片与 QA 已完成",
+    ranking: "汇总 QA 证据并排序候选",
+    finalizing: "保存候选、图层和 QA 结果",
+  } as Record<string, string>)[stage] ?? "正在生成图片并执行质检";
+}
+
 function CandidateCard({ candidate, referenceUrl, selected, onReviewed }: { candidate: ProductionSnapshot["pages"][number]["candidates"][number]; referenceUrl: string; selected: boolean; onReviewed: () => Promise<void> }) {
   const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [showQaOverlay, setShowQaOverlay] = useState(false);
   const blocking = candidate.qa?.issues.some((issue) => ["P0", "P1"].includes(issue.severity));
   const layout = candidate.qa?.evidence?.layout as { canvas?: number[]; safe_area?: number[]; text_bbox?: number[]; subject_bbox?: number[] } | undefined;
+  const technicalIssues = candidate.qa?.issues.filter((issue) => issue.code.includes("unavailable")) ?? [];
+  const qualityIssues = candidate.qa?.issues.filter((issue) => !issue.code.includes("unavailable")) ?? [];
   const overlay = (bbox?: number[]) => { const canvas = layout?.canvas ?? [900, 1200]; return bbox?.length === 4 ? { left: `${bbox[0] / canvas[0] * 100}%`, top: `${bbox[1] / canvas[1] * 100}%`, width: `${(bbox[2] - bbox[0]) / canvas[0] * 100}%`, height: `${(bbox[3] - bbox[1]) / canvas[1] * 100}%` } : undefined; };
   async function review(decision: "approved" | "rejected") { setBusy(true); setError(""); try { await api.reviewCandidate(candidate.id, decision, reason); await onReviewed(); } catch (value) { setError(value instanceof Error ? value.message : "审核失败"); } finally { setBusy(false); } }
   return <div className={`candidate-card ${selected ? "selected" : ""}`}>
@@ -503,7 +539,8 @@ function CandidateCard({ candidate, referenceUrl, selected, onReviewed }: { cand
     </div>
     <div className="candidate-summary">
       <div><strong>{candidate.score} 分</strong><StatusBadge status={candidate.qa?.status ?? "review"} /></div>
-      {candidate.qa?.issues.length ? <ul className="qa-issue-list">{candidate.qa.issues.map((issue, index) => <li key={`${issue.code}-${index}`} className={`severity-${issue.severity.toLowerCase()}`}><b>{issue.severity}</b><span>{issue.message}</span></li>)}</ul> : <p>未发现阻塞问题</p>}
+      {technicalIssues.length > 0 && <div className="notice warning qa-technical-state"><b>自动审查服务降级</b><span>{technicalIssues.map((issue) => issue.message).join("；")}</span></div>}
+      {qualityIssues.length ? <ul className="qa-issue-list">{qualityIssues.map((issue, index) => <li key={`${issue.code}-${index}`} className={`severity-${issue.severity.toLowerCase()}`}><b>{issue.severity}</b><span>{issue.message}</span></li>)}</ul> : technicalIssues.length ? <p>未发现已证实的图片质量问题，当前需要人工确认。</p> : <p>未发现阻塞问题</p>}
       <details className="qa-severity-legend"><summary>P0 / P1 / P2 / P3 是什么？</summary><p><b>P0</b> 系统硬性阻断；<b>P1</b> 重大问题，会阻止直接确认；<b>P2</b> 需要关注或人工确认；<b>P3</b> 提示或轻微建议。</p></details>
       {candidate.qa?.repair_applied && <small>已执行自动排版或一轮图片修复</small>}
       <details><summary>查看分层文件与质检证据</summary>

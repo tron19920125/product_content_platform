@@ -81,7 +81,13 @@ class LocalProductionEngine:
         recipe: Recipe,
         prompt_version: PromptVersion,
         reference_paths: list[Path],
+        progress: Callable[[str, int, dict[str, Any]], None] | None = None,
     ) -> list[ProducedCandidate]:
+        def report(stage: str, percent: int, **details: Any) -> None:
+            if progress:
+                progress(stage, max(0, min(100, percent)), details)
+
+        report("preparing", 5, label="准备 Prompt、模板与参考素材")
         template = self._layout_spec(page.template_id)
         reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
         max_auto_regenerations = max(0, min(1, int(recipe.model_params.get("max_auto_regenerations", 0))))
@@ -97,11 +103,23 @@ class LocalProductionEngine:
         generation_quality = validate_image_quality(str(recipe.model_params.get("quality") or "high"))
         run_root = self._root / project.id / page.id / str(uuid4())
         produced: list[dict[str, Any]] = []
-        for index in range(1, max(1, min(3, recipe.candidate_count)) + 1):
+        total_candidates = max(1, min(3, recipe.candidate_count))
+        candidate_span = 88 / total_candidates
+        for index in range(1, total_candidates + 1):
+            candidate_start = 5 + (index - 1) * candidate_span
+
+            def candidate_percent(fraction: float) -> int:
+                return round(candidate_start + candidate_span * fraction)
+
             candidate_root = run_root / f"candidate_{index}"
             base_path = candidate_root / "base.png"
             text_path = candidate_root / "text_layer.png"
             composed_path = candidate_root / "composed.png"
+            report(
+                "generating_background", candidate_percent(.08),
+                label="Azure 正在生成无商品场景底图",
+                candidate_index=index, candidate_count=total_candidates,
+            )
             generator_meta = self._generator.generate(
                 prompt=generation_prompt,
                 profile=project.profile,
@@ -112,6 +130,12 @@ class LocalProductionEngine:
                 quality=generation_quality,
                 layout=template,
                 reference_strategy=reference_strategy,
+            )
+            report(
+                "compositing_product", candidate_percent(.58),
+                label="合成参考商品图层",
+                candidate_index=index, candidate_count=total_candidates,
+                image_elapsed_seconds=generator_meta.get("elapsed_seconds"),
             )
             with Image.open(base_path) as generated_image:
                 canvas_size = generated_image.size
@@ -124,6 +148,11 @@ class LocalProductionEngine:
                 "product_anchor_box": list(product_anchor_bbox),
                 "allowed_product_extent_box": list(allowed_product_bbox),
             }
+            report(
+                "compositing_text", candidate_percent(.66),
+                label="执行确定性文字排版",
+                candidate_index=index, candidate_count=total_candidates,
+            )
             compose_meta = self._compose(
                 base_path=base_path,
                 text_path=text_path,
@@ -134,6 +163,19 @@ class LocalProductionEngine:
             qa = self._inspect(
                 project.profile, page, reference_paths, generator_meta, compose_meta,
                 index, base_path, composed_path, review_prompt, review_plan,
+                progress=lambda stage, details: report(
+                    stage,
+                    candidate_percent({
+                        "checking_base_text": .72,
+                        "checking_reference": .78,
+                        "ocr_output": .82,
+                        "ocr_reference": .86,
+                        "llm_review": .90,
+                    }.get(stage, .74)),
+                    candidate_index=index,
+                    candidate_count=total_candidates,
+                    **details,
+                ),
             )
             repair_prompt = ""
             regeneration_fixes = "；".join(
@@ -194,6 +236,11 @@ class LocalProductionEngine:
                 qa = self._inspect(
                     project.profile, page, reference_paths, generator_meta, compose_meta,
                     index, base_path, composed_path, review_prompt, review_plan,
+                    progress=lambda stage, details: report(
+                        stage, candidate_percent(.92),
+                        candidate_index=index, candidate_count=total_candidates,
+                        **{**details, "label": "复核自动修复结果"},
+                    ),
                 )
             produced.append(
                 {
@@ -229,8 +276,14 @@ class LocalProductionEngine:
                     },
                 }
             )
+            report(
+                "candidate_completed", candidate_percent(.96),
+                label=f"候选 {index}/{total_candidates} 已完成",
+                candidate_index=index, candidate_count=total_candidates,
+            )
 
         if self._quality_toolkit:
+            report("ranking", 96, label="汇总 QA 证据并排序候选")
             ranked = self._quality_toolkit.rank(produced)
             for item in produced:
                 result = ranked[item["candidate_index"]]
@@ -242,6 +295,7 @@ class LocalProductionEngine:
             ranks = {item["candidate_index"]: rank for rank, item in enumerate(ordered, start=1)}
             for item in produced:
                 item["rank"] = ranks[item["candidate_index"]]
+        report("finalizing", 98, label="保存候选、图层和 QA 结果")
         return [ProducedCandidate(**item) for item in produced]
 
     def recompose(
@@ -420,7 +474,12 @@ class LocalProductionEngine:
         output_path: Path,
         prompt: str,
         review_plan: dict[str, Any],
+        progress: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        def report(stage: str, **details: Any) -> None:
+            if progress:
+                progress(stage, details)
+
         issues: list[dict[str, Any]] = []
         safe = tuple(compose_meta["safe_area"])
         rendered = tuple(compose_meta["rendered_text_bbox"])
@@ -473,6 +532,7 @@ class LocalProductionEngine:
                 reserved[2] / canvas_width, reserved[3] / canvas_height,
             )
             if hasattr(self._quality_toolkit, "inspect_reserved_area"):
+                report("checking_base_text", label="OCR 检查底图留白区")
                 base_text_evidence = self._quality_toolkit.inspect_reserved_area(base_path, reserved_bbox)
                 unexpected_lines = base_text_evidence.get("unexpected_lines", [])
                 if unexpected_lines:
@@ -484,6 +544,7 @@ class LocalProductionEngine:
                         "regenerate",
                     ))
             if reference_paths:
+                report("checking_reference", label="核对参考商品与布局")
                 bbox_source = str(generator_meta.get("product_bbox_source") or "")
                 similarity_box = generator_meta.get("product_bbox")
                 if bbox_source == "layered_reference":
@@ -530,6 +591,14 @@ class LocalProductionEngine:
                     body=page.body,
                     bbox=bbox,
                     number_allowlist=copy_number_allowlist,
+                    progress=lambda stage: report(
+                        stage,
+                        label={
+                            "ocr_output": "OCR 校验最终营销文案",
+                            "ocr_reference": "OCR 读取参考商品面板",
+                            "llm_review": "LLM 审查视觉质量与参考一致性",
+                        }.get(stage, "执行质量审查"),
+                    ),
                 )
                 text_review = combined_review.get("text_review", {})
                 llm_review = combined_review.get("llm_review", {})

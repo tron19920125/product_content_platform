@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class ProductQualityToolkit:
@@ -152,9 +152,12 @@ class ProductQualityToolkit:
         body: str,
         bbox: tuple[float, float, float, float],
         number_allowlist: list[str],
+        progress: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Return real OCR and multimodal evidence in Azure mode, deterministic evidence locally."""
         if self.mode != "azure":
+            if progress:
+                progress("ocr_output")
             return {
                 "provider": "text-layer",
                 "ocr_lines": [{"text": "\n".join(value for value in (title, body) if value), "bbox": bbox}],
@@ -168,6 +171,8 @@ class ProductQualityToolkit:
             }
 
         ocr_errors: list[str] = []
+        if progress:
+            progress("ocr_output")
         try:
             generated_lines = self._read_image_text(
                 output_path,
@@ -184,6 +189,8 @@ class ProductQualityToolkit:
             ]
         reference_lines = []
         if reference_path:
+            if progress:
+                progress("ocr_reference")
             try:
                 reference_lines = self._read_image_text(
                     reference_path,
@@ -203,6 +210,8 @@ class ProductQualityToolkit:
         ).to_dict()
         generated_ocr = self._ocr_dicts(generated_lines)
         reference_ocr = self._ocr_dicts(reference_lines)
+        if progress:
+            progress("llm_review")
         try:
             llm_review = self._review_image_with_llm(
                 self._review_evidence(
