@@ -67,7 +67,7 @@ product_content_platform/
 
 ## 本地运行
 
-需要 Python 3.11+、Node.js 和 pnpm。
+需要 Python 3.11+、Node.js 20+ 和 pnpm（可由 Corepack 提供）。
 
 首次安装：
 
@@ -157,3 +157,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Check
 - `docs/AI商品图文内容生产与智能质检平台总体方案.md`
 - `docs/AI商品图文内容生产与智能质检平台IP方案.md`
 - `docs/spec-completion.md`
+- `docs/acceptance-report.md`

@@ -164,6 +164,61 @@ class ProductionEngineTest(unittest.TestCase):
             self.assertEqual("#181F1C", metadata["text_color"])
             self.assertTrue(text.exists())
 
+    def test_text_contrast_samples_rendered_copy_instead_of_the_full_reserved_box(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base.png"
+            image = Image.new("RGB", (2048, 2048), "#101010")
+            # The copy sits on this light wall, while the unused right side of
+            # the wide hero reservation remains dark like a cabinet.
+            ImageDraw.Draw(image).rectangle((0, 0, 900, 700), fill="white")
+            image.save(base)
+            engine = LocalProductionEngine(root / "production", RepairingGenerator(), QualityStub())
+            page = PageItem(
+                id="localized-contrast", order=1, page_type=PageType.HERO,
+                title="高端洗护", body="10kg 大容量", visual_goal="",
+                template_id="hero-center", status=PageStatus.READY,
+            )
+
+            metadata = engine._compose(
+                base_path=base,
+                text_path=root / "text.png",
+                output_path=root / "composed.png",
+                page=page,
+                product_bbox=engine._product_box("hero-center", 2048, 2048),
+            )
+
+            self.assertEqual("#181F1C", metadata["text_color"])
+            self.assertGreaterEqual(metadata["background_luminance"], 200)
+            self.assertLess(metadata["color_sample_box"][2], 900)
+
+    def test_subjective_llm_findings_cannot_become_release_blockers(self) -> None:
+        self.assertEqual("P2", LocalProductionEngine._llm_issue_severity("layout_position", "P1"))
+        self.assertEqual("P2", LocalProductionEngine._llm_issue_severity("visual_quality", "P0"))
+        self.assertEqual("P1", LocalProductionEngine._llm_issue_severity("reference_consistency", "P1"))
+        self.assertEqual("P1", LocalProductionEngine._llm_issue_severity("text_accuracy", "P1"))
+
+    def test_generation_prompt_removes_copy_without_leaving_empty_parentheses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = LocalProductionEngine(Path(directory), RepairingGenerator(), QualityStub())
+            profile = ProductProfile(
+                sku="WM-01", name="高端洗衣机", category="洗衣机", model="TG10EK60",
+            )
+            page = PageItem(
+                id="model-copy", order=1, page_type=PageType.PARAMETERS,
+                title="TG10EK60", body="10kg 大容量", visual_goal="高端洗护空间",
+                template_id="data-grid", status=PageStatus.READY,
+            )
+            body = "为{{product_name}}（{{model}}）制作{{category}}场景，{{visual_goal}}。"
+
+            prompt = engine._bind_generation_prompt(
+                body, profile, page, reference_strategy="layered_product",
+            )
+
+            self.assertNotIn(page.title, prompt)
+            self.assertNotIn(page.body, prompt)
+            self.assertNotIn("（）", prompt)
+
     def test_title_fitting_avoids_two_character_orphan_line(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             engine = LocalProductionEngine(Path(directory), RepairingGenerator(), QualityStub())

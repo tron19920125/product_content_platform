@@ -309,9 +309,6 @@ class LocalProductionEngine:
         reference_paths: list[Path],
     ) -> ProducedCandidate:
         reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
-        generation_prompt = self._bind_generation_prompt(
-            prompt_version.body, project.profile, page, reference_strategy=reference_strategy,
-        )
         review_prompt = self._content_review_prompt(project.profile, page)
         review_plan = self._build_review_plan(
             project.profile, page, reference_paths, reference_strategy=reference_strategy,
@@ -342,7 +339,10 @@ class LocalProductionEngine:
             "base_path": source_candidate.base_path,
             "text_layer_path": self._relative(text_path),
             "composed_path": self._relative(composed_path),
-            "prompt": generation_prompt,
+            # Recomposition never calls the image model. Keep the exact prompt
+            # that created the reused base instead of rebuilding a hypothetical
+            # prompt from the current plan.
+            "prompt": source_candidate.prompt,
             "score": qa["score"],
             "rank": 1,
             "qa_status": qa["status"],
@@ -357,6 +357,16 @@ class LocalProductionEngine:
                 "prompt_version_id": prompt_version.id,
                 "model": recipe.model,
                 "model_params": recipe.model_params,
+                "effective_generation": dict(
+                    source_candidate.metadata.get("effective_generation")
+                    or {
+                        "size": generator_meta.get("requested_size") or generator_meta.get("actual_size") or "",
+                        "quality": generator_meta.get("quality") or "",
+                        "template_id": (generator_meta.get("layout") or {}).get("template_id") or page.template_id,
+                        "reference_strategy": generator_meta.get("reference_strategy") or reference_strategy,
+                        "max_auto_regenerations": int(recipe.model_params.get("max_auto_regenerations", 0)),
+                    }
+                ),
                 "recomposed_from": source_candidate.id,
                 "review_plan": review_plan,
                 "content_review_prompt": review_prompt,
@@ -430,18 +440,26 @@ class LocalProductionEngine:
             title_font.size < requested_title_size or body_font.size < requested_body_size
         )
         x, y = text_box[0], text_box[1]
-        title_color, body_color, color_name = self._text_colors(base, text_box)
         title_text = "\n".join(title_lines)
-        draw.multiline_text((x, y), title_text, font=title_font, fill=title_color, spacing=title_spacing)
         title_bbox = draw.multiline_textbbox((x, y), title_text, font=title_font, spacing=title_spacing)
         body_y = title_bbox[3] + title_body_gap
         body_text = "\n".join(body_lines)
-        draw.multiline_text((x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing)
         body_bbox = draw.multiline_textbbox((x, body_y), body_text, font=body_font, spacing=body_spacing)
         rendered_bbox = (
             min(title_bbox[0], body_bbox[0]), min(title_bbox[1], body_bbox[1]),
             max(title_bbox[2], body_bbox[2]), max(title_bbox[3], body_bbox[3]),
         )
+        # Sample only the pixels the copy will actually cover. A wide reserved
+        # box can contain unrelated dark furniture even when the wall directly
+        # behind the copy is bright, which previously selected unreadable white
+        # text and caused real OCR false negatives (for example 10kg -> 0kg).
+        color_sample_box = (
+            max(0, rendered_bbox[0]), max(0, rendered_bbox[1]),
+            min(width, rendered_bbox[2]), min(height, rendered_bbox[3]),
+        )
+        title_color, body_color, color_name = self._text_colors(base, color_sample_box)
+        draw.multiline_text((x, y), title_text, font=title_font, fill=title_color, spacing=title_spacing)
+        draw.multiline_text((x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing)
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer.save(text_path, format="PNG")
         Image.alpha_composite(base, layer).convert("RGB").save(output_path, format="PNG")
@@ -458,7 +476,8 @@ class LocalProductionEngine:
             "body_lines": body_lines,
             "font": self._font_path.name if self._font_path else "PillowDefault",
             "text_color": color_name,
-            "background_luminance": round(self._region_luminance(base, text_box), 2),
+            "background_luminance": round(self._region_luminance(base, color_sample_box), 2),
+            "color_sample_box": list(color_sample_box),
             "repair_applied": repair_applied,
         }
 
@@ -625,7 +644,7 @@ class LocalProductionEngine:
                 category = review_issue.get("code", "multimodal_review")
                 issues.append(self._issue(
                     f"llm_{category}",
-                    review_issue.get("severity", "P2"),
+                    self._llm_issue_severity(category, review_issue.get("severity", "P2")),
                     review_issue.get("message", "多模态审查需人工确认"),
                     self._llm_repair_type(category),
                 ))
@@ -897,6 +916,21 @@ class LocalProductionEngine:
             return "regenerate"
         return "manual"
 
+    @staticmethod
+    def _llm_issue_severity(category: str, severity: str) -> str:
+        """Keep subjective multimodal opinions advisory instead of release-blocking.
+
+        Text accuracy, numeric facts, safe-area geometry and exact reference-layer
+        provenance are enforced separately with deterministic evidence. Visual
+        taste and prompt-style judgements remain useful review signals, but an
+        LLM should not promote them to P0/P1 and block an otherwise verifiable
+        deliverable.
+        """
+        normalized = severity if severity in {"P0", "P1", "P2", "P3"} else "P2"
+        if category in {"layout_position", "prompt_following", "visual_quality"} and normalized in {"P0", "P1"}:
+            return "P2"
+        return normalized
+
     def _bind_generation_prompt(
         self,
         body: str,
@@ -925,7 +959,9 @@ class LocalProductionEngine:
             result = result.replace("{{" + key + "}}", value)
         for copy in (page.title.strip(), page.body.strip()):
             if copy:
+                result = result.replace(f"（{copy}）", "").replace(f"({copy})", "")
                 result = result.replace(copy, "")
+        result = result.replace("（）", "").replace("()", "")
         product_guardrail = (
             "最高优先级：商品将由系统在生图后从用户参考图中原样抠出并合成。你只生成空置场景底图，"
             "不要生成、绘制、复制或暗示任何商品、家电、机器、展台占位块、商品轮廓或商品文字；"

@@ -831,6 +831,15 @@ class ProductionApplication:
                         files[f"{page_dir}/{file_name}"] = extra_path
                         layer_files.insert(0, file_name)
             documents[f"{page_dir}/qa.json"] = self._qa_payload(qa)
+            effective_generation = candidate.metadata.get("effective_generation") or {
+                "size": generator.get("requested_size") or generator.get("actual_size") or "",
+                "quality": generator.get("quality") or "",
+                "template_id": (generator.get("layout") or {}).get("template_id") or page.template_id,
+                "reference_strategy": generator.get("reference_strategy") or "",
+                "max_auto_regenerations": int(
+                    (candidate.metadata.get("model_params") or {}).get("max_auto_regenerations", 0)
+                ),
+            }
             manifest_pages.append({
                 "page_id": page.id, "order": page.order, "page_type": page.page_type.value,
                 "title": page.title, "candidate_id": candidate.id, "score": candidate.score,
@@ -839,7 +848,7 @@ class ProductionApplication:
                 "prompt_version_id": candidate.metadata.get("prompt_version_id", ""),
                 "model": candidate.metadata.get("model", ""),
                 "generator_provider": generator.get("provider", ""),
-                "effective_generation": candidate.metadata.get("effective_generation", {}),
+                "effective_generation": effective_generation,
                 "layer_files": layer_files,
                 "override_reason": decision.override_reason,
             })

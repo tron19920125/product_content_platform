@@ -12,7 +12,7 @@
 | Azure AI Vision | OCR 文字识别 | 使用资源页面提供的自定义 Endpoint |
 | Azure 应用承载服务 | 运行后端 | 可使用 App Service、Container Apps 或虚拟机 |
 
-内置模板默认配置为 `quality=high`、`size=2048x2048`。质量是配方默认值，实际生产可临时覆盖；尺寸由页面模板决定，不再由生产环境变量全局覆盖。自定义模板会校验 `gpt-image-2` 的边长、宽高比、16 像素倍数和总像素限制。
+内置模板默认配置为 `quality=high`、`size=2048x2048`。质量是配方默认值，实际生产可在 `low`、`medium`、`high` 中临时覆盖；尺寸由页面模板决定，不再由生产环境变量全局覆盖。常用预设包含 `1024x1024`、`1536x1024`、`1024x1536`、`2048x2048`、`2048x1152`、`1152x2048`、`2560x1440` 和 `1440x2560`。自定义模板会校验 `gpt-image-2` 的边长、宽高比、16 像素倍数和总像素限制；最大正方形为 `2880x2880`，总像素上限为 8,294,400。4K 横竖版和最大正方形在界面中会标记为实验性。
 
 ## 2. 启用 Managed Identity
 
@@ -83,7 +83,14 @@ AZURE_OPENAI_IMAGE_EDIT_ENDPOINT=https://<resource>.services.ai.azure.com/openai
 AZURE_OPENAI_REVIEW_ENDPOINT=https://<resource>/openai/responses?api-version=<version>
 ```
 
-API Version 必须以实际 Azure 资源和模型部署支持的版本为准，不能仅照抄示例值。
+如果使用 Foundry Project 的 OpenAI-compatible v1 图片路由，应直接配置完整地址：
+
+```dotenv
+AZURE_OPENAI_IMAGE_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project-name>/openai/v1/images/generations
+AZURE_OPENAI_IMAGE_EDIT_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project-name>/openai/v1/images/edits
+```
+
+`/openai/v1/` 路由不得附加 `api-version` 查询参数；平台也会主动移除项目级 v1 图片地址上的该参数。部署式 `/openai/deployments/...` 路由则必须使用资源支持的 API Version。两种形式不要混用，否则常见结果是 400 `api-version query parameter is not allowed` 或 400 `API version not supported`。
 
 ## 6. 本地联调配置
 
@@ -123,8 +130,8 @@ macOS / Linux 使用：
 2. 确认后端服务已经关联正确的托管身份；
 3. 确认该身份在 OpenAI 和 Vision 两个资源上均拥有对应角色；
 4. 重启服务，使环境变量生效；
-5. 选择 `2048x2048` 模板执行一次无参考图生图，确认底图、文字层与合成图均为模板尺寸；
-6. 执行一次参考图编辑，确认图片编辑 Endpoint 可用；
+5. 选择 `2048x2048` 模板执行一次单图 `High` 生产，确认底图、商品层、文字层与合成图均为模板尺寸；
+6. 上传参考商品图，确认 `layered_product` 路径只让模型生成场景底图，商品由参考图独立合成；如使用模型编辑策略，再单独确认图片编辑 Endpoint；
 7. 开启 Azure 质检，确认 OCR、审查计划和多模态审查均能返回结果；
 8. 若资源使用防火墙或私有终结点，确认承载服务的网络和 DNS 能访问资源 Endpoint。
 
