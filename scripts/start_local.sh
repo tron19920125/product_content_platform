@@ -27,7 +27,9 @@ load_safe_dotenv() {
         value="${value:1:${#value}-2}"
       fi
     fi
-    export "$name=$value"
+    if ! declare -p "$name" >/dev/null 2>&1; then
+      export "$name=$value"
+    fi
   done < "$ENV_FILE"
 }
 
@@ -120,4 +122,3 @@ trap - ERR INT TERM
 echo "Services are ready: http://${PCP_HOST}:${PCP_FRONTEND_PORT}/"
 echo "API docs: http://${PCP_HOST}:${PCP_BACKEND_PORT}/docs"
 echo "Logs: $LOG_ROOT"
-

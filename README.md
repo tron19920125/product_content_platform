@@ -76,6 +76,7 @@ product_content_platform/
 ```
 
 推荐使用一条命令同时启动前后端。脚本会安全读取仓库根目录的 `.env`、记录 PID、执行健康检查，并将日志写入 `data/logs/`。
+调用命令前已经设置的环境变量优先于 `.env`，因此可以在不修改配置文件的情况下临时切换本地模式或隔离数据目录。
 
 Windows PowerShell：
 
@@ -87,6 +88,18 @@ macOS / Linux：
 
 ```bash
 ./scripts/start_local.sh
+```
+
+例如，macOS 上临时用完全离线模式启动：
+
+```bash
+PCP_GENERATION_MODE=local PCP_QA_MODE=local ./scripts/start_local.sh
+```
+
+Windows PowerShell 中对应写法：
+
+```powershell
+$env:PCP_GENERATION_MODE="local"; $env:PCP_QA_MODE="local"; powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1
 ```
 
 停止全部服务：

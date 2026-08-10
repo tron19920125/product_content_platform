@@ -33,7 +33,9 @@ function Import-SafeDotEnv {
                 $value = $value.Substring(1, $value.Length - 2)
             }
         }
-        [Environment]::SetEnvironmentVariable($name, $value, "Process")
+        if (-not (Test-Path -LiteralPath "Env:$name")) {
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
+        }
     }
 }
 
