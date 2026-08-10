@@ -49,6 +49,7 @@ from product_content_platform.domain import (
     ReviewDecisionType,
 )
 from product_content_platform.settings import Settings
+from product_content_platform.integrations.azure_preflight import run_preflight
 
 
 class ProductProfilePayload(BaseModel):
@@ -236,6 +237,10 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/preflight")
+    def preflight() -> dict[str, Any]:
+        return run_preflight(settings)
 
     @app.post("/api/projects", status_code=201)
     def create_project(payload: ProjectCreatePayload) -> dict[str, Any]:

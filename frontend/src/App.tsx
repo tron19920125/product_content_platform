@@ -12,6 +12,7 @@ import {
   ProductProfile,
   Project,
   Recipe,
+  SystemPreflight,
   TemplateDefinition,
 } from "./api";
 
@@ -40,6 +41,7 @@ function App() {
   const [showBatchForm, setShowBatchForm] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [role, setRole] = useState<Role>("admin");
+  const [preflight, setPreflight] = useState<SystemPreflight | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -56,6 +58,22 @@ function App() {
   }, []);
 
   useEffect(() => void refresh(), [refresh]);
+  useEffect(() => {
+    let active = true;
+    void api.getPreflight().then((result) => {
+      if (active) setPreflight(result);
+    }).catch(() => {
+      if (active) setPreflight({
+        status: "error",
+        generation_mode: "local",
+        qa_mode: "local",
+        auth_mode: "unknown",
+        checked_at: new Date().toISOString(),
+        components: [{ name: "image_generation", status: "error", message: "环境预检接口连接失败。", endpoint_host: "" }],
+      });
+    });
+    return () => { active = false; };
+  }, []);
 
   const activeCount = useMemo(
     () => projects.filter((project) => !["completed", "archived"].includes(project.status)).length,
@@ -68,7 +86,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar tab={tab} role={role} setRole={(next) => { setRole(next); if (next === "business" && tab === "catalog") setTab("projects"); setSelectedProjectId(null); }} setTab={(next) => { setTab(next); setSelectedProjectId(null); }} />
+      <Sidebar tab={tab} role={role} preflight={preflight} setRole={(next) => { setRole(next); if (next === "business" && tab === "catalog") setTab("projects"); setSelectedProjectId(null); }} setTab={(next) => { setTab(next); setSelectedProjectId(null); }} />
       {selectedProjectId ? (
         <ProjectWorkspace
           projectId={selectedProjectId}
@@ -108,7 +126,7 @@ function App() {
   );
 }
 
-function Sidebar({ tab, role, setRole, setTab }: { tab: Tab; role: Role; setRole: (role: Role) => void; setTab: (tab: Tab) => void }) {
+function Sidebar({ tab, role, preflight, setRole, setTab }: { tab: Tab; role: Role; preflight: SystemPreflight | null; setRole: (role: Role) => void; setTab: (tab: Tab) => void }) {
   return <aside className="sidebar">
     <div className="brand-mark">PC</div>
     <div><p className="eyebrow">PRODUCT CONTENT</p><h1>商品内容生产平台</h1></div>
@@ -118,8 +136,18 @@ function Sidebar({ tab, role, setRole, setTab }: { tab: Tab; role: Role; setRole
       {role === "admin" && <button className={tab === "catalog" ? "active" : ""} onClick={() => setTab("catalog")}><span>03</span> 固定配置</button>}
     </nav>
     <div className="role-switch"><span>当前角色</span><select value={role} onChange={(event) => setRole(event.target.value as Role)}><option value="business">业务用户</option><option value="admin">管理员 / 专家</option></select></div>
-    <div className="sidebar-foot"><span className="status-dot" /> 本地开发环境</div>
+    <SystemStatus preflight={preflight} />
   </aside>;
+}
+
+function SystemStatus({ preflight }: { preflight: SystemPreflight | null }) {
+  if (!preflight) return <div className="sidebar-foot"><span className="status-dot pending" /> 正在检查运行环境</div>;
+  const label = preflight.status === "ready" ? "Azure 环境已就绪" : preflight.status === "local" ? "本地演示模式" : "环境配置需处理";
+  return <details className={`system-status ${preflight.status}`}>
+    <summary><span className={`status-dot ${preflight.status}`} />{label}</summary>
+    <p>生图：{preflight.generation_mode} · 质检：{preflight.qa_mode}</p>
+    <ul>{preflight.components.map((item) => <li key={item.name}><b>{preflightComponentLabel(item.name)}</b><span>{item.message}</span></li>)}</ul>
+  </details>;
 }
 
 function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string; onBack: () => void; onChanged: () => Promise<void> }) {
@@ -656,6 +684,7 @@ function recipeQuality(recipe?: Recipe) {
   return ["low", "medium", "high"].includes(quality) ? quality : "high";
 }
 function qualityLabel(value: string) { return ({ low: "Low（快速）", medium: "Medium（均衡）", high: "High（精细）" } as Record<string, string>)[value] ?? value; }
+function preflightComponentLabel(value: string) { return ({ image_generation: "图片生成", vision_ocr: "OCR", llm_review: "LLM 审查" } as Record<string, string>)[value] ?? value; }
 function compilePromptPreview(body: string, template?: TemplateDefinition) {
   const values: Record<string, string> = {
     product_name: "示例商品",

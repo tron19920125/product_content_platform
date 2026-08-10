@@ -99,16 +99,21 @@ az login
 AZURE_AUTH_MODE=default_credential
 ```
 
-本地启动脚本不会自动读取 `.env`，启动后端前需要将配置加载到当前终端：
+一键启动脚本会将 `.env` 按纯 `KEY=VALUE` 数据安全加载，不执行其中的命令。Windows 使用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1
+```
+
+macOS / Linux 使用：
 
 ```bash
-set -a
-source .env
-set +a
-./scripts/dev_backend.sh
+./scripts/start_local.sh
 ```
 
 `DefaultAzureCredential` 在本地读取 Azure CLI 登录身份；生产环境仍建议明确使用 `managed_identity`。
+
+启动后可访问 `http://127.0.0.1:8000/api/preflight`，或展开前端左下角的环境状态。该预检会验证 Endpoint 结构并尝试获取 Azure 身份令牌，但不会调用图片、OCR 或 LLM 模型。
 
 ## 7. 上线前验证
 

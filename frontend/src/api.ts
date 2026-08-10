@@ -104,6 +104,20 @@ export type ImageCapabilities = {
   };
 };
 
+export type SystemPreflight = {
+  status: "ready" | "local" | "error";
+  generation_mode: "local" | "azure";
+  qa_mode: "local" | "azure";
+  auth_mode: string;
+  checked_at: string;
+  components: Array<{
+    name: "image_generation" | "vision_ocr" | "llm_review";
+    status: "ready" | "skipped" | "error";
+    message: string;
+    endpoint_host: string;
+  }>;
+};
+
 export type Recipe = {
   id: string;
   name: string;
@@ -207,6 +221,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getPreflight: () => request<SystemPreflight>("/preflight"),
   listProjects: () => request<Project[]>("/projects"),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
   createProject: (payload: unknown) =>

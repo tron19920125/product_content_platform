@@ -67,7 +67,43 @@ product_content_platform/
 ./scripts/bootstrap_local.sh
 ```
 
-分别启动后端和前端：
+推荐使用一条命令同时启动前后端。脚本会安全读取仓库根目录的 `.env`、记录 PID、执行健康检查，并将日志写入 `data/logs/`。
+
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1
+```
+
+macOS / Linux：
+
+```bash
+./scripts/start_local.sh
+```
+
+停止全部服务：
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\scripts\stop_local.ps1
+```
+
+```bash
+# macOS / Linux
+./scripts/stop_local.sh
+```
+
+只检查 `.env`、Python、Node 和前端依赖而不启动服务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Check
+```
+
+```bash
+./scripts/start_local.sh --check
+```
+
+需要分别调试后端和前端时仍可使用：
 
 ```bash
 ./scripts/dev_backend.sh
@@ -84,6 +120,9 @@ product_content_platform/
 
 - 前端：http://127.0.0.1:5173/
 - 后端接口文档：http://127.0.0.1:8000/docs
+- Azure 环境预检：http://127.0.0.1:8000/api/preflight
+
+首页左下角会异步显示本地或 Azure 环境状态。Azure 预检只验证路由配置和身份令牌，不调用图片、OCR 或 LLM 模型。
 
 运行测试和前端构建：
 
