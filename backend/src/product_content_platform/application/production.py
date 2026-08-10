@@ -56,9 +56,15 @@ class ProductionApplication:
         model_params = (
             {
                 "quality": os.environ.get("PCP_IMAGE_QUALITY", "high"),
+                "reference_strategy": "model_edit",
+                "max_auto_regenerations": 1,
             }
             if model == "azure-gpt-image"
-            else {"quality": "high"}
+            else {
+                "quality": "high",
+                "reference_strategy": "model_edit",
+                "max_auto_regenerations": 1,
+            }
         )
         prompt = PromptVersion(
             id="prompt-commerce-v2",
@@ -88,25 +94,25 @@ class ProductionApplication:
         )
         self._repository.ensure_seed_data(prompt, recipe)
         demo_prompt = PromptVersion(
-            id="prompt-lifestyle-scene-v1",
+            id="prompt-lifestyle-scene-v2",
             prompt_asset_id="prompt-lifestyle-scene",
             name="高端生活方式场景底图 Prompt",
-            version=1,
+            version=2,
             body=(
-                "为{{product_name}}（{{model}}）制作具有完整环境叙事的高端电商广告视觉底图。"
+                "为{{product_name}}（{{model}}）制作具有完整环境叙事的高端电商广告场景底图。"
                 "页面视觉目标：{{visual_goal}}。"
                 "场景应包含真实建筑空间、墙面与地面材质、自然光或柔和电影光、可信投影、"
                 "与{{category}}使用情境相关的克制辅助陈设和前后景层次，避免只有纯白背景和孤立商品。"
-                "商品必须是第一视觉主体，参考商品的结构、颜色、比例和关键细节保持准确。"
                 "模板场景建议：{{scene_prompt_hint}}。模板构图：{{composition_instruction}}。"
-                "最终营销标题和正文由后期文字层统一排版，底图中不要生成任何营销文字。"
+                "商品会使用用户参考图作为独立商品层后期合成，场景底图不得自行生成商品；"
+                "最终营销标题和正文也由独立文字层统一排版，底图中不要生成任何文字。"
             ),
             variables=(
                 "product_name", "model", "category", "visual_goal",
                 "scene_prompt_hint", "composition_instruction",
             ),
             status=PublishStatus.PUBLISHED,
-            change_note="最小演示：丰富场景底图、固定留白、后期排字",
+            change_note="黄金演示：场景底图、原样商品层与文字层三层合成",
         )
         demo_recipe = Recipe(
             id="commerce-lifestyle-demo-v1",
@@ -114,7 +120,11 @@ class ProductionApplication:
             status=PublishStatus.PUBLISHED,
             prompt_version_id=demo_prompt.id,
             model=model,
-            model_params={"quality": "high"},
+            model_params={
+                "quality": "high",
+                "reference_strategy": "layered_product",
+                "max_auto_regenerations": 0,
+            },
             template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
             qa_policy="commerce-basic-v1",
             candidate_count=1,
@@ -176,13 +186,27 @@ class ProductionApplication:
         if not name.strip() or not model.strip():
             raise DomainValidationError("配方名称和模型不能为空")
         quality = validate_image_quality(str(model_params.get("quality") or "high"))
+        reference_strategy = str(model_params.get("reference_strategy") or "model_edit").strip()
+        if reference_strategy not in {"model_edit", "layered_product"}:
+            raise DomainValidationError("参考图策略必须是 model_edit 或 layered_product")
+        try:
+            max_auto_regenerations = int(model_params.get("max_auto_regenerations", 0))
+        except (TypeError, ValueError) as exc:
+            raise DomainValidationError("自动图片修复次数必须是 0 或 1") from exc
+        if max_auto_regenerations not in {0, 1}:
+            raise DomainValidationError("自动图片修复次数必须是 0 或 1")
         templates = tuple(dict.fromkeys(value.strip() for value in template_ids if value.strip()))
         if not templates:
             raise DomainValidationError("配方至少需要一个模板")
         recipe = Recipe(
             id=str(uuid4()), name=name.strip(), status=PublishStatus.DRAFT,
             prompt_version_id=prompt_version_id, model=model.strip(),
-            model_params={**dict(model_params), "quality": quality},
+            model_params={
+                **dict(model_params),
+                "quality": quality,
+                "reference_strategy": reference_strategy,
+                "max_auto_regenerations": max_auto_regenerations,
+            },
             template_ids=templates, qa_policy=qa_policy.strip() or "commerce-basic-v1",
             candidate_count=max(1, min(3, candidate_count)),
         )
@@ -445,6 +469,10 @@ class ProductionApplication:
             "text": candidate.text_layer_path,
             "composed": candidate.composed_path,
         }.get(kind)
+        if relative_path is None and kind in {"background", "product_layer"}:
+            file_name = str((candidate.metadata.get("generator") or {}).get(f"{kind}_file") or "")
+            if file_name and Path(file_name).name == file_name:
+                relative_path = str(Path(candidate.base_path).parent / file_name)
         if relative_path is None:
             raise EntityNotFoundError(f"候选文件类型不存在: {kind}")
         return self._engine.resolve(relative_path)
@@ -724,6 +752,13 @@ class ProductionApplication:
             files[f"{page_dir}/final.png"] = self._engine.resolve(candidate.composed_path)
             files[f"{page_dir}/base.png"] = self._engine.resolve(candidate.base_path)
             files[f"{page_dir}/text_layer.png"] = self._engine.resolve(candidate.text_layer_path)
+            generator = candidate.metadata.get("generator") or {}
+            for kind in ("background", "product_layer"):
+                file_name = str(generator.get(f"{kind}_file") or "")
+                if file_name and Path(file_name).name == file_name:
+                    extra_path = self._engine.resolve(str(Path(candidate.base_path).parent / file_name))
+                    if extra_path.exists():
+                        files[f"{page_dir}/{file_name}"] = extra_path
             documents[f"{page_dir}/qa.json"] = self._qa_payload(qa)
             manifest_pages.append({
                 "page_id": page.id, "order": page.order, "page_type": page.page_type.value,

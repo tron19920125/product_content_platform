@@ -30,26 +30,31 @@ class LocalProductionEngine:
         "hero-center": {
             "text_box": (.09, .07, .91, .29),
             "product_box": (.20, .32, .80, .94),
+            "product_anchor_box": (.24, .34, .76, .92),
             "instruction": "顶部 7%-29% 保持纯净低细节留白；商品主体完整居中放在下方 32%-94%，四周保留边距",
         },
         "split-left": {
             "text_box": (.07, .11, .43, .82),
             "product_box": (.48, .16, .94, .94),
+            "product_anchor_box": (.52, .20, .92, .92),
             "instruction": "左侧 7%-43% 保持纯净低细节留白；商品主体完整放在右侧 48%-94%，不要进入左侧留白区",
         },
         "split-right": {
             "text_box": (.57, .11, .93, .82),
             "product_box": (.06, .16, .52, .94),
+            "product_anchor_box": (.08, .20, .48, .92),
             "instruction": "右侧 57%-93% 保持纯净低细节留白；商品主体完整放在左侧 6%-52%，不要进入右侧留白区",
         },
         "scene-overlay": {
-            "text_box": (.07, .08, .48, .36),
-            "product_box": (.46, .28, .94, .94),
-            "instruction": "左上 7%-48%、顶部 8%-36% 保持安静低对比留白；商品主体完整放在右下 46%-94%、28%-94%",
+            "text_box": (.07, .08, .44, .28),
+            "product_box": (.14, .30, .94, .95),
+            "product_anchor_box": (.47, .30, .94, .94),
+            "instruction": "左上 7%-44%、顶部 8%-28% 保持安静低对比留白；商品主机的视觉重心放在右下 47%-94%、30%-94%，开门等延展结构可进入 14%-47% 的左下区域，但不得进入左上文字留白区，完整商品保持在画布内",
         },
         "data-grid": {
             "text_box": (.07, .08, .93, .34),
             "product_box": (.20, .38, .80, .94),
+            "product_anchor_box": (.24, .40, .76, .92),
             "instruction": "顶部 7%-93%、8%-34% 保持纯净低细节留白；商品主体完整放在下方中央 20%-80%、38%-94%",
         },
     }
@@ -77,10 +82,16 @@ class LocalProductionEngine:
         prompt_version: PromptVersion,
         reference_paths: list[Path],
     ) -> list[ProducedCandidate]:
-        generation_prompt = self._bind_generation_prompt(prompt_version.body, project.profile, page)
-        review_prompt = self._content_review_prompt(project.profile, page)
-        review_plan = self._build_review_plan(project.profile, page, reference_paths)
         template = self._layout_spec(page.template_id)
+        reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
+        max_auto_regenerations = max(0, min(1, int(recipe.model_params.get("max_auto_regenerations", 0))))
+        generation_prompt = self._bind_generation_prompt(
+            prompt_version.body, project.profile, page, reference_strategy=reference_strategy,
+        )
+        review_prompt = self._content_review_prompt(project.profile, page)
+        review_plan = self._build_review_plan(
+            project.profile, page, reference_paths, reference_strategy=reference_strategy,
+        )
         generation_size = str(template.get("size") or recipe.model_params.get("size") or "2048x2048")
         validate_image_size(generation_size)
         generation_quality = validate_image_quality(str(recipe.model_params.get("quality") or "high"))
@@ -99,14 +110,19 @@ class LocalProductionEngine:
                 variant=index,
                 size=generation_size,
                 quality=generation_quality,
+                layout=template,
+                reference_strategy=reference_strategy,
             )
             with Image.open(base_path) as generated_image:
                 canvas_size = generated_image.size
-                product_bbox = self._product_box(page.template_id, *canvas_size)
+                allowed_product_bbox = self._product_box(page.template_id, *canvas_size)
+                product_anchor_bbox = self._product_anchor_box(page.template_id, *canvas_size)
+                product_bbox = tuple(generator_meta.get("product_bbox") or product_anchor_bbox)
             generator_meta["layout"] = {
                 "template_id": page.template_id,
                 "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
-                "intended_product_box": list(product_bbox),
+                "product_anchor_box": list(product_anchor_bbox),
+                "allowed_product_extent_box": list(allowed_product_bbox),
             }
             compose_meta = self._compose(
                 base_path=base_path,
@@ -129,7 +145,7 @@ class LocalProductionEngine:
                 )
             repair_history: list[dict[str, Any]] = []
             requires_regeneration = any(issue.get("repair") == "regenerate" for issue in qa["issues"])
-            if requires_regeneration and repair_prompt:
+            if requires_regeneration and repair_prompt and max_auto_regenerations > 0:
                 before_base = candidate_root / "base_before_repair.png"
                 before_text = candidate_root / "text_layer_before_repair.png"
                 before_composed = candidate_root / "composed_before_repair.png"
@@ -154,14 +170,19 @@ class LocalProductionEngine:
                     variant=index,
                     size=generation_size,
                     quality=generation_quality,
+                    layout=template,
+                    reference_strategy=reference_strategy,
                 )
                 with Image.open(base_path) as generated_image:
                     canvas_size = generated_image.size
-                    product_bbox = self._product_box(page.template_id, *canvas_size)
+                    allowed_product_bbox = self._product_box(page.template_id, *canvas_size)
+                    product_anchor_bbox = self._product_anchor_box(page.template_id, *canvas_size)
+                    product_bbox = tuple(generator_meta.get("product_bbox") or product_anchor_bbox)
                 generator_meta["layout"] = {
                     "template_id": page.template_id,
                     "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
-                    "intended_product_box": list(product_bbox),
+                    "product_anchor_box": list(product_anchor_bbox),
+                    "allowed_product_extent_box": list(allowed_product_bbox),
                 }
                 compose_meta = self._compose(
                     base_path=base_path,
@@ -198,6 +219,8 @@ class LocalProductionEngine:
                             "size": generation_size,
                             "quality": generation_quality,
                             "template_id": page.template_id,
+                            "reference_strategy": reference_strategy,
+                            "max_auto_regenerations": max_auto_regenerations,
                         },
                         "review_plan": review_plan,
                         "content_review_prompt": review_prompt,
@@ -231,16 +254,24 @@ class LocalProductionEngine:
         source_candidate: Candidate,
         reference_paths: list[Path],
     ) -> ProducedCandidate:
-        generation_prompt = self._bind_generation_prompt(prompt_version.body, project.profile, page)
+        reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
+        generation_prompt = self._bind_generation_prompt(
+            prompt_version.body, project.profile, page, reference_strategy=reference_strategy,
+        )
         review_prompt = self._content_review_prompt(project.profile, page)
-        review_plan = self._build_review_plan(project.profile, page, reference_paths)
+        review_plan = self._build_review_plan(
+            project.profile, page, reference_paths, reference_strategy=reference_strategy,
+        )
         candidate_root = self._root / project.id / page.id / str(uuid4()) / "recompose"
         text_path = candidate_root / "text_layer.png"
         composed_path = candidate_root / "composed.png"
         base_path = self.resolve(source_candidate.base_path)
         generator_meta = dict(source_candidate.metadata.get("generator") or {})
         with Image.open(base_path) as base_image:
-            product_bbox = self._product_box(page.template_id, *base_image.size)
+            product_bbox = tuple(
+                generator_meta.get("product_bbox")
+                or self._product_anchor_box(page.template_id, *base_image.size)
+            )
         compose_meta = self._compose(
             base_path=base_path,
             text_path=text_path,
@@ -367,8 +398,10 @@ class LocalProductionEngine:
             "rendered_text_bbox": list(rendered_bbox),
             "product_bbox": list(product_bbox),
             "title_font_size": title_font.size,
+            "title_lines": title_lines,
             "heading_level": page.heading_level,
             "body_font_size": body_font.size,
+            "body_lines": body_lines,
             "font": self._font_path.name if self._font_path else "PillowDefault",
             "text_color": color_name,
             "background_luminance": round(self._region_luminance(base, text_box), 2),
@@ -451,13 +484,15 @@ class LocalProductionEngine:
                         "regenerate",
                     ))
             if reference_paths:
-                similarity_box = tuple(
-                    generator_meta.get("product_bbox") or compose_meta["product_bbox"]
-                )
-                reference_similarity = self._reference_similarity(
-                    reference_paths[0], base_path, similarity_box
-                )
-                if reference_similarity < .55:
+                bbox_source = str(generator_meta.get("product_bbox_source") or "")
+                similarity_box = generator_meta.get("product_bbox")
+                if bbox_source == "layered_reference":
+                    reference_similarity = 1.0
+                elif similarity_box:
+                    reference_similarity = self._reference_similarity(
+                        reference_paths[0], base_path, tuple(similarity_box)
+                    )
+                if reference_similarity is not None and reference_similarity < .55:
                     issues.append(self._issue(
                         "product_reference_low", "P1",
                         f"商品外观与参考图一致性偏低（{reference_similarity:.2f}）",
@@ -481,6 +516,8 @@ class LocalProductionEngine:
                     "composed_image_path": self._relative(output_path),
                     "authoritative_title": page.title,
                     "authoritative_body": page.body,
+                    "product_layer_file": generator_meta.get("product_layer_file", ""),
+                    "reference_strategy": generator_meta.get("reference_strategy", ""),
                 }
                 combined_review = self._quality_toolkit.review_candidate(
                     output_path=output_path,
@@ -565,6 +602,8 @@ class LocalProductionEngine:
         profile: ProductProfile,
         page: PageItem,
         reference_paths: list[Path],
+        *,
+        reference_strategy: str = "model_edit",
     ) -> dict[str, Any]:
         """Build production QA from structured facts instead of re-interpreting copy with an LLM."""
         layout_instruction = self._layout_spec(page.template_id)["instruction"]
@@ -581,12 +620,13 @@ class LocalProductionEngine:
             # Exact copy is deliberately not delegated to the LLM. Azure OCR plus
             # the saved text layer perform that deterministic check.
             "must_appear": [
-                f"构图必须满足：{layout_instruction}",
+                f"构图意图：{layout_instruction}。商品锚点是视觉重心建议，不是要求所有开门、把手等延展结构都落入锚点矩形的硬边界",
                 reference_requirement,
             ],
             "must_not_appear": [
                 "商品主体、门体、机身边缘或关键结构不得被裁切或被后期文字遮挡",
                 "预留文字区不得出现由生图模型生成的标题、正文、占位符、水印或装饰性伪文字",
+                "商品及其开门、把手等延展结构不得进入左上文字留白区",
             ],
             "must_preserve": [
                 "参考商品本体已有的品牌标识和物理面板信息允许保留，并只按参考一致性检查；"
@@ -598,7 +638,9 @@ class LocalProductionEngine:
                 "若商品面板相对参考图出现明显新增乱码或损坏，只合并报告一次参考一致性问题",
             ],
             "target_hint": layout_instruction,
-            "target_region": self._layout_spec(page.template_id)["product_box"],
+            "target_region": self._layout_spec(page.template_id).get("product_anchor_box")
+            or self._layout_spec(page.template_id)["product_box"],
+            "allowed_product_extent_region": self._layout_spec(page.template_id)["product_box"],
             "authoritative_copy": {
                 "title": page.title,
                 "body": page.body,
@@ -611,6 +653,8 @@ class LocalProductionEngine:
                 "post_composed": True,
                 "base_and_text_layer_are_separate_files": True,
                 "copy_review_owner": "deterministic_ocr",
+                "product_composition_strategy": reference_strategy,
+                "reference_product_layer_is_exact_source": reference_strategy == "layered_product",
             },
         }
 
@@ -627,10 +671,38 @@ class LocalProductionEngine:
         for size in range(start_size, min_size - 1, -2):
             font = self._font(size)
             lines = self._wrap(draw, normalized, font, max_width)
-            if len(lines) <= max_lines:
+            punctuation_lines = self._title_punctuation_lines(normalized) if max_lines == 2 else None
+            if (
+                len(lines) > 1
+                and punctuation_lines
+                and all(draw.textlength(line, font=font) <= max_width for line in punctuation_lines)
+            ):
+                return punctuation_lines, font
+            if len(lines) <= max_lines and not self._has_orphan_line(lines):
                 return lines, font
         font = self._font(min_size)
         return self._wrap(draw, normalized, font, max_width), font
+
+    @staticmethod
+    def _has_orphan_line(lines: list[str]) -> bool:
+        """Avoid a visually weak final line containing only one or two glyphs."""
+        if len(lines) < 2:
+            return False
+        visible = [line.strip() for line in lines if line.strip()]
+        if len(visible) < 2:
+            return False
+        total_length = sum(len(line) for line in visible)
+        return len(visible[-1]) <= 2 and total_length >= 6
+
+    @staticmethod
+    def _title_punctuation_lines(text: str) -> list[str] | None:
+        for mark in ("，", ",", "：", ":", "；", ";"):
+            if text.count(mark) != 1:
+                continue
+            before, after = text.split(mark, 1)
+            if before.strip() and after.strip():
+                return [before.strip() + mark, after.strip()]
+        return None
 
     @staticmethod
     def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
@@ -708,6 +780,11 @@ class LocalProductionEngine:
         x1, y1, x2, y2 = self._layout_spec(template_id)["product_box"]
         return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
 
+    def _product_anchor_box(self, template_id: str, width: int, height: int) -> tuple[int, int, int, int]:
+        layout = self._layout_spec(template_id)
+        x1, y1, x2, y2 = layout.get("product_anchor_box") or layout["product_box"]
+        return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
+
     @staticmethod
     def _contains(outer: tuple[int, ...], inner: tuple[int, ...]) -> bool:
         return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
@@ -751,7 +828,14 @@ class LocalProductionEngine:
             return "regenerate"
         return "manual"
 
-    def _bind_generation_prompt(self, body: str, profile: ProductProfile, page: PageItem) -> str:
+    def _bind_generation_prompt(
+        self,
+        body: str,
+        profile: ProductProfile,
+        page: PageItem,
+        *,
+        reference_strategy: str = "model_edit",
+    ) -> str:
         template = self._layout_spec(page.template_id)
         layout_instruction = template["instruction"]
         values = {
@@ -773,10 +857,17 @@ class LocalProductionEngine:
         for copy in (page.title.strip(), page.body.strip()):
             if copy:
                 result = result.replace(copy, "")
+        product_guardrail = (
+            "最高优先级：商品将由系统在生图后从用户参考图中原样抠出并合成。你只生成空置场景底图，"
+            "不要生成、绘制、复制或暗示任何商品、家电、机器、展台占位块、商品轮廓或商品文字；"
+            "在模板商品允许区域保留连续、自然、可承接商品层的墙面和地面，并保持光向一致。"
+            if reference_strategy == "layered_product"
+            else "商品必须完整出现在画面内，不得裁切机身、门体或关键结构。"
+        )
         guardrails = (
             f"构图约束：{layout_instruction}。"
             "预留文字区域必须保持背景简洁、低细节、低对比，不放置商品主体或关键物体。"
-            "商品必须完整出现在画面内，不得裁切机身、门体或关键结构。"
+            f"{product_guardrail}"
             "这是纯视觉底图：预留文字区域内严禁出现标题、正文、标语、字母、数字、Logo、水印、"
             "文本框、占位符、横线或类似字符的图形；画面其他区域也不得新增文字。"
             "参考图中商品本体已有的品牌标识和物理面板信息应保持原样；不要把留白区画成边框。"

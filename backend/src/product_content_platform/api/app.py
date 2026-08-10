@@ -818,6 +818,14 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "base_url": f"/api/candidates/{candidate.id}/files/base",
         "text_layer_url": f"/api/candidates/{candidate.id}/files/text",
         "composed_url": f"/api/candidates/{candidate.id}/files/composed",
+        "background_url": (
+            f"/api/candidates/{candidate.id}/files/background"
+            if (candidate.metadata.get("generator") or {}).get("background_file") else ""
+        ),
+        "product_layer_url": (
+            f"/api/candidates/{candidate.id}/files/product_layer"
+            if (candidate.metadata.get("generator") or {}).get("product_layer_file") else ""
+        ),
         "created_at": candidate.created_at.isoformat(),
     }
 

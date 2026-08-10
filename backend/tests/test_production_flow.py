@@ -150,7 +150,7 @@ class ProductionFlowTest(unittest.TestCase):
 
         demo_prompt = next(
             item for item in self.client.get("/api/prompts").json()
-            if item["id"] == "prompt-lifestyle-scene-v1"
+            if item["id"] == "prompt-lifestyle-scene-v2"
         )
         recipe_response = self.client.post(
             "/api/recipes",
@@ -158,7 +158,7 @@ class ProductionFlowTest(unittest.TestCase):
                 "name": "最小生活场景演示配方",
                 "prompt_version_id": demo_prompt["id"],
                 "model": "local-preview",
-                "model_params": {"quality": "high"},
+                "model_params": {"quality": "high", "reference_strategy": "layered_product"},
                 "template_ids": [template["id"]],
                 "qa_policy": "commerce-basic-v1",
                 "candidate_count": 1,
@@ -187,7 +187,13 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertTrue(row["job"]["trace"]["quality_overridden"])
         candidate = row["candidates"][0]
         self.assertEqual(
-            {"size": "1024x1024", "quality": "medium", "template_id": template["id"]},
+            {
+                "size": "1024x1024",
+                "quality": "medium",
+                "template_id": template["id"],
+                "reference_strategy": "layered_product",
+                "max_auto_regenerations": 0,
+            },
             candidate["metadata"]["effective_generation"],
         )
         self.assertIn("完整环境叙事", candidate["prompt"])

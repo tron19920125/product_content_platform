@@ -45,6 +45,8 @@ class BaseImageGenerator(Protocol):
         variant: int,
         size: str,
         quality: str,
+        layout: dict[str, Any],
+        reference_strategy: str,
     ) -> dict[str, Any]: ...
 
 

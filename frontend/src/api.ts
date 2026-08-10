@@ -84,6 +84,7 @@ export type TemplateDefinition = {
   size: string;
   text_box: [number, number, number, number];
   product_box: [number, number, number, number];
+  product_anchor_box: [number, number, number, number];
   composition_instruction: string;
   scene_prompt_hint: string;
   is_builtin: boolean;
@@ -177,6 +178,8 @@ export type Candidate = {
   base_url: string;
   text_layer_url: string;
   composed_url: string;
+  background_url?: string;
+  product_layer_url?: string;
   qa: QAResult;
 };
 

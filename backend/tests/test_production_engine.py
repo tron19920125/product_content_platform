@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from product_content_platform.adapters.base_image_generation import _composite_reference_product
 from product_content_platform.adapters.production_engine import LocalProductionEngine
 from product_content_platform.domain import (
     PageItem,
@@ -24,10 +25,14 @@ class RepairingGenerator:
     def __init__(self) -> None:
         self.calls = 0
         self.prompts: list[str] = []
+        self.layouts: list[dict] = []
+        self.reference_strategies: list[str] = []
 
-    def generate(self, *, prompt, profile, reference_paths, output_path, variant, size, quality):
+    def generate(self, *, prompt, profile, reference_paths, output_path, variant, size, quality, layout, reference_strategy):
         self.calls += 1
         self.prompts.append(prompt)
+        self.layouts.append(layout)
+        self.reference_strategies.append(reference_strategy)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         width, height = (int(value) for value in size.split("x", 1))
         image = Image.new("RGB", (width, height), "#20352b")
@@ -107,7 +112,8 @@ class ProductionEngineTest(unittest.TestCase):
             )
             recipe = Recipe(
                 id="recipe-1", name="测试配方", status=PublishStatus.PUBLISHED,
-                prompt_version_id=prompt.id, model="repair-test", model_params={},
+                prompt_version_id=prompt.id, model="repair-test",
+                model_params={"max_auto_regenerations": 1},
                 template_ids=("split-left",), qa_policy="test", candidate_count=1,
             )
 
@@ -157,6 +163,88 @@ class ProductionEngineTest(unittest.TestCase):
             self.assertGreaterEqual(metadata["body_font_size"], 50)
             self.assertEqual("#181F1C", metadata["text_color"])
             self.assertTrue(text.exists())
+
+    def test_title_fitting_avoids_two_character_orphan_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = LocalProductionEngine(Path(directory), RepairingGenerator(), QualityStub())
+            image = Image.new("RGB", (2048, 2048), "white")
+            draw = ImageDraw.Draw(image)
+
+            root = Path(directory)
+            base = root / "base.png"
+            Image.new("RGB", (2048, 2048), "white").save(base)
+            page = PageItem(
+                id="balanced-title", order=1, page_type=PageType.SCENE,
+                title="静谧洗护，自成风景",
+                body="自然光、温润木饰面与石材地面，共同构成真实而高级的家庭洗护空间。",
+                visual_goal="", template_id="scene-overlay", heading_level=2,
+                status=PageStatus.READY,
+            )
+            metadata = engine._compose(
+                base_path=base,
+                text_path=root / "text.png",
+                output_path=root / "composed.png",
+                page=page,
+                product_bbox=engine._product_box("scene-overlay", 2048, 2048),
+            )
+
+            lines = metadata["title_lines"]
+            self.assertEqual(["静谧洗护，", "自成风景"], lines)
+
+    def test_layered_product_prompt_and_composition_preserve_reference_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            background = root / "background.png"
+            reference = root / "reference.png"
+            output = root / "base.png"
+            Image.new("RGB", (400, 400), "#d8c9b6").save(background)
+            product = Image.new("RGB", (240, 240), "white")
+            product_draw = ImageDraw.Draw(product)
+            product_draw.rectangle((50, 30, 190, 220), fill="#101820")
+            product.save(reference)
+
+            bbox = _composite_reference_product(
+                background_path=background,
+                reference_path=reference,
+                output_path=output,
+                target_box=(80, 100, 360, 380),
+            )
+
+            self.assertTrue(output.exists())
+            self.assertTrue((root / "product_layer.png").exists())
+            self.assertGreater(bbox[0], 80)
+            self.assertLess(bbox[2], 360)
+            with Image.open(root / "product_layer.png") as layer:
+                self.assertEqual(0, layer.getpixel((0, 0))[3])
+                self.assertGreater(layer.getpixel(((bbox[0] + bbox[2]) // 2, (bbox[1] + bbox[3]) // 2))[3], 200)
+
+            engine = LocalProductionEngine(root / "production", RepairingGenerator(), QualityStub())
+            page = PageItem(
+                id="page-layer", order=1, page_type=PageType.SCENE,
+                title="静谧洗护", body="自然融入生活", visual_goal="高端洗衣房",
+                template_id="scene-overlay", status=PageStatus.READY,
+            )
+            profile = ProductProfile(sku="L1", name="滚筒洗衣机", category="洗衣机")
+            prompt = engine._bind_generation_prompt(
+                "生成{{visual_goal}}的场景。{{composition_instruction}}。",
+                profile,
+                page,
+                reference_strategy="layered_product",
+            )
+            self.assertIn("只生成空置场景底图", prompt)
+            self.assertIn("不要生成、绘制、复制或暗示任何商品", prompt)
+            self.assertNotIn(page.title, prompt)
+
+    def test_scene_layout_separates_anchor_from_allowed_open_door_extent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = LocalProductionEngine(Path(directory), RepairingGenerator(), QualityStub())
+            extent = engine._product_box("scene-overlay", 1000, 1000)
+            anchor = engine._product_anchor_box("scene-overlay", 1000, 1000)
+            text_box = engine._text_box("scene-overlay", 1000, 1000)
+
+        self.assertLess(extent[0], anchor[0])
+        self.assertGreaterEqual(extent[1], text_box[3])
+        self.assertIn("延展结构", engine._layout_spec("scene-overlay")["instruction"])
 
     def test_review_plan_keeps_copy_exact_and_delegates_copy_check_to_ocr(self) -> None:
         profile = ProductProfile(

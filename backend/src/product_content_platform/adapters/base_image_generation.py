@@ -29,6 +29,8 @@ class LocalBaseImageGenerator:
         variant: int,
         size: str,
         quality: str,
+        layout: dict[str, Any],
+        reference_strategy: str,
     ) -> dict[str, Any]:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         width, height = validate_image_size(size)
@@ -58,12 +60,7 @@ class LocalBaseImageGenerator:
             fill=(112, 139, 116),
         )
 
-        if "商品主体完整放在左侧" in prompt:
-            product_box = (int(width * .06), int(height * .16), int(width * .52), int(height * .94))
-        elif "商品主体完整居中" in prompt or "下方中央" in prompt:
-            product_box = (int(width * .20), int(height * .32), int(width * .80), int(height * .94))
-        else:
-            product_box = (int(width * .48), int(height * .16), int(width * .94), int(height * .94))
+        product_box = _scaled_box(layout.get("product_box") or (.20, .32, .80, .94), width, height)
         source_used = ""
         reference = next((path for path in reference_paths if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}), None)
         if reference:
@@ -107,6 +104,8 @@ class LocalBaseImageGenerator:
             "requested_size": size,
             "actual_size": f"{width}x{height}",
             "quality": quality,
+            "reference_strategy": reference_strategy,
+            "product_bbox_source": "deterministic_composite",
         }
 
 
@@ -127,6 +126,8 @@ class AzureImageGenerator:
         variant: int,
         size: str,
         quality: str,
+        layout: dict[str, Any],
+        reference_strategy: str,
     ) -> dict[str, Any]:
         from product_content_platform.integrations.azure_image_client import (
             default_edit_endpoint,
@@ -142,7 +143,8 @@ class AzureImageGenerator:
         requested_width, requested_height = validate_image_size(size)
         quality = validate_image_quality(quality)
         configured_generation_endpoint = os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT", "")
-        if reference_paths:
+        layered_reference = bool(reference_paths) and reference_strategy == "layered_product"
+        if reference_paths and not layered_reference:
             configured_edit_endpoint = os.environ.get("AZURE_OPENAI_IMAGE_EDIT_ENDPOINT", "")
             image_endpoint = (
                 configured_edit_endpoint
@@ -153,7 +155,7 @@ class AzureImageGenerator:
             image_endpoint = configured_generation_endpoint or default_generation_endpoint()
         token_provider = token_provider_from_env(endpoint=image_endpoint)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if reference_paths:
+        if reference_paths and not layered_reference:
             result = edit_image(
                 prompt=prompt,
                 reference_image_path=reference_paths[0],
@@ -184,13 +186,94 @@ class AzureImageGenerator:
             raise RuntimeError(
                 f"Azure 返回尺寸与模板不一致：请求 {requested_width}x{requested_height}，实际 {width}x{height}"
             )
-        return {
+        product_bbox: list[int] | None = None
+        product_bbox_source = "unavailable"
+        if layered_reference:
+            background_path = output_path.parent / "background.png"
+            shutil.copyfile(output_path, background_path)
+            product_bbox = list(
+                _composite_reference_product(
+                    background_path=background_path,
+                    reference_path=reference_paths[0],
+                    output_path=output_path,
+                    target_box=_scaled_box(layout.get("product_box") or (.20, .32, .80, .94), width, height),
+                )
+            )
+            product_bbox_source = "layered_reference"
+        metadata = {
             "provider": "azure-gpt-image",
             "source_reference": str(reference_paths[0]) if reference_paths else "",
-            "product_bbox": [int(width * .52), int(height * .18), int(width * .94), int(height * .92)],
             "elapsed_seconds": result.elapsed_seconds,
             "usage": result.usage,
             "requested_size": size,
             "actual_size": f"{width}x{height}",
             "quality": quality,
+            "reference_strategy": "layered_product" if layered_reference else ("model_edit" if reference_paths else "text_to_image"),
+            "product_bbox_source": product_bbox_source,
+            "background_file": "background.png" if layered_reference else "",
+            "product_layer_file": "product_layer.png" if layered_reference else "",
         }
+        if product_bbox is not None:
+            metadata["product_bbox"] = product_bbox
+        return metadata
+
+
+def _scaled_box(values: Any, width: int, height: int) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = (float(value) for value in values)
+    return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
+
+
+def _composite_reference_product(
+    *,
+    background_path: Path,
+    reference_path: Path,
+    output_path: Path,
+    target_box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    background = Image.open(background_path).convert("RGBA")
+    max_width = max(1, target_box[2] - target_box[0])
+    max_height = max(1, target_box[3] - target_box[1])
+    source = Image.open(reference_path).convert("RGBA")
+    if source.width > max_width or source.height > max_height:
+        source = ImageOps.contain(source, (max_width, max_height), Image.Resampling.LANCZOS)
+    product = _remove_connected_light_background(source)
+    product = ImageOps.contain(product, (max_width, max_height), Image.Resampling.LANCZOS)
+    x = target_box[0] + (max_width - product.width) // 2
+    y = target_box[3] - product.height
+
+    layer = Image.new("RGBA", background.size, (0, 0, 0, 0))
+    layer.alpha_composite(product, (x, y))
+    layer.save(output_path.parent / "product_layer.png", format="PNG")
+
+    shadow_alpha = layer.getchannel("A").filter(ImageFilter.GaussianBlur(max(6, min(background.size) // 120)))
+    shifted_alpha = Image.new("L", background.size, 0)
+    shadow_x = max(4, background.width // 256)
+    shadow_y = max(6, background.height // 170)
+    shifted_alpha.paste(
+        shadow_alpha.crop((0, 0, background.width - shadow_x, background.height - shadow_y)),
+        (shadow_x, shadow_y),
+    )
+    shadow = Image.new("RGBA", background.size, (0, 0, 0, 80))
+    shadow.putalpha(shifted_alpha.point(lambda value: min(90, value // 3)))
+    composed = Image.alpha_composite(Image.alpha_composite(background, shadow), layer)
+    composed.convert("RGB").save(output_path, format="PNG")
+    return x, y, x + product.width, y + product.height
+
+
+def _remove_connected_light_background(image: Image.Image) -> Image.Image:
+    existing_alpha = image.getchannel("A")
+    if existing_alpha.getextrema()[0] < 250:
+        bbox = existing_alpha.getbbox()
+        return image.crop(bbox) if bbox else image
+
+    marker = (255, 0, 255)
+    flood = image.convert("RGB")
+    for seed in ((0, 0), (flood.width - 1, 0), (0, flood.height - 1), (flood.width - 1, flood.height - 1)):
+        ImageDraw.floodfill(flood, seed, marker, thresh=48)
+    alpha = Image.new("L", flood.size, 255)
+    pixels = flood.get_flattened_data() if hasattr(flood, "get_flattened_data") else flood.getdata()
+    alpha.putdata([0 if pixel == marker else 255 for pixel in pixels])
+    alpha = alpha.filter(ImageFilter.GaussianBlur(.7))
+    image.putalpha(alpha)
+    bbox = alpha.getbbox()
+    return image.crop(bbox) if bbox else image
