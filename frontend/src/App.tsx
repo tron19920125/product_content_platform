@@ -120,7 +120,7 @@ function App() {
         </main>
       )}
 
-      {showProjectForm && <ProjectForm onClose={() => setShowProjectForm(false)} onCreated={async () => { setShowProjectForm(false); await refresh(); }} />}
+      {showProjectForm && <ProjectForm onClose={() => setShowProjectForm(false)} onCreated={async (projectId) => { setShowProjectForm(false); await refresh(); if (projectId) setSelectedProjectId(projectId); }} />}
       {showBatchForm && <BatchForm onClose={() => setShowBatchForm(false)} onCreated={async () => { setShowBatchForm(false); await refresh(); }} />}
     </div>
   );
@@ -385,7 +385,9 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   const [error, setError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const publishedRecipes = recipes.filter((item) => item.status === "published");
-  const [recipeId, setRecipeId] = useState(publishedRecipes[0]?.id ?? "commerce-detail-v1");
+  const isGoldenDemo = snapshot?.project.profile.output_requirements.includes("黄金演示") ?? false;
+  const recommendedRecipeId = isGoldenDemo ? "commerce-lifestyle-demo-v1" : publishedRecipes[0]?.id;
+  const [recipeId, setRecipeId] = useState(recommendedRecipeId ?? "commerce-detail-v1");
   const selectedRecipe = publishedRecipes.find((item) => item.id === recipeId) ?? publishedRecipes[0];
   const recipeDefaultQuality = recipeQuality(selectedRecipe);
   const [quality, setQuality] = useState(recipeDefaultQuality);
@@ -409,6 +411,11 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     setRecipeId(first.id);
     setQuality(recipeQuality(first));
   }, [publishedRecipes, recipeId]);
+  useEffect(() => {
+    if (!isGoldenDemo || !publishedRecipes.some((item) => item.id === "commerce-lifestyle-demo-v1")) return;
+    setRecipeId("commerce-lifestyle-demo-v1");
+    setQuality("high");
+  }, [isGoldenDemo, publishedRecipes]);
   async function start(force: boolean) {
     setBusy(force ? "regenerate" : "start"); setError(""); setMessage(""); setDownloadUrl("");
     try {
@@ -433,6 +440,7 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     {referenceAssets.length > 0
       ? <div className="notice success reference-binding" role="status"><strong>已绑定 {referenceAssets.length} 张参考图</strong><span>本次生产会输入：{referenceAssets.map((asset) => asset.file_name).join("、")}</span></div>
       : <div className="notice warning reference-binding" role="status"><strong>未检测到已上传并绑定的参考图</strong><span>本次会使用纯文本生图。请先在上方“参考素材”区域选择图片并点击“上传并绑定”。</span></div>}
+    {isGoldenDemo && <div className="notice success reference-binding"><strong>黄金演示预设已加载</strong><span>2048×2048 · High · 高端生活场景演示配方 · 单候选。绑定商品图后即可开始生产。</span></div>}
     {immediateActionLabel && <OperationFeedback label={immediateActionLabel} detail="请求正在提交，请勿重复点击。" compact />}
     {snapshot && hasJobs && <ProductionProgress total={pages.length} completed={completedJobs} failed={failedJobs} active={activeJobs} percent={overallProgress} />}
     {error && <div className="notice error">{error}</div>}
@@ -726,10 +734,11 @@ function CatalogPanel() {
   </div>;
 }
 
-function ProjectForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
+function ProjectForm({ onClose, onCreated }: { onClose: () => void; onCreated: (projectId?: string) => Promise<void> }) {
   const [projectName, setProjectName] = useState(""); const [profile, setProfile] = useState(emptyProfile()); const [sellingPoints, setSellingPoints] = useState(""); const [parameters, setParameters] = useState("容量=12kg"); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
-  async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(""); try { const parsedParameters = Object.fromEntries(parameters.split(/\n|[;；]/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(/[=：:]/, 2).map((part) => part.trim())).filter(([key, value]) => key && value)); await api.createProject({ project_name: projectName, profile: { ...profile, parameters: parsedParameters, selling_points: sellingPoints.split("\n").map((item) => item.trim()).filter(Boolean) } }); await onCreated(); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setSaving(false); } }
-  return <Dialog title="新建商品项目" subtitle="先建立结构化商品档案，再上传素材并生成内容规划。" onClose={onClose}><form onSubmit={submit}><Field label="项目名称"><input required value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(e) => setProfile({ ...profile, sku: e.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(e) => setProfile({ ...profile, model: e.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(e) => setProfile({ ...profile, category: e.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(e) => setParameters(e.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="创建项目" /></form></Dialog>;
+  async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(""); try { const parsedParameters = Object.fromEntries(parameters.split(/\n|[;；]/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(/[=：:]/, 2).map((part) => part.trim())).filter(([key, value]) => key && value)); const project = await api.createProject({ project_name: projectName, profile: { ...profile, parameters: parsedParameters, selling_points: sellingPoints.split("\n").map((item) => item.trim()).filter(Boolean) } }); await onCreated(project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setSaving(false); } }
+  async function createDemo() { setSaving(true); setError(""); try { const result = await api.createLaundryDemo(); await onCreated(result.project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "演示项目创建失败"); } finally { setSaving(false); } }
+  return <Dialog title="新建商品项目" subtitle="先建立结构化商品档案，再上传素材并生成内容规划。" onClose={onClose}><div className="golden-demo-callout"><div><strong>直接体验黄金演示</strong><p>自动建立 2048×2048 单页洗护场景、High 默认质量和已调优规划。创建后只需上传自己的商品参考图。</p></div><button type="button" className="secondary" disabled={saving} onClick={() => void createDemo()}>{saving ? "创建中…" : "创建黄金演示项目"}</button></div><div className="dialog-divider"><span>或手动创建</span></div><form onSubmit={submit}><Field label="项目名称"><input required value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(e) => setProfile({ ...profile, sku: e.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(e) => setProfile({ ...profile, model: e.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(e) => setProfile({ ...profile, category: e.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(e) => setParameters(e.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="创建项目" /></form></Dialog>;
 }
 
 function BatchForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {

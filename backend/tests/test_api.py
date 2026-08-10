@@ -50,6 +50,21 @@ class ApiTest(unittest.TestCase):
         listed = self.client.get("/api/projects").json()
         self.assertEqual(project_id, listed[0]["id"])
 
+    def test_create_laundry_golden_demo_is_ready_for_reference_upload(self) -> None:
+        response = self.client.post("/api/demo-projects/laundry")
+
+        self.assertEqual(201, response.status_code, response.text)
+        payload = response.json()
+        self.assertEqual("commerce-lifestyle-demo-v1", payload["recipe_id"])
+        self.assertEqual("high", payload["quality"])
+        self.assertEqual("planned", payload["project"]["status"])
+        self.assertTrue(payload["plan"]["confirmed"])
+        self.assertEqual(1, len(payload["plan"]["items"]))
+        page = payload["plan"]["items"][0]
+        self.assertEqual("scene-overlay", page["template_id"])
+        self.assertEqual("静谧洗护，自成风景", page["title"])
+        self.assertEqual(2, page["heading_level"])
+
     def test_image_capabilities_and_custom_template_validation(self) -> None:
         capabilities = self.client.get("/api/image-capabilities")
         self.assertEqual(200, capabilities.status_code)

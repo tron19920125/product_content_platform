@@ -252,6 +252,17 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return project_to_dict(project)
 
+    @app.post("/api/demo-projects/laundry", status_code=201)
+    def create_laundry_demo_project() -> dict[str, Any]:
+        project, plan = platform.create_laundry_demo_project()
+        return {
+            "project": project_to_dict(project),
+            "plan": plan_to_dict(plan),
+            "recipe_id": "commerce-lifestyle-demo-v1",
+            "quality": "high",
+            "required_next_step": "上传并绑定一张商品参考图，然后开始生产。",
+        }
+
     @app.get("/api/projects")
     def list_projects() -> list[dict[str, Any]]:
         return [project_to_dict(project) for project in platform.list_projects()]

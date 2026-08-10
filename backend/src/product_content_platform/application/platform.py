@@ -53,6 +53,51 @@ class PlatformApplication:
         self._repository.save_project(project)
         return project
 
+    def create_laundry_demo_project(self) -> tuple[Project, PagePlan]:
+        """Create the reproducible one-page golden demo without bundling user assets."""
+        demo_id = str(uuid4())
+        profile = ProductProfile(
+            sku=f"DEMO-LIFE-{demo_id[:8].upper()}",
+            name="高端滚筒洗衣机",
+            category="洗衣机",
+            model="DEMO-WM-01",
+            selling_points=("精致衣物护理", "安静融入高端家居", "真实材质与自然光"),
+            parameters={"容量": "10kg", "类型": "滚筒洗衣机"},
+            output_requirements="黄金演示：2048x2048、High、高端生活场景演示配方",
+        )
+        project = Project(id=demo_id, name="2048 高端洗护黄金演示", profile=profile)
+        self._repository.save_project(project)
+        plan = PagePlan(
+            id=str(uuid4()),
+            project_id=project.id,
+            version=1,
+            confirmed=True,
+            items=(
+                PageItem(
+                    id=str(uuid4()),
+                    order=1,
+                    page_type=PageType.SCENE,
+                    title="静谧洗护，自成风景",
+                    body="自然光、温润木饰面与石材地面，共同构成真实而高级的家庭洗护空间。",
+                    visual_goal=(
+                        "完整高端住宅洗衣房场景，晨间自然光从左侧窗户进入，温润木饰面墙、"
+                        "浅灰石材地面、亚麻收纳篮、绿植和叠放毛巾形成前后景层次；"
+                        "商品完整位于右下，左上保持安静低细节留白。"
+                    ),
+                    template_id="scene-overlay",
+                    heading_level=2,
+                    status=PageStatus.READY,
+                ),
+            ),
+        )
+        planned_project = replace(
+            project,
+            status=ProjectStatus.PLANNED,
+            updated_at=datetime.now(timezone.utc),
+        )
+        self._repository.save_plan(plan, planned_project)
+        return planned_project, plan
+
     def get_project(self, project_id: str) -> Project:
         project = self._repository.get_project(project_id)
         if project is None:

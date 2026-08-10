@@ -229,6 +229,13 @@ export const api = {
   getProject: (id: string) => request<Project>(`/projects/${id}`),
   createProject: (payload: unknown) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(payload) }),
+  createLaundryDemo: () => request<{
+    project: Project;
+    plan: PagePlan;
+    recipe_id: string;
+    quality: string;
+    required_next_step: string;
+  }>("/demo-projects/laundry", { method: "POST" }),
   updateProject: (id: string, payload: { project_name: string; profile: ProductProfile }) =>
     request<Project>(`/projects/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
   cloneProject: (id: string) => request<Project>(`/projects/${id}/clone`, { method: "POST" }),
