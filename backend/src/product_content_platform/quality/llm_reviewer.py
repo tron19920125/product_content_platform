@@ -22,7 +22,7 @@ from product_content_platform.quality.text_review import bbox_center_inside_regi
 DEFAULT_RESOURCE_ENDPOINT = ""
 DEFAULT_REVIEW_MODEL = "gpt-5.6-sol"
 DEFAULT_REVIEW_DEPLOYMENT = DEFAULT_REVIEW_MODEL
-DEFAULT_REVIEW_API_VERSION = "2025-04-01-preview"
+DEFAULT_REVIEW_API_VERSION = "v1"
 DEFAULT_REVIEW_MAX_OUTPUT_TOKENS = 6000
 LLM_REQUEST_MAX_ATTEMPTS = 4
 LLM_REQUEST_RETRY_DELAYS = (1.0, 2.0, 4.0)
@@ -77,6 +77,12 @@ class ReviewEvidence:
             "outside_target_reference_ocr_lines": _lines_outside_region(self.reference_ocr_lines, target_region),
             "review_policy": {
                 "language": "中文",
+                "severity": {
+                    "P0": "系统确定性阻断：关键输入或硬性规则失败。仅本地规则可产生。",
+                    "P1": "重大且有明确证据的问题，会阻止直接确认。",
+                    "P2": "需要关注或人工确认的问题，不自动阻止确认。",
+                    "P3": "提示性观察或轻微建议，不代表失败。",
+                },
                 "verdict": {
                     "pass": "所有审查计划中的要求均有证据支持，且每个审查项都是 pass。",
                     "review": "没有明确失败项，但至少一项因图片、OCR 或参考证据不足而无法确认。",
@@ -99,6 +105,14 @@ class ReviewEvidence:
                     "Judge only evidence available in the prompt and reference image: preserve existing logo, model "
                     "marks, product identity, and visual style; reject invented or visibly damaged brand marks. "
                     "Do not claim formal brand-guideline compliance without an explicit brand specification."
+                ),
+                "copy_and_product_labels": (
+                    "authoritative_copy and generation.composition_provenance are engineering evidence. Exact title/body "
+                    "are checked deterministically by OCR and a separately stored text layer; do not invent punctuation "
+                    "requirements or claim that layer provenance is unavailable. Product logos, model marks, timer digits, "
+                    "and physical panel labels outside the copy region are not marketing copy and must not be checked "
+                    "against the marketing-copy number allowlist. Obvious newly generated gibberish may be reported once "
+                    "as a reference-consistency defect when supported by the reference image."
                 ),
                 "product_replacement_scope": (
                     "For replace_product tasks, the source slice is the authority for product geometry, placement, "
@@ -155,7 +169,9 @@ def default_review_endpoint(
     base = resource_endpoint.rstrip("/")
     # Keep the deployment argument for callers that used the previous helper signature.
     _ = deployment
-    return f"{base}/openai/responses?api-version={api_version}"
+    if ".services.ai.azure.com" in base.casefold() or "/api/projects/" in base.casefold():
+        return f"{base}/openai/v1/responses"
+    return f"{base}/openai/v1/responses?api-version={api_version}"
 
 
 def build_review_messages(evidence: ReviewEvidence) -> list[dict[str, Any]]:
@@ -216,6 +232,8 @@ def build_review_messages(evidence: ReviewEvidence) -> list[dict[str, Any]]:
                 "evidence, target-region evidence, visual-difference evidence, and the structured review_plan. "
                 "Return exactly one review_item for every entry in review_plan.requirements and copy its id into "
                 "review_item.requirement_id. Do not omit a requirement; use result=review when evidence is insufficient. "
+                "Do not add review items or acceptance rules that are absent from review_plan.requirements. Treat each "
+                "requirement text as authoritative and never silently add punctuation, parameters, or stricter wording. "
                 "For edit tasks, first locate the requested text edit by comparing target_reference_ocr_lines "
                 "and target_generated_ocr_lines when target_region is present. Only judge old-copy removal "
                 "inside the target edit region. OCR text outside the target edit region is mainly for "
@@ -256,6 +274,7 @@ def review_image_with_llm(
     api_key: str | None = None,
     endpoint: str | None = None,
     timeout: int = 120,
+    max_attempts: int = LLM_REQUEST_MAX_ATTEMPTS,
     token_provider: TokenProvider | None = None,
 ) -> LlmReviewResult:
     messages = build_review_messages(evidence)
@@ -265,6 +284,7 @@ def review_image_with_llm(
         api_key=api_key,
         endpoint=endpoint,
         timeout=timeout,
+        max_attempts=max_attempts,
         token_provider=token_provider,
     )
     requirements = requirements_with_fallback(evidence.review_plan or {})
@@ -382,7 +402,8 @@ def call_azure_chat_review(
 
 
 def _is_responses_endpoint(url: str) -> bool:
-    return "/openai/responses" in url.split("?", 1)[0].rstrip("/")
+    path = url.split("?", 1)[0].rstrip("/")
+    return "/openai/" in path and path.endswith("/responses")
 
 
 def _build_responses_request(messages: list[dict[str, Any]], *, model: str) -> dict[str, Any]:
@@ -520,7 +541,10 @@ def parse_llm_review_response(
     review_items = _normalize_review_items(payload.get("review_items"))
     review_items = _ensure_requirement_coverage(review_items, requirements or [])
     item_status = _worst_status([item.get("result") for item in review_items]) if review_items else "pass"
-    status = _worst_status([status, item_status])
+    # When a structured plan exists, the normalized per-requirement results are
+    # authoritative. A model-level verdict may have been influenced by an
+    # invented requirement that was intentionally discarded above.
+    status = item_status if requirements else _worst_status([status, item_status])
     issues = [_issue_from_review_item(item, index) for index, item in enumerate(review_items) if item.get("result") != "pass"]
     severity = _max_severity([issue["severity"] for issue in issues])
     if status == "fail" and severity == "P3":
@@ -637,15 +661,36 @@ def _ensure_requirement_coverage(
     review_items: list[dict[str, Any]],
     requirements: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
-    covered = {str(item.get("requirement_id") or "").strip() for item in review_items}
-    completed = list(review_items)
+    if not requirements:
+        return review_items
+
+    # The model is a judge for the supplied plan, not a second requirements
+    # author. Drop invented IDs, collapse duplicates, and restore the exact
+    # authoritative requirement text as the expected value.
+    by_requirement: dict[str, list[dict[str, Any]]] = {}
+    for item in review_items:
+        requirement_id = str(item.get("requirement_id") or "").strip()
+        if requirement_id:
+            by_requirement.setdefault(requirement_id, []).append(item)
+
+    result_rank = {"pass": 0, "review": 1, "fail": 2}
+    completed: list[dict[str, Any]] = []
     for requirement in requirements:
         requirement_id = str(requirement.get("id") or "").strip()
-        if not requirement_id or requirement_id in covered:
+        if not requirement_id:
             continue
         text = str(requirement.get("text") or "").strip()
-        completed.append(
-            {
+        matching = by_requirement.get(requirement_id, [])
+        if matching:
+            chosen = max(
+                matching,
+                key=lambda item: result_rank.get(str(item.get("result") or "review"), 1),
+            )
+            normalized = dict(chosen)
+            normalized["expected"] = text
+            completed.append(normalized)
+        else:
+            completed.append({
                 "category": _category_for_requirement(requirement.get("type")),
                 "requirement_id": requirement_id,
                 "severity": "P2",
@@ -654,8 +699,7 @@ def _ensure_requirement_coverage(
                 "evidence": "review_plan",
                 "result": "review",
                 "message": f"缺少审查项 {requirement_id} 的独立结论，需重新审查。",
-            }
-        )
+            })
     return completed
 
 

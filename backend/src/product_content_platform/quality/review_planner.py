@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from product_content_platform.quality.llm_reviewer import TokenProvider, call_azure_chat_review, image_content_part
+from product_content_platform.quality.llm_reviewer import LLM_REQUEST_MAX_ATTEMPTS
 from product_content_platform.quality.review_requirements import build_review_requirements
 from product_content_platform.quality.text_review import parse_bbox
 
@@ -134,6 +135,7 @@ def create_review_plan(
     api_key: str | None = None,
     endpoint: str | None = None,
     timeout: int = 120,
+    max_attempts: int = LLM_REQUEST_MAX_ATTEMPTS,
     token_provider: TokenProvider | None = None,
 ) -> ReviewPlan:
     messages = build_review_plan_messages(
@@ -149,6 +151,7 @@ def create_review_plan(
         api_key=api_key,
         endpoint=endpoint,
         timeout=timeout,
+        max_attempts=max_attempts,
         token_provider=token_provider,
     )
     return parse_review_plan_response(response, mode=mode)

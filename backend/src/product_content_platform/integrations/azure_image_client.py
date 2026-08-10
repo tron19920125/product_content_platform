@@ -12,6 +12,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -21,8 +22,9 @@ from typing import Any, Callable
 
 DEFAULT_RESOURCE_ENDPOINT = ""
 DEFAULT_DEPLOYMENT = ""
-DEFAULT_API_VERSION = "preview"
-DEFAULT_EDIT_API_VERSION = "preview"
+DEFAULT_API_VERSION = "2025-04-01-preview"
+DEFAULT_EDIT_API_VERSION = "2025-04-01-preview"
+DEFAULT_IMAGE_TIMEOUT_SECONDS = 420
 IMAGE_REQUEST_MAX_ATTEMPTS = 4
 IMAGE_REQUEST_RETRY_DELAYS = (1.0, 2.0, 4.0)
 IMAGE_REQUEST_MAX_RETRY_AFTER_SECONDS = 180.0
@@ -66,8 +68,12 @@ def default_generation_endpoint(
             "Set AZURE_OPENAI_IMAGE_ENDPOINT, or configure both "
             "AZURE_OPENAI_RESOURCE_ENDPOINT and AZURE_OPENAI_IMAGE_DEPLOYMENT."
         )
-    base = resolved_resource.rstrip("/")
-    return f"{base}/openai/v1/images/generations?api-version={resolved_api_version}"
+    base = image_resource_endpoint(resolved_resource)
+    deployment_path = urllib.parse.quote(resolved_deployment, safe="")
+    return (
+        f"{base}/openai/deployments/{deployment_path}/images/generations"
+        f"?api-version={resolved_api_version}"
+    )
 
 
 def default_edit_endpoint(
@@ -86,8 +92,40 @@ def default_edit_endpoint(
             "Set AZURE_OPENAI_IMAGE_EDIT_ENDPOINT, or configure both "
             "AZURE_OPENAI_RESOURCE_ENDPOINT and AZURE_OPENAI_IMAGE_DEPLOYMENT."
         )
-    base = resolved_resource.rstrip("/")
-    return f"{base}/openai/v1/images/edits?api-version={resolved_api_version}"
+    base = image_resource_endpoint(resolved_resource)
+    deployment_path = urllib.parse.quote(resolved_deployment, safe="")
+    return (
+        f"{base}/openai/deployments/{deployment_path}/images/edits"
+        f"?api-version={resolved_api_version}"
+    )
+
+
+def image_resource_endpoint(resource_endpoint: str) -> str:
+    """Resolve a Foundry project URL to its account-level data-plane resource."""
+    parsed = urllib.parse.urlsplit(resource_endpoint.strip())
+    host = parsed.hostname or ""
+    if host.casefold().endswith(".services.ai.azure.com"):
+        image_host = host
+        if parsed.port:
+            image_host = f"{image_host}:{parsed.port}"
+        return urllib.parse.urlunsplit((parsed.scheme or "https", image_host, "", "", "")).rstrip("/")
+    return resource_endpoint.rstrip("/")
+
+
+def normalize_image_endpoint(endpoint: str) -> str:
+    """Remove API-version only from project-scoped OpenAI-compatible URLs."""
+    parsed = urllib.parse.urlsplit(endpoint)
+    if "/openai/v1/" not in parsed.path or "/api/projects/" not in parsed.path:
+        return endpoint
+    query = urllib.parse.urlencode(
+        [
+            (name, value)
+            for name, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            if name.lower() != "api-version"
+        ],
+        doseq=True,
+    )
+    return urllib.parse.urlunsplit(parsed._replace(query=query))
 
 
 def to_edit_endpoint(endpoint: str) -> str:
@@ -109,9 +147,10 @@ def generate_image(
     size: str = "2048x2048",
     quality: str = "high",
     output_format: str = "png",
-    timeout: int = 600,
+    timeout: int = DEFAULT_IMAGE_TIMEOUT_SECONDS,
 ) -> GeneratedImage:
     resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
+    stream_response = _environment_flag("PCP_IMAGE_STREAMING", default=False)
     request_payload = {
         "prompt": prompt,
         "size": size,
@@ -119,7 +158,12 @@ def generate_image(
         "n": 1,
         "output_format": output_format,
     }
-    url = endpoint or os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT") or default_generation_endpoint()
+    if stream_response:
+        request_payload["stream"] = True
+        request_payload["partial_images"] = _partial_image_count()
+    url = normalize_image_endpoint(
+        endpoint or os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT") or default_generation_endpoint()
+    )
     if "/openai/v1/images/" in url:
         request_payload["model"] = _image_deployment()
     body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
@@ -131,6 +175,7 @@ def generate_image(
         resolved_key,
         token_provider,
         timeout,
+        stream_response=stream_response,
     )
 
     elapsed_seconds = round(time.perf_counter() - started, 3)
@@ -173,7 +218,7 @@ def edit_image(
     quality: str = "high",
     input_fidelity: str = "high",
     output_format: str = "png",
-    timeout: int = 600,
+    timeout: int = DEFAULT_IMAGE_TIMEOUT_SECONDS,
 ) -> GeneratedImage:
     resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
     if not reference_image_path.exists():
@@ -198,7 +243,7 @@ def edit_image(
         or os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT")
         or default_edit_endpoint()
     )
-    url = to_edit_endpoint(raw_url)
+    url = normalize_image_endpoint(to_edit_endpoint(raw_url))
     if "/openai/v1/images/" in url:
         request_payload["model"] = _image_deployment()
     content_type, body = build_multipart_body(request_payload, reference_image_paths)
@@ -291,6 +336,8 @@ def _post_generation_with_retry(
     api_key: str,
     token_provider: TokenProvider | None,
     timeout: int,
+    *,
+    stream_response: bool = False,
 ) -> dict[str, Any]:
     def make_request() -> urllib.request.Request:
         return urllib.request.Request(
@@ -304,7 +351,12 @@ def _post_generation_with_retry(
         )
 
     with _IMAGE_REQUEST_LOCK:
-        return _post_with_retry("generation", make_request, timeout)
+        return _post_with_retry(
+            "generation",
+            make_request,
+            timeout,
+            stream_response=stream_response,
+        )
 
 
 def build_multipart_body(
@@ -372,11 +424,14 @@ def _post_with_retry(
     timeout: int,
     *,
     max_attempts: int = IMAGE_REQUEST_MAX_ATTEMPTS,
+    stream_response: bool = False,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(max_attempts):
         try:
             with urllib.request.urlopen(make_request(), timeout=timeout) as response:
+                if stream_response:
+                    return _read_streaming_image_response(response)
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
@@ -389,12 +444,86 @@ def _post_with_retry(
                 retry_after = _retry_after_seconds(exc, error_body)
                 time.sleep(_retry_delay_seconds(attempt, retry_after=retry_after))
         except TRANSIENT_IMAGE_ERRORS as exc:
+            detail = str(exc).strip() or type(exc).__name__
             last_error = exc
             if attempt < max_attempts - 1:
                 time.sleep(_retry_delay_seconds(attempt))
+                continue
+            raise AzureImageGenerationError(
+                f"Azure image {operation} connection failed after {max_attempts} attempts: {detail}"
+            ) from exc
     raise AzureImageGenerationError(
         f"Azure image {operation} failed after {max_attempts} attempts: {last_error}"
     ) from last_error
+
+
+def _read_streaming_image_response(response: Any) -> dict[str, Any]:
+    """Convert image-generation SSE events to the existing JSON response shape."""
+
+    latest_image_event: dict[str, Any] | None = None
+    completed_event: dict[str, Any] | None = None
+    data_lines: list[str] = []
+
+    def consume_event() -> None:
+        nonlocal latest_image_event, completed_event
+        if not data_lines:
+            return
+        raw_data = "\n".join(data_lines)
+        data_lines.clear()
+        if raw_data == "[DONE]":
+            return
+        try:
+            event = json.loads(raw_data)
+        except json.JSONDecodeError as exc:
+            raise AzureImageGenerationError(
+                f"Azure image streaming returned invalid JSON: {raw_data[:240]}"
+            ) from exc
+        if event.get("b64_json") or event.get("url"):
+            latest_image_event = event
+        if event.get("type") in {"image_generation.completed", "image_edit.completed"}:
+            completed_event = event
+
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not line:
+            consume_event()
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    consume_event()
+
+    final_event = completed_event or latest_image_event
+    if not final_event:
+        raise AzureImageGenerationError(
+            "Azure image streaming response completed without an image event."
+        )
+    image_data = {
+        key: final_event[key]
+        for key in ("b64_json", "url", "revised_prompt")
+        if final_event.get(key)
+    }
+    return {
+        "created": final_event.get("created_at", int(time.time())),
+        "data": [image_data],
+        "usage": final_event.get("usage", {}),
+        "stream_event_type": final_event.get("type", ""),
+    }
+
+
+def _environment_flag(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _partial_image_count() -> int:
+    raw_value = os.environ.get("PCP_IMAGE_PARTIAL_IMAGES", "3")
+    try:
+        value = int(raw_value)
+    except ValueError:
+        value = 3
+    return max(1, min(value, 3))
 
 
 def _retry_after_seconds(exc: urllib.error.HTTPError, error_body: str) -> float | None:

@@ -1,24 +1,71 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from product_content_platform.application.production_ports import BaseImageGenerator, ProducedCandidate
-from product_content_platform.domain import Candidate, PageItem, ProductProfile, Project, PromptVersion, Recipe
+from product_content_platform.domain import (
+    Candidate,
+    PageItem,
+    ProductProfile,
+    Project,
+    PromptVersion,
+    Recipe,
+    validate_image_quality,
+    validate_image_size,
+)
+from product_content_platform.quality.text_review import extract_numbers
 
 
 class LocalProductionEngine:
     """Deep production module: prompt binding, image creation, composition, QA, repair and ranking."""
 
-    def __init__(self, root: Path, generator: BaseImageGenerator, quality_toolkit: Any | None = None) -> None:
+    _LAYOUT_SPECS: dict[str, dict[str, Any]] = {
+        "hero-center": {
+            "text_box": (.09, .07, .91, .29),
+            "product_box": (.20, .32, .80, .94),
+            "instruction": "顶部 7%-29% 保持纯净低细节留白；商品主体完整居中放在下方 32%-94%，四周保留边距",
+        },
+        "split-left": {
+            "text_box": (.07, .11, .43, .82),
+            "product_box": (.48, .16, .94, .94),
+            "instruction": "左侧 7%-43% 保持纯净低细节留白；商品主体完整放在右侧 48%-94%，不要进入左侧留白区",
+        },
+        "split-right": {
+            "text_box": (.57, .11, .93, .82),
+            "product_box": (.06, .16, .52, .94),
+            "instruction": "右侧 57%-93% 保持纯净低细节留白；商品主体完整放在左侧 6%-52%，不要进入右侧留白区",
+        },
+        "scene-overlay": {
+            "text_box": (.07, .08, .48, .36),
+            "product_box": (.46, .28, .94, .94),
+            "instruction": "左上 7%-48%、顶部 8%-36% 保持安静低对比留白；商品主体完整放在右下 46%-94%、28%-94%",
+        },
+        "data-grid": {
+            "text_box": (.07, .08, .93, .34),
+            "product_box": (.20, .38, .80, .94),
+            "instruction": "顶部 7%-93%、8%-34% 保持纯净低细节留白；商品主体完整放在下方中央 20%-80%、38%-94%",
+        },
+    }
+
+    def __init__(
+        self,
+        root: Path,
+        generator: BaseImageGenerator,
+        quality_toolkit: Any | None = None,
+        template_resolver: Callable[[str], dict[str, Any]] | None = None,
+    ) -> None:
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._generator = generator
         self._quality_toolkit = quality_toolkit
+        self._template_resolver = template_resolver
         self._font_path = self._find_font()
 
     def execute(
@@ -30,8 +77,13 @@ class LocalProductionEngine:
         prompt_version: PromptVersion,
         reference_paths: list[Path],
     ) -> list[ProducedCandidate]:
-        prompt = self._bind_prompt(prompt_version.body, project.profile, page)
-        review_plan = self._build_review_plan(prompt, reference_paths)
+        generation_prompt = self._bind_generation_prompt(prompt_version.body, project.profile, page)
+        review_prompt = self._content_review_prompt(project.profile, page)
+        review_plan = self._build_review_plan(project.profile, page, reference_paths)
+        template = self._layout_spec(page.template_id)
+        generation_size = str(template.get("size") or recipe.model_params.get("size") or "2048x2048")
+        validate_image_size(generation_size)
+        generation_quality = validate_image_quality(str(recipe.model_params.get("quality") or "high"))
         run_root = self._root / project.id / page.id / str(uuid4())
         produced: list[dict[str, Any]] = []
         for index in range(1, max(1, min(3, recipe.candidate_count)) + 1):
@@ -40,26 +92,41 @@ class LocalProductionEngine:
             text_path = candidate_root / "text_layer.png"
             composed_path = candidate_root / "composed.png"
             generator_meta = self._generator.generate(
-                prompt=prompt,
+                prompt=generation_prompt,
                 profile=project.profile,
                 reference_paths=reference_paths,
                 output_path=base_path,
                 variant=index,
+                size=generation_size,
+                quality=generation_quality,
             )
+            with Image.open(base_path) as generated_image:
+                canvas_size = generated_image.size
+                product_bbox = self._product_box(page.template_id, *canvas_size)
+            generator_meta["layout"] = {
+                "template_id": page.template_id,
+                "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
+                "intended_product_box": list(product_bbox),
+            }
             compose_meta = self._compose(
                 base_path=base_path,
                 text_path=text_path,
                 output_path=composed_path,
                 page=page,
-                product_bbox=tuple(generator_meta.get("product_bbox", (455, 225, 835, 1090))),
+                product_bbox=product_bbox,
             )
             qa = self._inspect(
                 project.profile, page, reference_paths, generator_meta, compose_meta,
-                index, base_path, composed_path, prompt, review_plan,
+                index, base_path, composed_path, review_prompt, review_plan,
             )
             repair_prompt = ""
-            if self._quality_toolkit and qa["suggested_fix"]:
-                repair_prompt = self._quality_toolkit.repair_prompt(prompt, qa["suggested_fix"], page.title, page.body)
+            regeneration_fixes = "；".join(
+                issue["message"] for issue in qa["issues"] if issue.get("repair") == "regenerate"
+            )
+            if self._quality_toolkit and regeneration_fixes:
+                repair_prompt = self._quality_toolkit.repair_prompt(
+                    generation_prompt, regeneration_fixes, "", ""
+                )
             repair_history: list[dict[str, Any]] = []
             requires_regeneration = any(issue.get("repair") == "regenerate" for issue in qa["issues"])
             if requires_regeneration and repair_prompt:
@@ -85,17 +152,27 @@ class LocalProductionEngine:
                     reference_paths=reference_paths,
                     output_path=base_path,
                     variant=index,
+                    size=generation_size,
+                    quality=generation_quality,
                 )
+                with Image.open(base_path) as generated_image:
+                    canvas_size = generated_image.size
+                    product_bbox = self._product_box(page.template_id, *canvas_size)
+                generator_meta["layout"] = {
+                    "template_id": page.template_id,
+                    "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
+                    "intended_product_box": list(product_bbox),
+                }
                 compose_meta = self._compose(
                     base_path=base_path,
                     text_path=text_path,
                     output_path=composed_path,
                     page=page,
-                    product_bbox=tuple(generator_meta.get("product_bbox", (455, 225, 835, 1090))),
+                    product_bbox=product_bbox,
                 )
                 qa = self._inspect(
                     project.profile, page, reference_paths, generator_meta, compose_meta,
-                    index, base_path, composed_path, repair_prompt, review_plan,
+                    index, base_path, composed_path, review_prompt, review_plan,
                 )
             produced.append(
                 {
@@ -103,7 +180,7 @@ class LocalProductionEngine:
                     "base_path": self._relative(base_path),
                     "text_layer_path": self._relative(text_path),
                     "composed_path": self._relative(composed_path),
-                    "prompt": prompt,
+                    "prompt": generation_prompt,
                     "score": qa["score"],
                     "qa_status": qa["status"],
                     "issues": tuple(qa["issues"]),
@@ -117,7 +194,13 @@ class LocalProductionEngine:
                         "prompt_version_id": prompt_version.id,
                         "model": recipe.model,
                         "model_params": recipe.model_params,
+                        "effective_generation": {
+                            "size": generation_size,
+                            "quality": generation_quality,
+                            "template_id": page.template_id,
+                        },
                         "review_plan": review_plan,
+                        "content_review_prompt": review_prompt,
                         "repair_prompt": repair_prompt,
                         "repair_history": repair_history,
                     },
@@ -148,30 +231,33 @@ class LocalProductionEngine:
         source_candidate: Candidate,
         reference_paths: list[Path],
     ) -> ProducedCandidate:
-        prompt = self._bind_prompt(prompt_version.body, project.profile, page)
-        review_plan = self._build_review_plan(prompt, reference_paths)
+        generation_prompt = self._bind_generation_prompt(prompt_version.body, project.profile, page)
+        review_prompt = self._content_review_prompt(project.profile, page)
+        review_plan = self._build_review_plan(project.profile, page, reference_paths)
         candidate_root = self._root / project.id / page.id / str(uuid4()) / "recompose"
         text_path = candidate_root / "text_layer.png"
         composed_path = candidate_root / "composed.png"
         base_path = self.resolve(source_candidate.base_path)
         generator_meta = dict(source_candidate.metadata.get("generator") or {})
+        with Image.open(base_path) as base_image:
+            product_bbox = self._product_box(page.template_id, *base_image.size)
         compose_meta = self._compose(
             base_path=base_path,
             text_path=text_path,
             output_path=composed_path,
             page=page,
-            product_bbox=tuple(generator_meta.get("product_bbox", (455, 225, 835, 1090))),
+            product_bbox=product_bbox,
         )
         qa = self._inspect(
             project.profile, page, reference_paths, generator_meta, compose_meta,
-            1, base_path, composed_path, prompt, review_plan,
+            1, base_path, composed_path, review_prompt, review_plan,
         )
         row: dict[str, Any] = {
             "candidate_index": 1,
             "base_path": source_candidate.base_path,
             "text_layer_path": self._relative(text_path),
             "composed_path": self._relative(composed_path),
-            "prompt": prompt,
+            "prompt": generation_prompt,
             "score": qa["score"],
             "rank": 1,
             "qa_status": qa["status"],
@@ -188,7 +274,8 @@ class LocalProductionEngine:
                 "model_params": recipe.model_params,
                 "recomposed_from": source_candidate.id,
                 "review_plan": review_plan,
-                "repair_prompt": self._quality_toolkit.repair_prompt(prompt, qa["suggested_fix"], page.title, page.body) if self._quality_toolkit and qa["suggested_fix"] else "",
+                "content_review_prompt": review_prompt,
+                "repair_prompt": "",
             },
         }
         if self._quality_toolkit:
@@ -218,19 +305,54 @@ class LocalProductionEngine:
         draw = ImageDraw.Draw(layer)
         safe_area = (int(width * .065), int(height * .055), int(width * .935), int(height * .945))
         text_box = self._text_box(page.template_id, width, height)
-        title_size = {1: 64, 2: 56, 3: 48, 4: 42, 5: 36}.get(page.heading_level, 56)
-        body_size = 30
-        title_lines, title_font = self._fit_lines(draw, page.title, text_box[2] - text_box[0], title_size, 30, 2)
-        body_lines, body_font = self._fit_lines(draw, page.body, text_box[2] - text_box[0], body_size, 20, 5)
-        repair_applied = title_font.size < title_size or body_font.size < body_size
+        short_edge = min(width, height)
+        requested_title_size = round(short_edge * {1: .065, 2: .058, 3: .052, 4: .047, 5: .042}.get(page.heading_level, .058))
+        requested_body_size = round(short_edge * .029)
+        title_size = requested_title_size
+        body_size = requested_body_size
+        title_min = max(24, round(short_edge * .033))
+        body_min = max(18, round(short_edge * .018))
+        title_spacing = max(8, round(short_edge * .006))
+        body_spacing = max(6, round(short_edge * .0045))
+        title_body_gap = max(18, round(short_edge * .018))
+        text_width = text_box[2] - text_box[0]
+        text_height = text_box[3] - text_box[1]
+        while True:
+            title_lines, title_font = self._fit_lines(
+                draw, page.title, text_width, title_size, title_min, 2
+            )
+            body_lines, body_font = self._fit_lines(
+                draw, page.body, text_width, body_size, body_min, 4
+            )
+            title_preview = "\n".join(title_lines)
+            body_preview = "\n".join(body_lines)
+            title_preview_bbox = draw.multiline_textbbox(
+                (0, 0), title_preview, font=title_font, spacing=title_spacing
+            )
+            body_preview_bbox = draw.multiline_textbbox(
+                (0, 0), body_preview, font=body_font, spacing=body_spacing
+            )
+            block_height = (
+                title_preview_bbox[3] - title_preview_bbox[1]
+                + title_body_gap
+                + body_preview_bbox[3] - body_preview_bbox[1]
+            )
+            if block_height <= text_height or (title_font.size <= title_min and body_font.size <= body_min):
+                break
+            title_size = max(title_min, title_font.size - 2)
+            body_size = max(body_min, body_font.size - 2)
+        repair_applied = (
+            title_font.size < requested_title_size or body_font.size < requested_body_size
+        )
         x, y = text_box[0], text_box[1]
+        title_color, body_color, color_name = self._text_colors(base, text_box)
         title_text = "\n".join(title_lines)
-        draw.multiline_text((x, y), title_text, font=title_font, fill=(250, 253, 251, 255), spacing=12)
-        title_bbox = draw.multiline_textbbox((x, y), title_text, font=title_font, spacing=12)
-        body_y = title_bbox[3] + 28
+        draw.multiline_text((x, y), title_text, font=title_font, fill=title_color, spacing=title_spacing)
+        title_bbox = draw.multiline_textbbox((x, y), title_text, font=title_font, spacing=title_spacing)
+        body_y = title_bbox[3] + title_body_gap
         body_text = "\n".join(body_lines)
-        draw.multiline_text((x, body_y), body_text, font=body_font, fill=(221, 231, 225, 255), spacing=9)
-        body_bbox = draw.multiline_textbbox((x, body_y), body_text, font=body_font, spacing=9)
+        draw.multiline_text((x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing)
+        body_bbox = draw.multiline_textbbox((x, body_y), body_text, font=body_font, spacing=body_spacing)
         rendered_bbox = (
             min(title_bbox[0], body_bbox[0]), min(title_bbox[1], body_bbox[1]),
             max(title_bbox[2], body_bbox[2]), max(title_bbox[3], body_bbox[3]),
@@ -248,7 +370,8 @@ class LocalProductionEngine:
             "heading_level": page.heading_level,
             "body_font_size": body_font.size,
             "font": self._font_path.name if self._font_path else "PillowDefault",
-            "text_color": "#FAFDFB",
+            "text_color": color_name,
+            "background_luminance": round(self._region_luminance(base, text_box), 2),
             "repair_applied": repair_applied,
         }
 
@@ -283,6 +406,7 @@ class LocalProductionEngine:
         ])
         found_numbers = self._numbers(expected_text)
         allowed_numbers = self._numbers(allowed_source)
+        copy_number_allowlist = extract_numbers(allowed_source)
         invented = sorted(set(found_numbers) - set(allowed_numbers))
         if invented:
             issues.append(self._issue("product_fact_mismatch", "P0", f"出现未确认数字：{', '.join(invented)}", "copy"))
@@ -302,6 +426,7 @@ class LocalProductionEngine:
             "recognized_text": expected_text,
             "bbox": list(rendered),
         }
+        base_text_evidence: dict[str, Any] = {}
         reference_similarity: float | None = None
         if self._quality_toolkit:
             canvas_width, canvas_height = compose_meta["canvas"]
@@ -309,9 +434,28 @@ class LocalProductionEngine:
                 rendered[0] / canvas_width, rendered[1] / canvas_height,
                 rendered[2] / canvas_width, rendered[3] / canvas_height,
             )
+            reserved = compose_meta["text_box"]
+            reserved_bbox = (
+                reserved[0] / canvas_width, reserved[1] / canvas_height,
+                reserved[2] / canvas_width, reserved[3] / canvas_height,
+            )
+            if hasattr(self._quality_toolkit, "inspect_reserved_area"):
+                base_text_evidence = self._quality_toolkit.inspect_reserved_area(base_path, reserved_bbox)
+                unexpected_lines = base_text_evidence.get("unexpected_lines", [])
+                if unexpected_lines:
+                    sample = "、".join(str(row.get("text", "")) for row in unexpected_lines[:3])
+                    issues.append(self._issue(
+                        "base_image_text_in_reserved_area",
+                        "P1",
+                        f"底图预留区出现模型生成文字：{sample}",
+                        "regenerate",
+                    ))
             if reference_paths:
+                similarity_box = tuple(
+                    generator_meta.get("product_bbox") or compose_meta["product_bbox"]
+                )
                 reference_similarity = self._reference_similarity(
-                    reference_paths[0], base_path, tuple(compose_meta["product_bbox"])
+                    reference_paths[0], base_path, similarity_box
                 )
                 if reference_similarity < .55:
                     issues.append(self._issue(
@@ -327,17 +471,28 @@ class LocalProductionEngine:
                 visual_review = self._quality_toolkit.visual_evidence(reference_paths[0], output_path, target_region)
 
             if hasattr(self._quality_toolkit, "review_candidate"):
+                composition_provenance = {
+                    "post_composed": True,
+                    "renderer": "Pillow",
+                    "base_image_stored_separately": True,
+                    "text_layer_stored_separately": True,
+                    "base_image_path": self._relative(base_path),
+                    "text_layer_path": self._relative(output_path.parent / "text_layer.png"),
+                    "composed_image_path": self._relative(output_path),
+                    "authoritative_title": page.title,
+                    "authoritative_body": page.body,
+                }
                 combined_review = self._quality_toolkit.review_candidate(
                     output_path=output_path,
                     reference_path=reference_paths[0] if reference_paths else None,
                     prompt=prompt,
                     review_plan=review_plan,
                     visual_review=visual_review,
-                    generation=generator_meta,
+                    generation={**generator_meta, "composition_provenance": composition_provenance},
                     title=page.title,
                     body=page.body,
                     bbox=bbox,
-                    number_allowlist=allowed_numbers,
+                    number_allowlist=copy_number_allowlist,
                 )
                 text_review = combined_review.get("text_review", {})
                 llm_review = combined_review.get("llm_review", {})
@@ -350,7 +505,7 @@ class LocalProductionEngine:
                     }
             else:
                 text_review = self._quality_toolkit.review_known_text(
-                    title=page.title, body=page.body, bbox=bbox, number_allowlist=allowed_numbers
+                    title=page.title, body=page.body, bbox=bbox, number_allowlist=copy_number_allowlist
                 )
 
             for text_issue in text_review.get("issues", []):
@@ -380,8 +535,23 @@ class LocalProductionEngine:
             "suggested_fix": "；".join(item["message"] for item in issues if item["repair"] != "manual"),
             "evidence": {
                 "ocr": ocr_evidence,
+                "base_image_text": base_text_evidence,
                 "layout": {"canvas": compose_meta["canvas"], "safe_area": list(safe), "text_bbox": list(rendered), "subject_bbox": list(product), "overlap_ratio": round(overlap, 4)},
-                "product_facts": {"found_numbers": found_numbers, "allowed_numbers": allowed_numbers, "invented_numbers": invented},
+                "composition_provenance": {
+                    "post_composed": True,
+                    "renderer": "Pillow",
+                    "base_image_path": self._relative(base_path),
+                    "text_layer_path": self._relative(output_path.parent / "text_layer.png"),
+                    "composed_image_path": self._relative(output_path),
+                    "authoritative_title": page.title,
+                    "authoritative_body": page.body,
+                },
+                "product_facts": {
+                    "found_numbers": found_numbers,
+                    "allowed_numbers": allowed_numbers,
+                    "copy_number_allowlist": copy_number_allowlist,
+                    "invented_numbers": invented,
+                },
                 "reference_consistency": {"reference_count": len(reference_paths), "generator_source": generator_meta.get("source_reference", ""), "product_similarity": reference_similarity},
                 "brand_and_multi_page": {"font": compose_meta["font"], "text_color": compose_meta["text_color"], "template_id": page.template_id},
                 "text_review": text_review,
@@ -390,14 +560,59 @@ class LocalProductionEngine:
             },
         }
 
-    def _build_review_plan(self, prompt: str, reference_paths: list[Path]) -> dict[str, Any]:
-        if not self._quality_toolkit:
-            return {}
-        reference_path = reference_paths[0] if reference_paths else None
-        try:
-            return self._quality_toolkit.review_plan(prompt, reference_path=reference_path)
-        except TypeError:
-            return self._quality_toolkit.review_plan(prompt)
+    def _build_review_plan(
+        self,
+        profile: ProductProfile,
+        page: PageItem,
+        reference_paths: list[Path],
+    ) -> dict[str, Any]:
+        """Build production QA from structured facts instead of re-interpreting copy with an LLM."""
+        layout_instruction = self._layout_spec(page.template_id)["instruction"]
+        reference_requirement = (
+            "商品外观、颜色、结构、品牌标识位置和物理控制面板应与参考图一致"
+            if reference_paths
+            else "商品外观需要人工确认，因为没有提供参考图"
+        )
+        return {
+            "mode": "generate",
+            "source": "production-structured",
+            "summary": f"审查{profile.name}的电商页面视觉、布局与参考商品一致性",
+            "edit_target": "审查生图底图与后期排字合成后的候选图",
+            # Exact copy is deliberately not delegated to the LLM. Azure OCR plus
+            # the saved text layer perform that deterministic check.
+            "must_appear": [
+                f"构图必须满足：{layout_instruction}",
+                reference_requirement,
+            ],
+            "must_not_appear": [
+                "商品主体、门体、机身边缘或关键结构不得被裁切或被后期文字遮挡",
+                "预留文字区不得出现由生图模型生成的标题、正文、占位符、水印或装饰性伪文字",
+            ],
+            "must_preserve": [
+                "参考商品本体已有的品牌标识和物理面板信息允许保留，并只按参考一致性检查；"
+                "它们不是后期营销文案，也不参与营销文案数字白名单检查",
+            ],
+            "review_checks": [
+                "检查商品比例、透视、门体、控制面板和关键结构是否自然稳定",
+                "检查整体清晰度、材质、光影、留白和电商视觉质量",
+                "若商品面板相对参考图出现明显新增乱码或损坏，只合并报告一次参考一致性问题",
+            ],
+            "target_hint": layout_instruction,
+            "target_region": self._layout_spec(page.template_id)["product_box"],
+            "authoritative_copy": {
+                "title": page.title,
+                "body": page.body,
+                "serialization": json.dumps(
+                    {"title": page.title, "body": page.body}, ensure_ascii=False
+                ),
+                "policy": "逐字匹配原文，不添加或删除任何标点；由 OCR 和独立文字层确定性校验",
+            },
+            "composition_evidence": {
+                "post_composed": True,
+                "base_and_text_layer_are_separate_files": True,
+                "copy_review_owner": "deterministic_ocr",
+            },
+        }
 
     def _fit_lines(
         self,
@@ -440,27 +655,57 @@ class LocalProductionEngine:
         return ImageFont.truetype(str(self._font_path), size) if self._font_path else ImageFont.load_default(size=size)
 
     @staticmethod
+    def _region_luminance(image: Image.Image, box: tuple[int, int, int, int]) -> float:
+        region = ImageOps.grayscale(image.crop(box))
+        return float(ImageStat.Stat(region).mean[0])
+
+    @classmethod
+    def _text_colors(
+        cls, image: Image.Image, box: tuple[int, int, int, int]
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int], str]:
+        if cls._region_luminance(image, box) >= 145:
+            return (24, 31, 28, 255), (55, 65, 60, 255), "#181F1C"
+        return (250, 253, 251, 255), (221, 231, 225, 255), "#FAFDFB"
+
+    @staticmethod
     def _find_font() -> Path | None:
-        for value in (
-            "/System/Library/Fonts/STHeiti Light.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ):
-            path = Path(value)
+        configured = os.environ.get("PCP_FONT_PATH", "").strip()
+        windows_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        candidates = [Path(configured)] if configured else []
+        candidates.extend(
+            (
+                windows_fonts / "msyh.ttc",
+                windows_fonts / "msyhbd.ttc",
+                windows_fonts / "Deng.ttf",
+                windows_fonts / "simhei.ttf",
+                windows_fonts / "simsun.ttc",
+                Path("/System/Library/Fonts/PingFang.ttc"),
+                Path("/System/Library/Fonts/STHeiti Light.ttc"),
+                Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+                Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            )
+        )
+        for path in candidates:
             if path.exists():
                 return path
         return None
 
-    @staticmethod
-    def _text_box(template_id: str, width: int, height: int) -> tuple[int, int, int, int]:
-        boxes = {
-            "hero-center": (.09, .07, .91, .29),
-            "split-left": (.07, .11, .43, .82),
-            "split-right": (.57, .11, .93, .82),
-            "scene-overlay": (.07, .08, .48, .36),
-            "data-grid": (.07, .08, .93, .34),
-        }
-        x1, y1, x2, y2 = boxes.get(template_id, boxes["split-left"])
+    def _layout_spec(self, template_id: str) -> dict[str, Any]:
+        if self._template_resolver is not None:
+            template = self._template_resolver(template_id)
+            return {
+                **template,
+                "instruction": template.get("composition_instruction") or template.get("instruction") or "",
+            }
+        return self._LAYOUT_SPECS.get(template_id, self._LAYOUT_SPECS["split-left"])
+
+    def _text_box(self, template_id: str, width: int, height: int) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = self._layout_spec(template_id)["text_box"]
+        return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
+
+    def _product_box(self, template_id: str, width: int, height: int) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = self._layout_spec(template_id)["product_box"]
         return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
 
     @staticmethod
@@ -506,23 +751,47 @@ class LocalProductionEngine:
             return "regenerate"
         return "manual"
 
-    @staticmethod
-    def _bind_prompt(body: str, profile: ProductProfile, page: PageItem) -> str:
+    def _bind_generation_prompt(self, body: str, profile: ProductProfile, page: PageItem) -> str:
+        template = self._layout_spec(page.template_id)
+        layout_instruction = template["instruction"]
         values = {
             "product_name": profile.name,
             "sku": profile.sku,
             "model": profile.model,
             "category": profile.category,
             "selling_points": "；".join(profile.selling_points),
-            "page_title": page.title,
-            "page_body": page.body,
+            "page_title": "预留标题区域，不生成标题文字",
+            "page_body": "预留正文区域，不生成正文文字",
             "visual_goal": page.visual_goal,
             "template_id": page.template_id,
+            "composition_instruction": layout_instruction,
+            "scene_prompt_hint": str(template.get("scene_prompt_hint") or ""),
         }
         result = body
         for key, value in values.items():
             result = result.replace("{{" + key + "}}", value)
-        return result
+        for copy in (page.title.strip(), page.body.strip()):
+            if copy:
+                result = result.replace(copy, "")
+        guardrails = (
+            f"构图约束：{layout_instruction}。"
+            "预留文字区域必须保持背景简洁、低细节、低对比，不放置商品主体或关键物体。"
+            "商品必须完整出现在画面内，不得裁切机身、门体或关键结构。"
+            "这是纯视觉底图：预留文字区域内严禁出现标题、正文、标语、字母、数字、Logo、水印、"
+            "文本框、占位符、横线或类似字符的图形；画面其他区域也不得新增文字。"
+            "参考图中商品本体已有的品牌标识和物理面板信息应保持原样；不要把留白区画成边框。"
+        )
+        return f"{result.strip()}\n\n{guardrails}"
+
+    def _content_review_prompt(self, profile: ProductProfile, page: PageItem) -> str:
+        layout_instruction = self._layout_spec(page.template_id)["instruction"]
+        exact_copy = json.dumps({"title": page.title, "body": page.body}, ensure_ascii=False)
+        return (
+            f"为{profile.name}制作电商详情页。最终文案以此 JSON 为唯一依据：{exact_copy}。"
+            "JSON 字符串结束后的句号只是说明文字的分隔符，不属于文案；不得推断、补充或删除标点。"
+            f"视觉目标：{page.visual_goal}。模板：{page.template_id}。构图要求：{layout_instruction}。"
+            "底图不得自带文字；标题和正文必须只由后期文字层放入预留区域。"
+        )
 
     def _relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self._root))

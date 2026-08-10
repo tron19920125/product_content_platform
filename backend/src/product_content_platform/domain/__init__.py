@@ -27,6 +27,13 @@ from .production import (
     ReviewDecision,
     ReviewDecisionType,
 )
+from .image_configuration import (
+    IMAGE_QUALITIES,
+    IMAGE_SIZE_PRESETS,
+    image_capabilities,
+    validate_image_quality,
+    validate_image_size,
+)
 
 __all__ = [
     "Asset",
@@ -55,4 +62,9 @@ __all__ = [
     "Recipe",
     "ReviewDecision",
     "ReviewDecisionType",
+    "IMAGE_QUALITIES",
+    "IMAGE_SIZE_PRESETS",
+    "image_capabilities",
+    "validate_image_quality",
+    "validate_image_size",
 ]

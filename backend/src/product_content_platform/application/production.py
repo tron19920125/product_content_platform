@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from product_content_platform.domain import (
     Recipe,
     ReviewDecision,
     ReviewDecisionType,
+    validate_image_quality,
 )
 
 from .platform import PlatformApplication
@@ -51,19 +53,27 @@ class ProductionApplication:
         self._resolve_asset = resolve_asset
 
     def seed_defaults(self, model: str = "local-preview") -> None:
+        model_params = (
+            {
+                "quality": os.environ.get("PCP_IMAGE_QUALITY", "high"),
+            }
+            if model == "azure-gpt-image"
+            else {"quality": "high"}
+        )
         prompt = PromptVersion(
-            id="prompt-commerce-v1",
+            id="prompt-commerce-v2",
             prompt_asset_id="prompt-commerce-detail",
             name="家电电商详情基础 Prompt",
-            version=1,
+            version=2,
             body=(
-                "为{{product_name}}（{{model}}）制作{{page_title}}页面。"
-                "页面文案：{{page_body}}。视觉目标：{{visual_goal}}。"
-                "使用{{template_id}}版式，商品结构、型号和已确认事实必须保持准确，画面不生成最终小字。"
+                "为{{product_name}}（{{model}}）制作电商详情视觉底图。"
+                "视觉目标：{{visual_goal}}。{{composition_instruction}}。"
+                "商品结构、型号和参考图中的外观必须保持准确。"
+                "最终标题和正文由后期文字层统一排版，底图中不要生成任何文字。"
             ),
-            variables=("product_name", "model", "page_title", "page_body", "visual_goal", "template_id"),
+            variables=("product_name", "model", "visual_goal", "composition_instruction"),
             status=PublishStatus.PUBLISHED,
-            change_note="P0 内置版本",
+            change_note="P0 底图与文字分离版本",
         )
         recipe = Recipe(
             id="commerce-detail-v1",
@@ -71,12 +81,45 @@ class ProductionApplication:
             status=PublishStatus.PUBLISHED,
             prompt_version_id=prompt.id,
             model=model,
-            model_params={"size": "900x1200", "quality": "standard"},
+            model_params=model_params,
             template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
             qa_policy="commerce-basic-v1",
             candidate_count=2,
         )
         self._repository.ensure_seed_data(prompt, recipe)
+        demo_prompt = PromptVersion(
+            id="prompt-lifestyle-scene-v1",
+            prompt_asset_id="prompt-lifestyle-scene",
+            name="高端生活方式场景底图 Prompt",
+            version=1,
+            body=(
+                "为{{product_name}}（{{model}}）制作具有完整环境叙事的高端电商广告视觉底图。"
+                "页面视觉目标：{{visual_goal}}。"
+                "场景应包含真实建筑空间、墙面与地面材质、自然光或柔和电影光、可信投影、"
+                "与{{category}}使用情境相关的克制辅助陈设和前后景层次，避免只有纯白背景和孤立商品。"
+                "商品必须是第一视觉主体，参考商品的结构、颜色、比例和关键细节保持准确。"
+                "模板场景建议：{{scene_prompt_hint}}。模板构图：{{composition_instruction}}。"
+                "最终营销标题和正文由后期文字层统一排版，底图中不要生成任何营销文字。"
+            ),
+            variables=(
+                "product_name", "model", "category", "visual_goal",
+                "scene_prompt_hint", "composition_instruction",
+            ),
+            status=PublishStatus.PUBLISHED,
+            change_note="最小演示：丰富场景底图、固定留白、后期排字",
+        )
+        demo_recipe = Recipe(
+            id="commerce-lifestyle-demo-v1",
+            name="高端生活场景演示配方",
+            status=PublishStatus.PUBLISHED,
+            prompt_version_id=demo_prompt.id,
+            model=model,
+            model_params={"quality": "high"},
+            template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
+            qa_policy="commerce-basic-v1",
+            candidate_count=1,
+        )
+        self._repository.ensure_seed_data(demo_prompt, demo_recipe)
 
     def list_prompt_versions(self) -> list[PromptVersion]:
         return self._repository.list_prompt_versions()
@@ -132,12 +175,14 @@ class ProductionApplication:
         self._get_prompt(prompt_version_id)
         if not name.strip() or not model.strip():
             raise DomainValidationError("配方名称和模型不能为空")
+        quality = validate_image_quality(str(model_params.get("quality") or "high"))
         templates = tuple(dict.fromkeys(value.strip() for value in template_ids if value.strip()))
         if not templates:
             raise DomainValidationError("配方至少需要一个模板")
         recipe = Recipe(
             id=str(uuid4()), name=name.strip(), status=PublishStatus.DRAFT,
-            prompt_version_id=prompt_version_id, model=model.strip(), model_params=dict(model_params),
+            prompt_version_id=prompt_version_id, model=model.strip(),
+            model_params={**dict(model_params), "quality": quality},
             template_ids=templates, qa_policy=qa_policy.strip() or "commerce-basic-v1",
             candidate_count=max(1, min(3, candidate_count)),
         )
@@ -153,24 +198,53 @@ class ProductionApplication:
         self._repository.save_recipe(published)
         return published
 
-    def start_project(self, project_id: str, recipe_id: str = "commerce-detail-v1", force: bool = False) -> list[GenerationJob]:
+    def start_project(
+        self,
+        project_id: str,
+        recipe_id: str = "commerce-detail-v1",
+        force: bool = False,
+        quality: str | None = None,
+    ) -> list[GenerationJob]:
         project = self._platform.get_project(project_id)
         plan = self._platform.get_plan(project_id)
         if not plan.confirmed:
             raise DomainValidationError("页面规划确认后才能开始生产")
         recipe = self._get_recipe(recipe_id, published_required=True)
+        unsupported_templates = sorted({page.template_id for page in plan.items} - set(recipe.template_ids))
+        if unsupported_templates:
+            raise DomainValidationError(
+                f"当前配方不支持页面所选模板：{', '.join(unsupported_templates)}；请更换配方或把模板加入配方"
+            )
+        effective_quality = validate_image_quality(
+            quality or str(recipe.model_params.get("quality") or "high")
+        )
         existing = self._latest_jobs(project_id)
         if not force and existing and all(
             job.recipe_id == recipe_id and job.trace.get("plan_version") == plan.version
+            and job.trace.get("quality") == effective_quality
             and job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.COMPLETED}
             for job in existing.values()
         ) and set(existing) == {page.id for page in plan.items}:
             return list(existing.values())
+        reference_files = [
+            asset.file_name
+            for asset in self._platform.list_assets(project_id)
+            if asset.mime_type.startswith("image/")
+        ]
         jobs = [
             GenerationJob(
                 id=str(uuid4()), project_id=project.id, page_id=page.id, recipe_id=recipe.id,
                 status=JobStatus.QUEUED,
-                trace={"stage": "queued", "plan_version": plan.version, "prompt_version_id": recipe.prompt_version_id},
+                trace={
+                    "stage": "queued",
+                    "plan_version": plan.version,
+                    "prompt_version_id": recipe.prompt_version_id,
+                    "recipe_default_quality": str(recipe.model_params.get("quality") or "high"),
+                    "quality": effective_quality,
+                    "quality_overridden": quality is not None,
+                    "reference_count": len(reference_files),
+                    "reference_files": reference_files,
+                },
             )
             for page in plan.items
         ]
@@ -187,6 +261,7 @@ class ProductionApplication:
         project_id: str,
         page_id: str,
         recipe_id: str = "commerce-detail-v1",
+        quality: str | None = None,
     ) -> GenerationJob:
         project = self._platform.get_project(project_id)
         plan = self._platform.get_plan(project_id)
@@ -195,10 +270,32 @@ class ProductionApplication:
         if not any(page.id == page_id for page in plan.items):
             raise EntityNotFoundError(f"页面不存在: {page_id}")
         recipe = self._get_recipe(recipe_id, published_required=True)
+        page = next(item for item in plan.items if item.id == page_id)
+        if page.template_id not in recipe.template_ids:
+            raise DomainValidationError(
+                f"当前配方不支持页面所选模板：{page.template_id}；请更换配方或把模板加入配方"
+            )
+        effective_quality = validate_image_quality(
+            quality or str(recipe.model_params.get("quality") or "high")
+        )
+        reference_files = [
+            asset.file_name
+            for asset in self._platform.list_assets(project_id)
+            if asset.mime_type.startswith("image/")
+        ]
         job = GenerationJob(
             id=str(uuid4()), project_id=project.id, page_id=page_id, recipe_id=recipe.id,
             status=JobStatus.QUEUED,
-            trace={"stage": "queued", "plan_version": plan.version, "regeneration": True},
+            trace={
+                "stage": "queued",
+                "plan_version": plan.version,
+                "regeneration": True,
+                "recipe_default_quality": str(recipe.model_params.get("quality") or "high"),
+                "quality": effective_quality,
+                "quality_overridden": quality is not None,
+                "reference_count": len(reference_files),
+                "reference_files": reference_files,
+            },
         )
         self._invalidate_decisions(project_id, "页面已重新生成", page_ids={page_id})
         self._repository.create_jobs([job])
@@ -210,6 +307,40 @@ class ProductionApplication:
         for project_id in project_ids:
             self.process_project(project_id)
         return project_ids
+
+    def recover_interrupted(self) -> list[str]:
+        """Fail jobs whose worker disappeared during a service restart."""
+        interrupted_at = now()
+        latest: dict[tuple[str, str], GenerationJob] = {}
+        for job in self._repository.list_jobs():
+            latest.setdefault((job.project_id, job.page_id), job)
+        project_ids = {
+            job.project_id
+            for job in latest.values()
+            if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+        }
+        for job in latest.values():
+            if (
+                job.project_id not in project_ids
+                or job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}
+            ):
+                continue
+            interrupted = replace(
+                job,
+                status=JobStatus.FAILED,
+                error="生产服务重启导致本次任务中断，请点击“重试生产”。",
+                trace={
+                    **job.trace,
+                    "stage": "interrupted",
+                    "interrupted_at": interrupted_at.isoformat(),
+                },
+                updated_at=interrupted_at,
+            )
+            self._repository.update_job(interrupted)
+        for project_id in project_ids:
+            self._platform.set_project_status(project_id, ProjectStatus.REVIEWING)
+            self._sync_batch_project(project_id, BatchItemStatus.FAILED)
+        return sorted(project_ids)
 
     def process_project(self, project_id: str) -> dict[str, Any]:
         project = self._platform.get_project(project_id)
@@ -344,7 +475,13 @@ class ProductionApplication:
         job = GenerationJob(
             id=str(uuid4()), project_id=project_id, page_id=page_id, recipe_id=recipe.id,
             status=JobStatus.RUNNING, attempt=1,
-            trace={"stage": "recomposing", "plan_version": plan.version, "source_candidate_id": source.id},
+            trace={
+                "stage": "recomposing",
+                "plan_version": plan.version,
+                "source_candidate_id": source.id,
+                "reference_count": len(references),
+                "reference_files": [path.name for path in references],
+            },
         )
         self._repository.create_jobs([job])
         result = self._engine.recompose(
@@ -411,7 +548,13 @@ class ProductionApplication:
         self._repository.save_recipe(recipe)
         return recipe
 
-    def start_batch(self, batch_id: str, recipe_id: str = "commerce-detail-v1", failed_only: bool = False) -> dict[str, Any]:
+    def start_batch(
+        self,
+        batch_id: str,
+        recipe_id: str = "commerce-detail-v1",
+        failed_only: bool = False,
+        quality: str | None = None,
+    ) -> dict[str, Any]:
         batch = self._platform.get_batch(batch_id)
         targets = [item for item in batch.items if not failed_only or item.status is BatchItemStatus.FAILED]
         if failed_only and not targets:
@@ -426,7 +569,12 @@ class ProductionApplication:
                     plan = self._platform.generate_plan(item.project_id)
                 if not plan.confirmed:
                     plan = self._platform.save_plan(item.project_id, plan.items, confirmed=True)
-                self.start_project(item.project_id, item_recipe_id, force=failed_only)
+                self.start_project(
+                    item.project_id,
+                    item_recipe_id,
+                    force=failed_only,
+                    quality=quality,
+                )
                 self._platform.set_batch_item_status(batch_id, item.id, BatchItemStatus.RUNNING)
             except Exception as exc:
                 self._platform.set_batch_item_status(batch_id, item.id, BatchItemStatus.FAILED, str(exc))
@@ -499,12 +647,23 @@ class ProductionApplication:
 
     def _process_job(self, job: GenerationJob, project: Any, page: Any, reference_paths: list[Path]) -> None:
         recipe = self._get_recipe(job.recipe_id, published_required=True)
+        effective_quality = validate_image_quality(
+            str(job.trace.get("quality") or recipe.model_params.get("quality") or "high")
+        )
+        recipe = replace(recipe, model_params={**recipe.model_params, "quality": effective_quality})
         prompt = self._get_prompt(recipe.prompt_version_id)
         current = job
         while current.attempt < current.max_attempts:
             current = replace(
                 current, status=JobStatus.RUNNING, attempt=current.attempt + 1, error="",
-                trace={**current.trace, "stage": "generating", "started_at": now().isoformat()}, updated_at=now(),
+                trace={
+                    **current.trace,
+                    "stage": "generating",
+                    "started_at": now().isoformat(),
+                    "reference_count": len(reference_paths),
+                    "reference_files": [path.name for path in reference_paths],
+                },
+                updated_at=now(),
             )
             self._repository.update_job(current)
             try:

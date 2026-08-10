@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 
 COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default"
+AI_FOUNDRY_SCOPE = "https://ai.azure.com/.default"
 SUPPORTED_AUTH_MODES = {"static", "managed_identity", "default_credential"}
 TokenProvider = Callable[[], str]
 
@@ -30,7 +32,24 @@ class AzureCognitiveServicesTokenProvider:
         return str(self._credential.get_token(self._scope).token)
 
 
-def token_provider_from_env() -> TokenProvider | None:
+def token_scope_for_endpoint(endpoint: str | None) -> str:
+    """Return the Entra audience required by an Azure AI data-plane endpoint."""
+
+    if not endpoint:
+        return COGNITIVE_SERVICES_SCOPE
+    parsed = urlparse(endpoint.strip())
+    host = parsed.hostname.casefold() if parsed.hostname else ""
+    path = parsed.path.casefold()
+    if host.endswith(".services.ai.azure.com") or "/api/projects/" in path:
+        return AI_FOUNDRY_SCOPE
+    return COGNITIVE_SERVICES_SCOPE
+
+
+def token_provider_from_env(
+    *,
+    endpoint: str | None = None,
+    scope: str | None = None,
+) -> TokenProvider | None:
     """Build the configured Entra token provider, or return None for static auth."""
 
     mode = os.environ.get("AZURE_AUTH_MODE", "static").strip().casefold()
@@ -48,7 +67,8 @@ def token_provider_from_env() -> TokenProvider | None:
         or ""
     ).strip()
     credential = _credential(mode, client_id)
-    return AzureCognitiveServicesTokenProvider(credential)
+    resolved_scope = scope or token_scope_for_endpoint(endpoint)
+    return AzureCognitiveServicesTokenProvider(credential, resolved_scope)
 
 
 @lru_cache(maxsize=4)

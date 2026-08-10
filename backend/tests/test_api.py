@@ -50,6 +50,39 @@ class ApiTest(unittest.TestCase):
         listed = self.client.get("/api/projects").json()
         self.assertEqual(project_id, listed[0]["id"])
 
+    def test_image_capabilities_and_custom_template_validation(self) -> None:
+        capabilities = self.client.get("/api/image-capabilities")
+        self.assertEqual(200, capabilities.status_code)
+        payload = capabilities.json()
+        self.assertEqual("gpt-image-2", payload["model"])
+        self.assertEqual(["low", "medium", "high"], payload["qualities"])
+        self.assertEqual("2880x2880", payload["custom_size"]["max_square"])
+
+        created = self.client.post(
+            "/api/templates",
+            json={
+                "name": "最大正方形生活场景",
+                "page_types": ["scene"],
+                "base_template_id": "scene-overlay",
+                "size": "2880x2880",
+            },
+        )
+        self.assertEqual(201, created.status_code, created.text)
+        self.assertEqual("2880x2880", created.json()["size"])
+        self.assertFalse(created.json()["is_builtin"])
+
+        oversized = self.client.post(
+            "/api/templates",
+            json={
+                "name": "超过总像素限制",
+                "page_types": ["scene"],
+                "base_template_id": "scene-overlay",
+                "size": "2896x2896",
+            },
+        )
+        self.assertEqual(422, oversized.status_code)
+        self.assertIn("总像素", oversized.json()["detail"])
+
     def test_create_multi_sku_batch(self) -> None:
         response = self.client.post(
             "/api/batches",

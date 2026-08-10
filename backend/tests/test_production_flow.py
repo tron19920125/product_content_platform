@@ -4,12 +4,15 @@ import io
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
 from product_content_platform.api import create_app
+from product_content_platform.domain import JobStatus
 
 
 class ProductionFlowTest(unittest.TestCase):
@@ -80,6 +83,15 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertEqual(5, len(snapshot["pages"]))
         self.assertTrue(all(row["job"]["status"] == "completed" for row in snapshot["pages"]))
         self.assertTrue(all(len(row["candidates"]) == 2 for row in snapshot["pages"]))
+        self.assertTrue(all(row["job"]["trace"]["reference_count"] == 1 for row in snapshot["pages"]))
+        self.assertTrue(all(
+            row["candidates"][0]["metadata"]["generator"]["source_reference"]
+            for row in snapshot["pages"]
+        ))
+        self.assertTrue(all(
+            row["candidates"][0]["qa"]["evidence"]["reference_consistency"]["reference_count"] == 1
+            for row in snapshot["pages"]
+        ))
         first_candidate = snapshot["pages"][0]["candidates"][0]
         self.assertEqual(200, self.client.get(first_candidate["base_url"]).status_code)
         self.assertEqual(200, self.client.get(first_candidate["text_layer_url"]).status_code)
@@ -106,6 +118,114 @@ class ProductionFlowTest(unittest.TestCase):
             self.assertIn("pages/01_hero/base.png", names)
             self.assertIn("pages/01_hero/text_layer.png", names)
             self.assertIn("pages/01_hero/qa.json", names)
+
+    def test_lifestyle_demo_recipe_runs_custom_template_with_quality_override(self) -> None:
+        project_id = self._create_planned_project()
+        template_response = self.client.post(
+            "/api/templates",
+            json={
+                "name": "演示方图生活场景",
+                "page_types": ["scene"],
+                "base_template_id": "scene-overlay",
+                "size": "1024x1024",
+            },
+        )
+        self.assertEqual(201, template_response.status_code, template_response.text)
+        template = template_response.json()
+
+        plan = self.client.get(f"/api/projects/{project_id}/plan").json()
+        scene = next(item for item in plan["items"] if item["page_type"] == "scene")
+        scene.update({
+            "order": 1,
+            "title": "让精致护理融入生活",
+            "body": "自然光与温润材质，共同构成安静而真实的洗护空间。",
+            "visual_goal": "高端住宅洗衣房，石材地面、木饰面、绿植与晨间自然光，商品右下完整呈现",
+            "template_id": template["id"],
+        })
+        confirmed = self.client.put(
+            f"/api/projects/{project_id}/plan",
+            json={"items": [scene], "confirmed": True},
+        )
+        self.assertEqual(200, confirmed.status_code, confirmed.text)
+
+        demo_prompt = next(
+            item for item in self.client.get("/api/prompts").json()
+            if item["id"] == "prompt-lifestyle-scene-v1"
+        )
+        recipe_response = self.client.post(
+            "/api/recipes",
+            json={
+                "name": "最小生活场景演示配方",
+                "prompt_version_id": demo_prompt["id"],
+                "model": "local-preview",
+                "model_params": {"quality": "high"},
+                "template_ids": [template["id"]],
+                "qa_policy": "commerce-basic-v1",
+                "candidate_count": 1,
+            },
+        )
+        self.assertEqual(201, recipe_response.status_code, recipe_response.text)
+        published_recipe = self.client.post(
+            f"/api/recipes/{recipe_response.json()['id']}/publish"
+        )
+        self.assertEqual(200, published_recipe.status_code, published_recipe.text)
+
+        started = self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={
+                "recipe_id": published_recipe.json()["id"],
+                "force": False,
+                "quality": "medium",
+            },
+        )
+        self.assertEqual(202, started.status_code, started.text)
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        self.assertEqual(1, len(snapshot["pages"]))
+        row = snapshot["pages"][0]
+        self.assertEqual("completed", row["job"]["status"])
+        self.assertEqual("medium", row["job"]["trace"]["quality"])
+        self.assertTrue(row["job"]["trace"]["quality_overridden"])
+        candidate = row["candidates"][0]
+        self.assertEqual(
+            {"size": "1024x1024", "quality": "medium", "template_id": template["id"]},
+            candidate["metadata"]["effective_generation"],
+        )
+        self.assertIn("完整环境叙事", candidate["prompt"])
+        self.assertIn("高端住宅洗衣房", candidate["prompt"])
+        self.assertNotIn(scene["title"], candidate["prompt"])
+        self.assertNotIn(scene["body"], candidate["prompt"])
+
+        base_response = self.client.get(candidate["base_url"])
+        composed_response = self.client.get(candidate["composed_url"])
+        with Image.open(io.BytesIO(base_response.content)) as base_image:
+            self.assertEqual((1024, 1024), base_image.size)
+        with Image.open(io.BytesIO(composed_response.content)) as composed_image:
+            self.assertEqual((1024, 1024), composed_image.size)
+
+    def test_app_restart_marks_interrupted_jobs_failed(self) -> None:
+        project_id = self._create_planned_project()
+        production = self.client.app.state.production
+        jobs = production.start_project(project_id)
+        timestamp = datetime.now(timezone.utc)
+        production._repository.update_job(
+            replace(
+                jobs[-1],
+                status=JobStatus.RUNNING,
+                attempt=1,
+                trace={**jobs[-1].trace, "stage": "generating"},
+                updated_at=timestamp,
+            )
+        )
+
+        production.recover_interrupted()
+
+        snapshot = production.get_project_production(project_id)
+        self.assertTrue(all(row["job"].status is JobStatus.FAILED for row in snapshot["pages"]))
+        recovered = snapshot["pages"][-1]["job"]
+        self.assertEqual(JobStatus.FAILED, recovered.status)
+        self.assertEqual("interrupted", recovered.trace["stage"])
+        self.assertIn("重试生产", recovered.error)
+        self.assertEqual("reviewing", snapshot["project"].status.value)
 
     def test_prompt_and_recipe_publish_workflow(self) -> None:
         prompt = self.client.post(

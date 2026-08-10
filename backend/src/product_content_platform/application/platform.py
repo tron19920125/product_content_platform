@@ -190,7 +190,10 @@ class PlatformApplication:
                 for index, (page_type, title, body, visual_goal, template_id, heading_level) in enumerate(page_specs, start=1)
             ),
         )
-        self._repository.save_plan(plan, replace(project, updated_at=datetime.now(timezone.utc)))
+        self._repository.save_plan(
+            plan,
+            replace(project, status=ProjectStatus.DRAFT, updated_at=datetime.now(timezone.utc)),
+        )
         return plan
 
     def get_plan(self, project_id: str) -> PagePlan:
@@ -214,7 +217,7 @@ class PlatformApplication:
             confirmed=confirmed,
             created_at=current.created_at,
         )
-        project_status = ProjectStatus.PLANNED if confirmed else project.status
+        project_status = ProjectStatus.PLANNED if confirmed else ProjectStatus.DRAFT
         self._repository.save_plan(
             plan,
             replace(project, status=project_status, updated_at=datetime.now(timezone.utc)),

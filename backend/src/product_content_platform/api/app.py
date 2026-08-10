@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -149,11 +150,21 @@ class RecipeCreatePayload(BaseModel):
     candidate_count: int = Field(default=2, ge=1, le=3)
 
 
+class TemplateCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    page_types: list[str] = Field(min_length=1)
+    base_template_id: str = Field(min_length=1)
+    size: str = Field(min_length=3)
+
+
 class ProductionStartPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     recipe_id: str = "commerce-detail-v1"
     force: bool = False
+    quality: str | None = None
 
 
 class ReviewPayload(BaseModel):
@@ -186,7 +197,7 @@ def create_app(
     effective_export_root = export_root or (effective_database.parent / "exports" if database_path else settings.export_root)
     assets = LocalAssetStore(effective_asset_root)
     imports = SkuImportParser()
-    catalog = FixedContentCatalog()
+    catalog = FixedContentCatalog(effective_database.parent / "templates.json")
     production_repository = SQLiteProductionRepository(effective_database)
     generator = (
         AzureImageGenerator()
@@ -197,6 +208,7 @@ def create_app(
         effective_production_root,
         generator,
         ProductQualityToolkit(mode=settings.qa_mode),
+        template_resolver=catalog.template,
     )
     exporter = LocalArchiveExporter(effective_export_root)
     production = ProductionApplication(
@@ -204,7 +216,12 @@ def create_app(
     )
     production.seed_defaults("azure-gpt-image" if settings.generation_mode == "azure" else "local-preview")
 
-    app = FastAPI(title="Product Content Platform", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        production.recover_interrupted()
+        yield
+
+    app = FastAPI(title="Product Content Platform", version="0.1.0", lifespan=lifespan)
     app.state.platform = platform
     app.state.assets = assets
     app.state.production = production
@@ -337,12 +354,27 @@ def create_app(
     def list_templates() -> list[dict[str, Any]]:
         return catalog.templates()
 
+    @app.post("/api/templates", status_code=201)
+    def create_template(payload: TemplateCreatePayload) -> dict[str, Any]:
+        try:
+            return catalog.create_template(**payload.model_dump())
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/image-capabilities")
+    def get_image_capabilities() -> dict[str, Any]:
+        return catalog.capabilities()
+
     @app.get("/api/recipes")
     def list_recipes(published_only: bool = False) -> list[dict[str, Any]]:
         return [recipe_to_dict(item) for item in production.list_recipes(published_only)]
 
     @app.post("/api/recipes", status_code=201)
     def create_recipe(payload: RecipeCreatePayload) -> dict[str, Any]:
+        known_template_ids = {item["id"] for item in catalog.templates()}
+        unknown_templates = sorted(set(payload.template_ids) - known_template_ids)
+        if unknown_templates:
+            raise HTTPException(status_code=422, detail=f"未知模板: {', '.join(unknown_templates)}")
         try:
             recipe = production.create_recipe(**payload.model_dump())
         except DomainValidationError as exc:
@@ -387,7 +419,12 @@ def create_app(
         background_tasks: BackgroundTasks,
     ) -> dict[str, Any]:
         try:
-            jobs = production.start_project(project_id, payload.recipe_id, payload.force)
+            jobs = production.start_project(
+                project_id,
+                payload.recipe_id,
+                payload.force,
+                quality=payload.quality,
+            )
             background_tasks.add_task(production.process_project, project_id)
             return {"project_id": project_id, "jobs": [job_to_dict(job) for job in jobs]}
         except DomainValidationError as exc:
@@ -419,7 +456,12 @@ def create_app(
         background_tasks: BackgroundTasks,
     ) -> dict[str, Any]:
         try:
-            job = production.regenerate_page(project_id, page_id, payload.recipe_id)
+            job = production.regenerate_page(
+                project_id,
+                page_id,
+                payload.recipe_id,
+                quality=payload.quality,
+            )
             background_tasks.add_task(production.process_project, project_id)
             return job_to_dict(job) or {}
         except DomainValidationError as exc:
@@ -550,7 +592,12 @@ def create_app(
         background_tasks: BackgroundTasks,
     ) -> dict[str, Any]:
         try:
-            snapshot = production.start_batch(batch_id, payload.recipe_id, failed_only=False)
+            snapshot = production.start_batch(
+                batch_id,
+                payload.recipe_id,
+                failed_only=False,
+                quality=payload.quality,
+            )
             background_tasks.add_task(production.process_batch, batch_id)
             return batch_snapshot_to_dict(snapshot)
         except DomainValidationError as exc:
@@ -565,7 +612,12 @@ def create_app(
         background_tasks: BackgroundTasks,
     ) -> dict[str, Any]:
         try:
-            snapshot = production.start_batch(batch_id, payload.recipe_id, failed_only=True)
+            snapshot = production.start_batch(
+                batch_id,
+                payload.recipe_id,
+                failed_only=True,
+                quality=payload.quality,
+            )
             background_tasks.add_task(production.process_batch, batch_id)
             return batch_snapshot_to_dict(snapshot)
         except DomainValidationError as exc:

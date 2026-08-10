@@ -79,6 +79,29 @@ export type TemplateDefinition = {
   page_types: string[];
   layout: string;
   safe_area: number;
+  width: number;
+  height: number;
+  size: string;
+  text_box: [number, number, number, number];
+  product_box: [number, number, number, number];
+  composition_instruction: string;
+  scene_prompt_hint: string;
+  is_builtin: boolean;
+  base_template_id?: string;
+};
+
+export type ImageCapabilities = {
+  model: string;
+  qualities: Array<"low" | "medium" | "high">;
+  size_presets: Array<{ value: string; label: string; note: string; experimental?: boolean }>;
+  custom_size: {
+    multiple_of: number;
+    max_edge: number;
+    max_aspect_ratio: number;
+    min_pixels: number;
+    max_pixels: number;
+    max_square: string;
+  };
 };
 
 export type Recipe = {
@@ -136,6 +159,7 @@ export type Candidate = {
   rank: number;
   status: string;
   prompt: string;
+  metadata?: Record<string, unknown>;
   base_url: string;
   text_layer_url: string;
   composed_url: string;
@@ -227,6 +251,9 @@ export const api = {
   savePlan: (projectId: string, plan: Pick<PagePlan, "items" | "confirmed">) =>
     request<PagePlan>(`/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(plan) }),
   listTemplates: () => request<TemplateDefinition[]>("/templates"),
+  createTemplate: (payload: { name: string; page_types: string[]; base_template_id: string; size: string }) =>
+    request<TemplateDefinition>("/templates", { method: "POST", body: JSON.stringify(payload) }),
+  getImageCapabilities: () => request<ImageCapabilities>("/image-capabilities"),
   listRecipes: () => request<Recipe[]>("/recipes"),
   listPrompts: () => request<PromptVersion[]>("/prompts"),
   createPrompt: (payload: unknown) => request<PromptVersion>("/prompts", { method: "POST", body: JSON.stringify(payload) }),
@@ -234,18 +261,18 @@ export const api = {
   createRecipe: (payload: unknown) => request<Recipe>("/recipes", { method: "POST", body: JSON.stringify(payload) }),
   publishRecipe: (id: string) => request<Recipe>(`/recipes/${id}/publish`, { method: "POST" }),
   getProduction: (projectId: string) => request<ProductionSnapshot>(`/projects/${projectId}/production`),
-  startProduction: (projectId: string, force = false, recipeId = "commerce-detail-v1") =>
-    request(`/projects/${projectId}/production/start`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force }) }),
+  startProduction: (projectId: string, force = false, recipeId = "commerce-detail-v1", quality?: string) =>
+    request(`/projects/${projectId}/production/start`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force, quality }) }),
   recomposePage: (projectId: string, pageId: string) =>
     request<ProductionSnapshot>(`/projects/${projectId}/pages/${pageId}/recompose`, { method: "POST" }),
-  regeneratePage: (projectId: string, pageId: string, recipeId: string) =>
-    request<GenerationJob>(`/projects/${projectId}/pages/${pageId}/regenerate`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: true }) }),
+  regeneratePage: (projectId: string, pageId: string, recipeId: string, quality?: string) =>
+    request<GenerationJob>(`/projects/${projectId}/pages/${pageId}/regenerate`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: true, quality }) }),
   reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "") =>
     request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user" }) }),
   exportProject: (projectId: string) => request<{ file_name: string; download_url: string }>(`/projects/${projectId}/export`, { method: "POST" }),
   createRecipeCandidate: (projectId: string, name: string) =>
     request<Recipe>(`/projects/${projectId}/recipe-candidate`, { method: "POST", body: JSON.stringify({ name }) }),
-  startBatchProduction: (batchId: string, failedOnly = false, recipeId = "commerce-detail-v1") => request(`/batches/${batchId}/production/${failedOnly ? "retry" : "start"}`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: failedOnly }) }),
+  startBatchProduction: (batchId: string, failedOnly = false, recipeId = "commerce-detail-v1", quality?: string) => request(`/batches/${batchId}/production/${failedOnly ? "retry" : "start"}`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: failedOnly, quality }) }),
   pauseBatch: (batchId: string) => request(`/batches/${batchId}/pause`, { method: "POST" }),
   resumeBatch: (batchId: string) => request(`/batches/${batchId}/resume`, { method: "POST" }),
   exportBatch: (batchId: string) => request<{ file_name: string; download_url: string }>(`/batches/${batchId}/export`, { method: "POST" }),

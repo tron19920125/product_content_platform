@@ -167,7 +167,17 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
                 }
             )
 
-    extracted_numbers = extract_numbers(extracted_text)
+    # Numeric fact checks belong to the post-composed copy area. Numbers printed
+    # on the photographed product (for example a timer on an appliance panel)
+    # are product/reference evidence, not marketing-copy facts.
+    number_lines = lines
+    if spec.expected_text_region is not None:
+        number_lines = [
+            line
+            for line in lines
+            if line.bbox is None or bbox_center_inside_region(line.bbox, spec.expected_text_region)
+        ]
+    extracted_numbers = extract_numbers("\n".join(line.text for line in number_lines))
     if spec.strict_number_allowlist:
         allowed = {normalize_number(item) for item in spec.number_allowlist}
         for number in extracted_numbers:
@@ -217,6 +227,7 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
             "strict_number_allowlist": spec.strict_number_allowlist,
             "min_confidence": spec.min_confidence,
             "expected_text_region": spec.expected_text_region,
+            "number_scope": "expected_text_region" if spec.expected_text_region is not None else "whole_image",
         },
     )
 

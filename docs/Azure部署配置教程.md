@@ -12,7 +12,7 @@
 | Azure AI Vision | OCR 文字识别 | 使用资源页面提供的自定义 Endpoint |
 | Azure 应用承载服务 | 运行后端 | 可使用 App Service、Container Apps 或虚拟机 |
 
-图片默认配置为 `quality=high`、`size=2048x2048`。`2048x2048` 需要图片部署使用 `gpt-image-2`；如果实际部署为 `gpt-image-1` 系列，必须将尺寸改为该模型支持的 `1024x1024`、`1024x1536` 或 `1536x1024`。
+内置模板默认配置为 `quality=high`、`size=2048x2048`。质量是配方默认值，实际生产可临时覆盖；尺寸由页面模板决定，不再由生产环境变量全局覆盖。自定义模板会校验 `gpt-image-2` 的边长、宽高比、16 像素倍数和总像素限制。
 
 ## 2. 启用 Managed Identity
 
@@ -42,14 +42,13 @@
 PCP_GENERATION_MODE=azure
 PCP_QA_MODE=azure
 PCP_IMAGE_QUALITY=high
-PCP_IMAGE_SIZE=2048x2048
 
 AZURE_AUTH_MODE=managed_identity
 
 AZURE_OPENAI_RESOURCE_ENDPOINT=https://<openai-resource>.openai.azure.com
 AZURE_OPENAI_IMAGE_DEPLOYMENT=<gpt-image-2-deployment-name>
-AZURE_OPENAI_IMAGE_API_VERSION=preview
-AZURE_OPENAI_IMAGE_EDIT_API_VERSION=preview
+AZURE_OPENAI_IMAGE_API_VERSION=2025-04-01-preview
+AZURE_OPENAI_IMAGE_EDIT_API_VERSION=2025-04-01-preview
 
 AZURE_OPENAI_REVIEW_MODEL=<multimodal-review-deployment-name>
 AZURE_OPENAI_REVIEW_API_VERSION=2025-04-01-preview
@@ -79,8 +78,8 @@ AZURE_AI_VISION_KEY=
 推荐配置资源 Endpoint、部署名和 API Version，由平台按 Azure OpenAI v1 格式拼接请求地址，并将部署名写入请求体的 `model` 字段。也可以直接提供完整地址，完整地址的优先级更高：
 
 ```dotenv
-AZURE_OPENAI_IMAGE_ENDPOINT=https://<resource>/openai/v1/images/generations?api-version=preview
-AZURE_OPENAI_IMAGE_EDIT_ENDPOINT=https://<resource>/openai/v1/images/edits?api-version=preview
+AZURE_OPENAI_IMAGE_ENDPOINT=https://<resource>.services.ai.azure.com/openai/deployments/<deployment>/images/generations?api-version=2025-04-01-preview
+AZURE_OPENAI_IMAGE_EDIT_ENDPOINT=https://<resource>.services.ai.azure.com/openai/deployments/<deployment>/images/edits?api-version=2025-04-01-preview
 AZURE_OPENAI_REVIEW_ENDPOINT=https://<resource>/openai/responses?api-version=<version>
 ```
 
@@ -119,7 +118,7 @@ set +a
 2. 确认后端服务已经关联正确的托管身份；
 3. 确认该身份在 OpenAI 和 Vision 两个资源上均拥有对应角色；
 4. 重启服务，使环境变量生效；
-5. 执行一次无参考图生图，确认输出为 `2048x2048`；
+5. 选择 `2048x2048` 模板执行一次无参考图生图，确认底图、文字层与合成图均为模板尺寸；
 6. 执行一次参考图编辑，确认图片编辑 Endpoint 可用；
 7. 开启 Azure 质检，确认 OCR、审查计划和多模态审查均能返回结果；
 8. 若资源使用防火墙或私有终结点，确认承载服务的网络和 DNS 能访问资源 Endpoint。

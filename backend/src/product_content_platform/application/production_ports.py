@@ -43,6 +43,8 @@ class BaseImageGenerator(Protocol):
         reference_paths: list[Path],
         output_path: Path,
         variant: int,
+        size: str,
+        quality: str,
     ) -> dict[str, Any]: ...
 
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -31,8 +34,15 @@ class SQLiteProductionRepository:
     def ensure_seed_data(self, prompt: PromptVersion, recipe: Recipe) -> None:
         if self.get_prompt_version(prompt.id) is None:
             self.save_prompt_version(prompt)
-        if self.get_recipe(recipe.id) is None:
+        existing = self.get_recipe(recipe.id)
+        if existing is None:
             self.save_recipe(recipe)
+        elif (
+            existing.model != recipe.model
+            or existing.model_params != recipe.model_params
+            or existing.prompt_version_id != recipe.prompt_version_id
+        ):
+            self.save_recipe(replace(recipe, created_at=existing.created_at))
 
     def save_prompt_version(self, prompt: PromptVersion) -> None:
         with self._connect() as connection:
@@ -253,11 +263,16 @@ class SQLiteProductionRepository:
             ).fetchall()
         return [self._decision_from_row(row) for row in rows]
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

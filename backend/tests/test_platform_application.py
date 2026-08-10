@@ -13,6 +13,7 @@ from product_content_platform.domain import (
     BatchStatus,
     DomainValidationError,
     ProductProfile,
+    ProjectStatus,
 )
 
 
@@ -112,6 +113,20 @@ class PlatformApplicationTest(unittest.TestCase):
         self.assertTrue(confirmed.confirmed)
         self.assertEqual("X11 全新主视觉", confirmed.items[0].title)
         self.assertEqual("planned", self.platform.get_project(project.id).status.value)
+
+    def test_regenerating_or_saving_draft_resets_project_to_draft(self) -> None:
+        project = self.platform.create_project(ProjectInput("X11详情页", profile("X11")))
+        self.platform.set_project_status(project.id, ProjectStatus.REVIEWING)
+
+        generated = self.platform.generate_plan(project.id)
+
+        self.assertFalse(generated.confirmed)
+        self.assertEqual(ProjectStatus.DRAFT, self.platform.get_project(project.id).status)
+
+        self.platform.set_project_status(project.id, ProjectStatus.REVIEWING)
+        self.platform.save_plan(project.id, generated.items, confirmed=False)
+
+        self.assertEqual(ProjectStatus.DRAFT, self.platform.get_project(project.id).status)
 
 
 if __name__ == "__main__":
