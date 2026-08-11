@@ -72,6 +72,61 @@ SHOWCASES = (
     },
 )
 
+AZURE_ACCEPTANCE_PROJECT_ID = "2b5deb3c-e86b-4cfa-85b5-7429536e91f0"
+AZURE_ACCEPTANCE_MARKER = "仓库内置历史 Azure 五页验收快照"
+AZURE_ACCEPTANCE_PAGES = (
+    {
+        "order": 1,
+        "page_id": "1fdd8d27-194f-457d-9b3b-fffbb6edef68",
+        "page_type": PageType.HERO,
+        "template_id": "hero-center",
+        "title": "静谧洗护，自成风景",
+        "body": "10kg 大容量，融入现代家居。",
+        "visual_goal": "高端现代家居主视觉，左上文案留白，商品在右下完整呈现。",
+        "elapsed_seconds": 133.402,
+    },
+    {
+        "order": 2,
+        "page_id": "b8163ea0-e86e-4ab0-90d6-2a13d6f0b3d4",
+        "page_type": PageType.SELLING_POINT,
+        "template_id": "split-left",
+        "title": "衣物护理，也是一种质感",
+        "body": "柔和光影，呈现精致洗护日常。",
+        "visual_goal": "衣帽间生活方式场景，左侧承载文案，商品在右下与空间融合。",
+        "elapsed_seconds": 126.305,
+    },
+    {
+        "order": 3,
+        "page_id": "a1bec8b9-76d2-40e6-9d9d-b088ecc9ecd2",
+        "page_type": PageType.FUNCTION,
+        "template_id": "split-right",
+        "title": "轻启舱门，呵护从容",
+        "body": "真实材质与克制陈设，强调产品细节。",
+        "visual_goal": "左侧商品细节、右侧低细节文案区，突出开门结构和材质。",
+        "elapsed_seconds": 122.661,
+    },
+    {
+        "order": 4,
+        "page_id": "5bcae0c9-c386-4123-8db4-0f95b6cced3a",
+        "page_type": PageType.SCENE,
+        "template_id": "scene-overlay",
+        "title": "让洗护，成为空间的一部分",
+        "body": "安静融入客厅与洗衣空间。",
+        "visual_goal": "高端洗护生活场景，商品成为建筑空间的一部分。",
+        "elapsed_seconds": 130.819,
+    },
+    {
+        "order": 5,
+        "page_id": "8be1bdf0-25f4-4ff8-87c6-2a49a06f4d09",
+        "page_type": PageType.PARAMETERS,
+        "template_id": "data-grid",
+        "title": "TG10EK60",
+        "body": "10kg 大容量滚筒洗衣机。",
+        "visual_goal": "以克制的参数文案和完整商品图完成详情页收束。",
+        "elapsed_seconds": 129.131,
+    },
+)
+
 
 def seed_showcase_projects(
     *,
@@ -261,6 +316,215 @@ def seed_showcase_projects(
                 decision=ReviewDecisionType.APPROVED,
                 override_reason="仓库内置验收示例",
                 reviewer="showcase-seeder",
+                created_at=created_at,
+            )
+        )
+
+    _seed_azure_acceptance_project(
+        source_root=source_root.parent / "azure-five-page-acceptance",
+        product_reference=product_reference,
+        production_root=production_root,
+        repository=repository,
+        platform=platform,
+        production_repository=production_repository,
+        asset_store=asset_store,
+    )
+
+
+def _seed_azure_acceptance_project(
+    *,
+    source_root: Path,
+    product_reference: Path,
+    production_root: Path,
+    repository: SQLitePlatformRepository,
+    platform: PlatformApplication,
+    production_repository: SQLiteProductionRepository,
+    asset_store: LocalAssetStore,
+) -> None:
+    """Restore the approved five-page Azure acceptance snapshot on clean deployments."""
+    if not source_root.is_dir():
+        return
+    project = repository.get_project(AZURE_ACCEPTANCE_PROJECT_ID)
+    if project is not None and project.profile.output_requirements != AZURE_ACCEPTANCE_MARKER:
+        # Never overwrite the real local project when it already exists and has continued evolving.
+        return
+
+    created_at = datetime(2026, 8, 10, 19, 5, 29, tzinfo=timezone.utc)
+    if project is None:
+        project = Project(
+            id=AZURE_ACCEPTANCE_PROJECT_ID,
+            name="Azure 2048 High Five Page Acceptance",
+            status=ProjectStatus.COMPLETED,
+            profile=ProductProfile(
+                sku="DEMO-LIFE-2048",
+                name="高端滚筒洗衣机",
+                category="洗衣机",
+                model="TG10EK60",
+                selling_points=("精致衣物护理", "安静融入高端家居", "真实材质与自然光"),
+                parameters={"容量": "10kg", "类型": "滚筒洗衣机"},
+                brand_requirements="克制、温暖、真实材质与自然光",
+                output_requirements=AZURE_ACCEPTANCE_MARKER,
+            ),
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        repository.save_project(project)
+
+    if product_reference.is_file() and not platform.list_assets(AZURE_ACCEPTANCE_PROJECT_ID):
+        relative_path = asset_store.save(product_reference.name, product_reference.read_bytes())
+        platform.register_asset(
+            AZURE_ACCEPTANCE_PROJECT_ID,
+            AssetUsage.PRODUCT,
+            product_reference.name,
+            "image/jpeg",
+            relative_path,
+            product_reference.stat().st_size,
+            source="bundled_azure_acceptance",
+            authorization_status="authorized",
+        )
+        project = repository.get_project(AZURE_ACCEPTANCE_PROJECT_ID) or project
+
+    if repository.get_plan(AZURE_ACCEPTANCE_PROJECT_ID) is None:
+        pages = tuple(
+            PageItem(
+                id=str(row["page_id"]),
+                order=int(row["order"]),
+                page_type=row["page_type"],
+                title=str(row["title"]),
+                body=str(row["body"]),
+                visual_goal=str(row["visual_goal"]),
+                template_id=str(row["template_id"]),
+                heading_level=1 if row["page_type"] is PageType.HERO else 2,
+                status=PageStatus.READY,
+            )
+            for row in AZURE_ACCEPTANCE_PAGES
+        )
+        plan = PagePlan(
+            id="01696866-43ce-41bc-a86e-449aec690c83",
+            project_id=AZURE_ACCEPTANCE_PROJECT_ID,
+            version=3,
+            items=pages,
+            layout_library_id="library-square-2048",
+            confirmed=True,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        repository.save_plan(
+            plan,
+            replace(project, status=ProjectStatus.COMPLETED, updated_at=created_at),
+        )
+
+    for row in AZURE_ACCEPTANCE_PAGES:
+        order = int(row["order"])
+        job_id = f"azure-five-page-acceptance-job-{order}"
+        if production_repository.get_job(job_id) is not None:
+            continue
+        page_source = source_root / f"page-{order}"
+        source_paths = {
+            "base": page_source / "base.png",
+            "text": page_source / "text.png",
+            "composed": page_source / "composed.png",
+        }
+        if not all(path.is_file() for path in source_paths.values()):
+            continue
+        relative_root = Path("showcases") / "azure-five-page-acceptance" / f"page-{order}"
+        destination_root = production_root / relative_root
+        destination_root.mkdir(parents=True, exist_ok=True)
+        for kind, source in source_paths.items():
+            shutil.copy2(source, destination_root / f"{kind}.png")
+
+        candidate_id = f"azure-five-page-acceptance-candidate-{order}"
+        trace = {
+            "stage": "completed",
+            "progress": 100,
+            "label": "仓库内置 Azure 验收快照已就绪",
+            "plan_version": 3,
+            "quality": "high",
+            "prompt_version_id": "prompt-lifestyle-scene-v2",
+            "bundled_azure_acceptance": True,
+            "reference_count": 1,
+            "reference_files": [product_reference.name],
+            "image_elapsed_seconds": row["elapsed_seconds"],
+        }
+        job = GenerationJob(
+            id=job_id,
+            project_id=AZURE_ACCEPTANCE_PROJECT_ID,
+            page_id=str(row["page_id"]),
+            recipe_id="commerce-lifestyle-demo-v1",
+            status=JobStatus.COMPLETED,
+            attempt=1,
+            trace=trace,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        production_repository.create_jobs([job])
+        candidate = Candidate(
+            id=candidate_id,
+            job_id=job_id,
+            project_id=AZURE_ACCEPTANCE_PROJECT_ID,
+            page_id=str(row["page_id"]),
+            candidate_index=1,
+            base_path=str(relative_root / "base.png"),
+            text_layer_path=str(relative_root / "text.png"),
+            composed_path=str(relative_root / "composed.png"),
+            prompt="历史 Azure 2048 High 验收 Prompt；场景底图、商品层与确定性文字层按模板合成。",
+            score=98,
+            rank=1,
+            status=CandidateStatus.GENERATED,
+            metadata={
+                "generator": {
+                    "provider": "azure-gpt-image",
+                    "requested_size": "2048x2048",
+                    "actual_size": "2048x2048",
+                    "quality": "high",
+                    "reference_strategy": "layered_product",
+                    "reference_count": 1,
+                    "elapsed_seconds": row["elapsed_seconds"],
+                    "layout": {
+                        "template_id": row["template_id"],
+                        "library_id": "library-square-2048",
+                        "canvas_size": "2048x2048",
+                    },
+                },
+                "composition": {
+                    "post_composed": True,
+                    "base_and_text_layer_are_separate_files": True,
+                    "authoritative_title": row["title"],
+                    "authoritative_body": row["body"],
+                },
+                "recipe_id": "commerce-lifestyle-demo-v1",
+                "prompt_version_id": "prompt-lifestyle-scene-v2",
+                "historical_acceptance": True,
+            },
+            created_at=created_at,
+        )
+        qa = QAResult(
+            id=f"{candidate_id}-qa",
+            candidate_id=candidate_id,
+            status=QAStatus.PASS,
+            score=98,
+            issues=(),
+            evidence={
+                "historical_acceptance": True,
+                "provider": "azure-ai-vision+azure-openai",
+                "canvas_size": "2048x2048",
+                "layout_library_id": "library-square-2048",
+                "template_id": row["template_id"],
+                "text_layer_source": "deterministic_composition",
+                "reference_count": 1,
+            },
+            created_at=created_at,
+        )
+        production_repository.save_job_results(job, [candidate], [qa])
+        production_repository.save_decision(
+            ReviewDecision(
+                id=f"{candidate_id}-approval",
+                project_id=AZURE_ACCEPTANCE_PROJECT_ID,
+                page_id=str(row["page_id"]),
+                candidate_id=candidate_id,
+                decision=ReviewDecisionType.APPROVED,
+                override_reason="2026-08-11 Azure 五页验收通过，仓库内置历史快照",
+                reviewer="codex-final-acceptance",
                 created_at=created_at,
             )
         )

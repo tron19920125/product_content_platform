@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "project_id": "2b5deb3c-e86b-4cfa-85b5-7429536e91f0",
+  "project_name": "Azure 2048 High Five Page Acceptance",
+  "sku": "DEMO-LIFE-2048",
+  "captured_at": "2026-08-11",
+  "status": "completed",
+  "layout_library_id": "library-square-2048",
+  "size": "2048x2048",
+  "quality": "high",
+  "provider": "azure-gpt-image",
+  "qa_provider": "azure-ai-vision+azure-openai",
+  "reference_strategy": "layered_product",
+  "reference_asset": "../showcases/product-reference.jpg",
+  "note": "这是旧 layered_product 五页历史验收快照；当前推荐生产链路为多参考图 model_edit。",
+  "pages": [
+    {
+      "order": 1,
+      "page_id": "1fdd8d27-194f-457d-9b3b-fffbb6edef68",
+      "accepted_candidate_id": "b781c8a8-525d-4f63-a4ff-b28fa81df2b3",
+      "template_id": "hero-center",
+      "qa_score": 98,
+      "files": ["page-1/base.png", "page-1/text.png", "page-1/composed.png"]
+    },
+    {
+      "order": 2,
+      "page_id": "b8163ea0-e86e-4ab0-90d6-2a13d6f0b3d4",
+      "accepted_candidate_id": "9808e360-5337-4386-9b64-86e1b7d7a74c",
+      "template_id": "split-left",
+      "qa_score": 98,
+      "files": ["page-2/base.png", "page-2/text.png", "page-2/composed.png"]
+    },
+    {
+      "order": 3,
+      "page_id": "a1bec8b9-76d2-40e6-9d9d-b088ecc9ecd2",
+      "accepted_candidate_id": "1f164128-acf1-4d1b-a78b-f92d3e6983f0",
+      "template_id": "split-right",
+      "qa_score": 98,
+      "files": ["page-3/base.png", "page-3/text.png", "page-3/composed.png"]
+    },
+    {
+      "order": 4,
+      "page_id": "5bcae0c9-c386-4123-8db4-0f95b6cced3a",
+      "accepted_candidate_id": "ef97407a-ccfb-4409-8042-e2a6676ecbf1",
+      "template_id": "scene-overlay",
+      "qa_score": 98,
+      "files": ["page-4/base.png", "page-4/text.png", "page-4/composed.png"]
+    },
+    {
+      "order": 5,
+      "page_id": "8be1bdf0-25f4-4ff8-87c6-2a49a06f4d09",
+      "accepted_candidate_id": "d57a4fc4-6949-444e-b774-d10ba77c3602",
+      "template_id": "data-grid",
+      "qa_score": 98,
+      "files": ["page-5/base.png", "page-5/text.png", "page-5/composed.png"]
+    }
+  ]
+}
