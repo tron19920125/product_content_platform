@@ -380,6 +380,88 @@ class ProductionFlowTest(unittest.TestCase):
             self.client.get(new_candidate["text_layer_url"]).content,
         )
 
+    def test_recompose_applies_user_typography_without_regenerating_base(self) -> None:
+        project_id = self._create_planned_project()
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        before = self.client.get(f"/api/projects/{project_id}/production").json()
+        first_page = before["pages"][0]
+        source = first_page["candidates"][0]
+
+        recomposed = self.client.post(
+            f"/api/projects/{project_id}/pages/{first_page['page']['id']}/recompose",
+            json={
+                "source_candidate_id": source["id"],
+                "typography": {
+                    "font_family": "system_bold",
+                    "title_font_size": 92,
+                    "body_font_size": 42,
+                    "title_color": "#C0392B",
+                    "body_color": "#1F618D",
+                    "text_align": "center",
+                    "vertical_align": "center",
+                    "offset_x": 18,
+                    "offset_y": -12,
+                    "title_line_spacing": 14,
+                    "body_line_spacing": 10,
+                    "title_body_gap": 30,
+                },
+            },
+        )
+
+        self.assertEqual(200, recomposed.status_code, recomposed.text)
+        candidate = recomposed.json()["pages"][0]["candidates"][0]
+        composition = candidate["metadata"]["composition"]
+        self.assertEqual("system_bold", composition["font_family"])
+        self.assertEqual("#C0392B", composition["title_color"])
+        self.assertEqual("#1F618D", composition["body_color"])
+        self.assertEqual("center", composition["text_align"])
+        self.assertEqual("center", composition["vertical_align"])
+        self.assertEqual(18, composition["offset_x"])
+        self.assertEqual(-12, composition["offset_y"])
+        self.assertEqual(
+            self.client.get(source["base_url"]).content,
+            self.client.get(candidate["base_url"]).content,
+        )
+        self.assertNotEqual(
+            self.client.get(source["composed_url"]).content,
+            self.client.get(candidate["composed_url"]).content,
+        )
+
+    def test_stitch_selected_candidates_exports_full_resolution_png(self) -> None:
+        project_id = self._create_planned_project()
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        selected = [row["candidates"][0] for row in snapshot["pages"][:3]]
+        source_sizes = []
+        for candidate in selected:
+            with Image.open(io.BytesIO(self.client.get(candidate["composed_url"]).content)) as image:
+                source_sizes.append(image.size)
+
+        stitched = self.client.post(
+            f"/api/projects/{project_id}/stitch",
+            json={
+                "candidate_ids": [candidate["id"] for candidate in selected],
+                "direction": "vertical",
+                "gap": 12,
+                "background_color": "#F4F1EA",
+                "alignment": "center",
+            },
+        )
+
+        self.assertEqual(201, stitched.status_code, stitched.text)
+        exported = self.client.get(stitched.json()["download_url"])
+        self.assertEqual(200, exported.status_code)
+        self.assertEqual("image/png", exported.headers["content-type"])
+        with Image.open(io.BytesIO(exported.content)) as image:
+            self.assertEqual(max(width for width, _ in source_sizes), image.width)
+            self.assertEqual(sum(height for _, height in source_sizes) + 24, image.height)
+
     def test_project_edit_clone_page_regenerate_and_recipe_candidate(self) -> None:
         project_id = self._create_planned_project()
         project = self.client.get(f"/api/projects/{project_id}").json()

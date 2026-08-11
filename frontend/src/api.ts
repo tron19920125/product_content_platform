@@ -183,6 +183,29 @@ export type Candidate = {
   qa: QAResult;
 };
 
+export type TypographySettings = {
+  font_family: "system_sans" | "system_bold" | "system_serif";
+  title_font_size?: number;
+  body_font_size?: number;
+  title_color?: string;
+  body_color?: string;
+  text_align: "left" | "center" | "right";
+  vertical_align: "top" | "center" | "bottom";
+  offset_x: number;
+  offset_y: number;
+  title_line_spacing?: number;
+  body_line_spacing?: number;
+  title_body_gap?: number;
+};
+
+export type StitchSettings = {
+  candidate_ids: string[];
+  direction: "vertical" | "horizontal";
+  gap: number;
+  background_color: string;
+  alignment: "start" | "center" | "end";
+};
+
 export type ReviewDecision = {
   id: string;
   candidate_id: string;
@@ -288,13 +311,18 @@ export const api = {
   getProduction: (projectId: string) => request<ProductionSnapshot>(`/projects/${projectId}/production`),
   startProduction: (projectId: string, force = false, recipeId = "commerce-detail-v1", quality?: string) =>
     request(`/projects/${projectId}/production/start`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force, quality }) }),
-  recomposePage: (projectId: string, pageId: string) =>
-    request<ProductionSnapshot>(`/projects/${projectId}/pages/${pageId}/recompose`, { method: "POST" }),
+  recomposePage: (projectId: string, pageId: string, sourceCandidateId = "", typography?: TypographySettings) =>
+    request<ProductionSnapshot>(`/projects/${projectId}/pages/${pageId}/recompose`, {
+      method: "POST",
+      body: JSON.stringify({ source_candidate_id: sourceCandidateId, typography }),
+    }),
   regeneratePage: (projectId: string, pageId: string, recipeId: string, quality?: string) =>
     request<GenerationJob>(`/projects/${projectId}/pages/${pageId}/regenerate`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: true, quality }) }),
   reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "") =>
     request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user" }) }),
   exportProject: (projectId: string) => request<{ file_name: string; download_url: string }>(`/projects/${projectId}/export`, { method: "POST" }),
+  stitchProject: (projectId: string, settings: StitchSettings) =>
+    request<{ file_name: string; download_url: string }>(`/projects/${projectId}/stitch`, { method: "POST", body: JSON.stringify(settings) }),
   createRecipeCandidate: (projectId: string, name: string) =>
     request<Recipe>(`/projects/${projectId}/recipe-candidate`, { method: "POST", body: JSON.stringify({ name }) }),
   startBatchProduction: (batchId: string, failedOnly = false, recipeId = "commerce-detail-v1", quality?: string) => request(`/batches/${batchId}/production/${failedOnly ? "retry" : "start"}`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: failedOnly, quality }) }),

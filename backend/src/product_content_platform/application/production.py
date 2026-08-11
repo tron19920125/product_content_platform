@@ -491,7 +491,14 @@ class ProductionApplication:
             raise EntityNotFoundError(f"候选文件类型不存在: {kind}")
         return self._engine.resolve(relative_path)
 
-    def recompose_page(self, project_id: str, page_id: str) -> dict[str, Any]:
+    def recompose_page(
+        self,
+        project_id: str,
+        page_id: str,
+        *,
+        source_candidate_id: str = "",
+        typography: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         project = self._platform.get_project(project_id)
         plan = self._platform.get_plan(project_id)
         page = next((item for item in plan.items if item.id == page_id), None)
@@ -506,7 +513,12 @@ class ProductionApplication:
         ]
         if not source_candidates:
             raise DomainValidationError("页面没有可复用的底图")
-        source = sorted(source_candidates, key=lambda item: item.rank)[0]
+        if source_candidate_id:
+            source = next((item for item in source_candidates if item.id == source_candidate_id), None)
+            if source is None:
+                raise DomainValidationError("所选候选图不是本页当前可重新排版的结果")
+        else:
+            source = sorted(source_candidates, key=lambda item: item.rank)[0]
         recipe = self._get_recipe(latest_job.recipe_id, published_required=True)
         prompt = self._get_prompt(recipe.prompt_version_id)
         references = [
@@ -525,6 +537,7 @@ class ProductionApplication:
                 "started_at": recomposition_started_at.isoformat(),
                 "plan_version": plan.version,
                 "source_candidate_id": source.id,
+                "typography": dict(typography or {}),
                 "reference_count": len(references),
                 "reference_files": [path.name for path in references],
             },
@@ -533,6 +546,7 @@ class ProductionApplication:
         result = self._engine.recompose(
             project=project, page=page, recipe=recipe, prompt_version=prompt,
             source_candidate=source, reference_paths=references,
+            typography=typography,
         )
         candidate_id = str(uuid4())
         candidate = Candidate(
@@ -562,6 +576,45 @@ class ProductionApplication:
         self._invalidate_decisions(project_id, "文字重新排版后需要重新确认", page_ids={page_id})
         self._platform.set_project_status(project_id, ProjectStatus.REVIEWING)
         return self.get_project_production(project_id)
+
+    def stitch_project(
+        self,
+        project_id: str,
+        candidate_ids: list[str],
+        *,
+        direction: str,
+        gap: int,
+        background_color: str,
+        alignment: str,
+    ) -> Path:
+        snapshot = self.get_project_production(project_id)
+        if len(candidate_ids) < 2:
+            raise DomainValidationError("长图拼接至少需要选择 2 张图片")
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise DomainValidationError("同一张图片不能重复加入长图")
+        available = {
+            candidate.id: candidate
+            for row in snapshot["pages"]
+            for candidate in row["candidates"]
+        }
+        selected: list[Candidate] = []
+        for candidate_id in candidate_ids:
+            candidate = available.get(candidate_id)
+            if candidate is None:
+                raise DomainValidationError("所选图片不属于当前项目的有效生产结果")
+            selected.append(candidate)
+        project = snapshot["project"]
+        try:
+            return self._exporter.stitch(
+                f"{project.profile.sku}_{project.name}_长图",
+                [self._engine.resolve(candidate.composed_path) for candidate in selected],
+                direction=direction,
+                gap=gap,
+                background_color=background_color,
+                alignment=alignment,
+            )
+        except ValueError as exc:
+            raise DomainValidationError(str(exc)) from exc
 
     def export_project(self, project_id: str) -> Path:
         snapshot = self.get_project_production(project_id)

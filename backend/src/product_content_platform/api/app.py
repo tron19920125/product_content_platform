@@ -168,6 +168,40 @@ class ProductionStartPayload(BaseModel):
     quality: str | None = None
 
 
+class TypographyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    font_family: str = Field(default="system_sans", pattern=r"^system_(sans|bold|serif)$")
+    title_font_size: int | None = Field(default=None, ge=24, le=512)
+    body_font_size: int | None = Field(default=None, ge=16, le=320)
+    title_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    body_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    text_align: str = Field(default="left", pattern=r"^(left|center|right)$")
+    vertical_align: str = Field(default="top", pattern=r"^(top|center|bottom)$")
+    offset_x: int = Field(default=0, ge=-512, le=512)
+    offset_y: int = Field(default=0, ge=-512, le=512)
+    title_line_spacing: int | None = Field(default=None, ge=0, le=128)
+    body_line_spacing: int | None = Field(default=None, ge=0, le=128)
+    title_body_gap: int | None = Field(default=None, ge=0, le=256)
+
+
+class RecomposePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_candidate_id: str = ""
+    typography: TypographyPayload = Field(default_factory=TypographyPayload)
+
+
+class StitchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_ids: list[str] = Field(min_length=2, max_length=50)
+    direction: str = Field(default="vertical", pattern=r"^(vertical|horizontal)$")
+    gap: int = Field(default=0, ge=0, le=128)
+    background_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
+    alignment: str = Field(default="center", pattern=r"^(start|center|end)$")
+
+
 class ReviewPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -456,9 +490,18 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/projects/{project_id}/pages/{page_id}/recompose")
-    def recompose_page(project_id: str, page_id: str) -> dict[str, Any]:
+    def recompose_page(
+        project_id: str,
+        page_id: str,
+        payload: RecomposePayload | None = None,
+    ) -> dict[str, Any]:
         try:
-            return production_snapshot_to_dict(production.recompose_page(project_id, page_id))
+            return production_snapshot_to_dict(production.recompose_page(
+                project_id,
+                page_id,
+                source_candidate_id=payload.source_candidate_id if payload else "",
+                typography=payload.typography.model_dump(exclude_none=True) if payload else None,
+            ))
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -515,6 +558,23 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"file_name": path.name, "download_url": f"/api/exports/{path.name}"}
 
+    @app.post("/api/projects/{project_id}/stitch", status_code=201)
+    def stitch_project(project_id: str, payload: StitchPayload) -> dict[str, str]:
+        try:
+            path = production.stitch_project(
+                project_id,
+                payload.candidate_ids,
+                direction=payload.direction,
+                gap=payload.gap,
+                background_color=payload.background_color,
+                alignment=payload.alignment,
+            )
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"file_name": path.name, "download_url": f"/api/exports/{path.name}"}
+
     @app.post("/api/projects/{project_id}/recipe-candidate", status_code=201)
     def create_recipe_from_project(project_id: str, payload: RecipeCandidatePayload) -> dict[str, Any]:
         try:
@@ -530,7 +590,8 @@ def create_app(
             path = exporter.resolve(file_name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="导出文件不存在") from exc
-        return FileResponse(path, media_type="application/zip", filename=path.name)
+        media_type = "image/png" if path.suffix.lower() == ".png" else "application/zip"
+        return FileResponse(path, media_type=media_type, filename=path.name)
 
     @app.get("/api/jobs")
     def list_jobs(project_id: str | None = None) -> list[dict[str, Any]]:

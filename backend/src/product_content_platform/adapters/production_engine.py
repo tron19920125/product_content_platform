@@ -71,7 +71,8 @@ class LocalProductionEngine:
         self._generator = generator
         self._quality_toolkit = quality_toolkit
         self._template_resolver = template_resolver
-        self._font_path = self._find_font()
+        self._font_paths = self._find_fonts()
+        self._font_path = self._font_paths["system_sans"]
 
     def execute(
         self,
@@ -315,6 +316,7 @@ class LocalProductionEngine:
         prompt_version: PromptVersion,
         source_candidate: Candidate,
         reference_paths: list[Path],
+        typography: dict[str, Any] | None = None,
     ) -> ProducedCandidate:
         reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
         review_prompt = self._content_review_prompt(project.profile, page)
@@ -337,6 +339,7 @@ class LocalProductionEngine:
             output_path=composed_path,
             page=page,
             product_bbox=product_bbox,
+            typography=typography,
         )
         qa = self._inspect(
             project.profile, page, reference_paths, generator_meta, compose_meta,
@@ -401,7 +404,9 @@ class LocalProductionEngine:
         output_path: Path,
         page: PageItem,
         product_bbox: tuple[int, int, int, int],
+        typography: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        styles = typography or {}
         base = Image.open(base_path).convert("RGBA")
         width, height = base.size
         layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -409,50 +414,77 @@ class LocalProductionEngine:
         safe_area = (int(width * .065), int(height * .055), int(width * .935), int(height * .945))
         text_box = self._text_box(page.template_id, width, height)
         short_edge = min(width, height)
-        requested_title_size = round(short_edge * {1: .065, 2: .058, 3: .052, 4: .047, 5: .042}.get(page.heading_level, .058))
-        requested_body_size = round(short_edge * .029)
+        requested_title_size = int(styles.get("title_font_size") or round(short_edge * {1: .065, 2: .058, 3: .052, 4: .047, 5: .042}.get(page.heading_level, .058)))
+        requested_body_size = int(styles.get("body_font_size") or round(short_edge * .029))
         title_size = requested_title_size
         body_size = requested_body_size
-        title_min = max(24, round(short_edge * .033))
-        body_min = max(18, round(short_edge * .018))
-        title_spacing = max(8, round(short_edge * .006))
-        body_spacing = max(6, round(short_edge * .0045))
-        title_body_gap = max(18, round(short_edge * .018))
+        title_min = min(requested_title_size, max(24, round(short_edge * .033)))
+        body_min = min(requested_body_size, max(18, round(short_edge * .018)))
+        title_spacing = int(styles.get("title_line_spacing") if styles.get("title_line_spacing") is not None else max(8, round(short_edge * .006)))
+        body_spacing = int(styles.get("body_line_spacing") if styles.get("body_line_spacing") is not None else max(6, round(short_edge * .0045)))
+        title_body_gap = int(styles.get("title_body_gap") if styles.get("title_body_gap") is not None else max(18, round(short_edge * .018)))
+        font_family = str(styles.get("font_family") or "system_sans")
+        text_align = str(styles.get("text_align") or "left")
+        vertical_align = str(styles.get("vertical_align") or "top")
+        offset_x = int(styles.get("offset_x") or 0)
+        offset_y = int(styles.get("offset_y") or 0)
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
+        fit_width = max(80, text_width - abs(offset_x))
         while True:
             title_lines, title_font = self._fit_lines(
-                draw, page.title, text_width, title_size, title_min, 2
+                draw, page.title, fit_width, title_size, title_min, 2, font_family
             )
             body_lines, body_font = self._fit_lines(
-                draw, page.body, text_width, body_size, body_min, 4
+                draw, page.body, fit_width, body_size, body_min, 4, font_family
             )
             title_preview = "\n".join(title_lines)
             body_preview = "\n".join(body_lines)
             title_preview_bbox = draw.multiline_textbbox(
-                (0, 0), title_preview, font=title_font, spacing=title_spacing
+                (0, 0), title_preview, font=title_font, spacing=title_spacing, align=text_align
             )
             body_preview_bbox = draw.multiline_textbbox(
-                (0, 0), body_preview, font=body_font, spacing=body_spacing
+                (0, 0), body_preview, font=body_font, spacing=body_spacing, align=text_align
             )
+            title_width = title_preview_bbox[2] - title_preview_bbox[0]
+            body_width = body_preview_bbox[2] - body_preview_bbox[0]
+            title_height = title_preview_bbox[3] - title_preview_bbox[1]
+            body_height = body_preview_bbox[3] - body_preview_bbox[1]
             block_height = (
-                title_preview_bbox[3] - title_preview_bbox[1]
-                + title_body_gap
-                + body_preview_bbox[3] - body_preview_bbox[1]
+                title_height + title_body_gap + body_height
             )
             if block_height <= text_height or (title_font.size <= title_min and body_font.size <= body_min):
                 break
             title_size = max(title_min, title_font.size - 2)
             body_size = max(body_min, body_font.size - 2)
-        repair_applied = (
-            title_font.size < requested_title_size or body_font.size < requested_body_size
-        )
-        x, y = text_box[0], text_box[1]
+
+        if vertical_align == "center":
+            requested_block_top = text_box[1] + (text_height - block_height) // 2 + offset_y
+        elif vertical_align == "bottom":
+            requested_block_top = text_box[3] - block_height + offset_y
+        else:
+            requested_block_top = text_box[1] + offset_y
+        block_top = min(max(text_box[1], requested_block_top), max(text_box[1], text_box[3] - block_height))
+
+        def aligned_origin(measured_bbox: tuple[int, int, int, int], measured_width: int) -> int:
+            if text_align == "center":
+                requested_left = text_box[0] + (text_width - measured_width) // 2 + offset_x
+            elif text_align == "right":
+                requested_left = text_box[2] - measured_width + offset_x
+            else:
+                requested_left = text_box[0] + offset_x
+            visible_left = min(max(text_box[0], requested_left), max(text_box[0], text_box[2] - measured_width))
+            return visible_left - measured_bbox[0]
+
+        title_x = aligned_origin(title_preview_bbox, title_width)
+        body_x = aligned_origin(body_preview_bbox, body_width)
+        title_y = block_top - title_preview_bbox[1]
+        body_top = block_top + title_height + title_body_gap
+        body_y = body_top - body_preview_bbox[1]
         title_text = "\n".join(title_lines)
-        title_bbox = draw.multiline_textbbox((x, y), title_text, font=title_font, spacing=title_spacing)
-        body_y = title_bbox[3] + title_body_gap
         body_text = "\n".join(body_lines)
-        body_bbox = draw.multiline_textbbox((x, body_y), body_text, font=body_font, spacing=body_spacing)
+        title_bbox = draw.multiline_textbbox((title_x, title_y), title_text, font=title_font, spacing=title_spacing, align=text_align)
+        body_bbox = draw.multiline_textbbox((body_x, body_y), body_text, font=body_font, spacing=body_spacing, align=text_align)
         rendered_bbox = (
             min(title_bbox[0], body_bbox[0]), min(title_bbox[1], body_bbox[1]),
             max(title_bbox[2], body_bbox[2]), max(title_bbox[3], body_bbox[3]),
@@ -465,12 +497,22 @@ class LocalProductionEngine:
             max(0, rendered_bbox[0]), max(0, rendered_bbox[1]),
             min(width, rendered_bbox[2]), min(height, rendered_bbox[3]),
         )
-        title_color, body_color, color_name = self._text_colors(base, color_sample_box)
-        draw.multiline_text((x, y), title_text, font=title_font, fill=title_color, spacing=title_spacing)
-        draw.multiline_text((x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing)
+        auto_title_color, auto_body_color, auto_color_name = self._text_colors(base, color_sample_box)
+        title_color = self._parse_hex_color(styles.get("title_color")) or auto_title_color
+        body_color = self._parse_hex_color(styles.get("body_color")) or auto_body_color
+        title_color_name = self._rgba_to_hex(title_color)
+        body_color_name = self._rgba_to_hex(body_color)
+        draw.multiline_text((title_x, title_y), title_text, font=title_font, fill=title_color, spacing=title_spacing, align=text_align)
+        draw.multiline_text((body_x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing, align=text_align)
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer.save(text_path, format="PNG")
         Image.alpha_composite(base, layer).convert("RGB").save(output_path, format="PNG")
+        repair_applied = (
+            title_font.size < requested_title_size
+            or body_font.size < requested_body_size
+            or block_top != requested_block_top
+        )
+        font_path = self._font_paths.get(font_family) or self._font_path
         return {
             "canvas": [width, height],
             "safe_area": list(safe_area),
@@ -482,8 +524,19 @@ class LocalProductionEngine:
             "heading_level": page.heading_level,
             "body_font_size": body_font.size,
             "body_lines": body_lines,
-            "font": self._font_path.name if self._font_path else "PillowDefault",
-            "text_color": color_name,
+            "font": font_path.name if font_path else "PillowDefault",
+            "font_family": font_family,
+            "text_color": auto_color_name if not styles.get("title_color") and not styles.get("body_color") else f"{title_color_name}/{body_color_name}",
+            "title_color": title_color_name,
+            "body_color": body_color_name,
+            "text_align": text_align,
+            "vertical_align": vertical_align,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "title_line_spacing": title_spacing,
+            "body_line_spacing": body_spacing,
+            "title_body_gap": title_body_gap,
+            "typography_overrides": dict(styles),
             "background_luminance": round(self._region_luminance(base, color_sample_box), 2),
             "color_sample_box": list(color_sample_box),
             "repair_applied": repair_applied,
@@ -773,10 +826,11 @@ class LocalProductionEngine:
         start_size: int,
         min_size: int,
         max_lines: int,
+        font_family: str = "system_sans",
     ) -> tuple[list[str], ImageFont.FreeTypeFont | ImageFont.ImageFont]:
         normalized = text.strip() or " "
         for size in range(start_size, min_size - 1, -2):
-            font = self._font(size)
+            font = self._font(size, font_family)
             lines = self._wrap(draw, normalized, font, max_width)
             punctuation_lines = self._title_punctuation_lines(normalized) if max_lines == 2 else None
             if (
@@ -787,7 +841,7 @@ class LocalProductionEngine:
                 return punctuation_lines, font
             if len(lines) <= max_lines and not self._has_orphan_line(lines):
                 return lines, font
-        font = self._font(min_size)
+        font = self._font(min_size, font_family)
         return self._wrap(draw, normalized, font, max_width), font
 
     @staticmethod
@@ -830,8 +884,19 @@ class LocalProductionEngine:
             lines.append(current)
         return lines
 
-    def _font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        return ImageFont.truetype(str(self._font_path), size) if self._font_path else ImageFont.load_default(size=size)
+    def _font(self, size: int, family: str = "system_sans") -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        path = self._font_paths.get(family) or self._font_path
+        return ImageFont.truetype(str(path), size) if path else ImageFont.load_default(size=size)
+
+    @staticmethod
+    def _parse_hex_color(value: Any) -> tuple[int, int, int, int] | None:
+        if not isinstance(value, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            return None
+        return tuple(bytes.fromhex(value[1:])) + (255,)
+
+    @staticmethod
+    def _rgba_to_hex(color: tuple[int, int, int, int]) -> str:
+        return "#" + "".join(f"{channel:02X}" for channel in color[:3])
 
     @staticmethod
     def _region_luminance(image: Image.Image, box: tuple[int, int, int, int]) -> float:
@@ -847,28 +912,38 @@ class LocalProductionEngine:
         return (250, 253, 251, 255), (221, 231, 225, 255), "#FAFDFB"
 
     @staticmethod
-    def _find_font() -> Path | None:
+    def _first_font(candidates: list[Path]) -> Path | None:
+        return next((path for path in candidates if path.exists()), None)
+
+    @classmethod
+    def _find_fonts(cls) -> dict[str, Path | None]:
         configured = os.environ.get("PCP_FONT_PATH", "").strip()
         windows_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-        candidates = [Path(configured)] if configured else []
-        candidates.extend(
-            (
+        configured_fonts = [Path(configured)] if configured else []
+        sans = cls._first_font(configured_fonts + [
                 windows_fonts / "msyh.ttc",
-                windows_fonts / "msyhbd.ttc",
                 windows_fonts / "Deng.ttf",
                 windows_fonts / "simhei.ttf",
-                windows_fonts / "simsun.ttc",
                 Path("/System/Library/Fonts/PingFang.ttc"),
                 Path("/System/Library/Fonts/STHeiti Light.ttc"),
                 Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
                 Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
                 Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            )
-        )
-        for path in candidates:
-            if path.exists():
-                return path
-        return None
+        ])
+        bold = cls._first_font(configured_fonts + [
+            windows_fonts / "msyhbd.ttc",
+            windows_fonts / "simhei.ttf",
+            Path("/System/Library/Fonts/PingFang.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ]) or sans
+        serif = cls._first_font(configured_fonts + [
+            windows_fonts / "simsun.ttc",
+            Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+        ]) or sans
+        return {"system_sans": sans, "system_bold": bold, "system_serif": serif}
 
     def _layout_spec(self, template_id: str) -> dict[str, Any]:
         if self._template_resolver is not None:

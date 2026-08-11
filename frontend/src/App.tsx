@@ -15,6 +15,7 @@ import {
   SystemPreflight,
   TemplateDefinition,
 } from "./api";
+import { StitchComposer, TypographyEditor } from "./production-tools";
 
 type Tab = "projects" | "batches" | "catalog";
 type Role = "business" | "admin";
@@ -434,7 +435,7 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     catch (reason) { setError(reason instanceof Error ? reason.message : "导出失败"); }
     finally { setBusy(""); }
   }
-  async function recompose(pageId: string) { setBusy(`recompose-${pageId}`); setError(""); setMessage(""); try { await api.recomposePage(projectId, pageId); setMessage("页面已重新排版并完成质检。"); await onRefresh(); } catch (reason) { setError(reason instanceof Error ? reason.message : "重新排版失败"); } finally { setBusy(""); } }
+  async function recomposed() { setMessage("文字层已按新设置重新排版并完成质检，请重新确认该页面。"); await onRefresh(); }
   async function regenerate(pageId: string) { setBusy(`regenerate-${pageId}`); setError(""); setMessage(""); try { await api.regeneratePage(projectId, pageId, recipeId, quality === recipeDefaultQuality ? undefined : quality); setMessage(`单页已按 ${qualityLabel(quality)} 质量重新提交。`); await onRefresh(); } catch (reason) { setError(reason instanceof Error ? reason.message : "单页重生成失败"); } finally { setBusy(""); } }
   async function saveAsRecipe() { setBusy("recipe"); setError(""); try { const recipe = await api.createRecipeCandidate(projectId, `${snapshot?.project.profile.sku ?? "商品"}验证配方`); setMessage(`已生成配方草稿：${recipe.name}，请到固定配置中测试并发布。`); } catch (reason) { setError(reason instanceof Error ? reason.message : "配方沉淀失败"); } finally { setBusy(""); } }
   return <section className="panel production-panel">
@@ -448,7 +449,8 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     {error && <div className="notice error">{error}</div>}
     {message && <div className="notice success">{message}</div>}
     {downloadUrl && <div className="notice success">正式结果已生成：<a href={downloadUrl}>下载 ZIP 交付包</a></div>}
-    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-pages">{snapshot.pages.map((row) => <article className="production-page" key={row.page.id}><div className="production-page-head"><div><span>第 {row.page.order} 页 · {pageTypeLabel(row.page.page_type)}</span><h4>{row.page.title}</h4></div><div>{row.candidates.length > 0 && <><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void recompose(row.page.id)}>{busy === `recompose-${row.page.id}` ? "排版中…" : "仅重新排版"}</button><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(row.page.id)}>{busy === `regenerate-${row.page.id}` ? "重生成中…" : "重新生成本页"}</button></>}{row.job && <StatusBadge status={row.job.status} />}{row.decision?.decision === "approved" && <StatusBadge status="approved" />}</div></div><PageJobState job={row.job} candidates={row.candidates} />{row.job?.error && <div className="notice error">{row.job.error}</div>}<div className="candidate-grid">{row.candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} referenceUrls={referenceUrls} selected={row.decision?.candidate_id === candidate.id && row.decision.decision === "approved"} onReviewed={onRefresh} />)}</div></article>)}</div>}
+    {snapshot && hasResults && <StitchComposer projectId={projectId} snapshot={snapshot} disabled={!!busy || isProductionActive} />}
+    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-pages">{snapshot.pages.map((row) => <article className="production-page" key={row.page.id}><div className="production-page-head"><div><span>第 {row.page.order} 页 · {pageTypeLabel(row.page.page_type)}</span><h4>{row.page.title}</h4></div><div>{row.candidates.length > 0 && <button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(row.page.id)}>{busy === `regenerate-${row.page.id}` ? "重生成中…" : "重新生成本页"}</button>}{row.job && <StatusBadge status={row.job.status} />}{row.decision?.decision === "approved" && <StatusBadge status="approved" />}</div></div><PageJobState job={row.job} candidates={row.candidates} />{row.job?.error && <div className="notice error">{row.job.error}</div>}<div className="candidate-grid">{row.candidates.map((candidate) => <CandidateCard key={candidate.id} projectId={projectId} pageId={row.page.id} candidate={candidate} referenceUrls={referenceUrls} selected={row.decision?.candidate_id === candidate.id && row.decision.decision === "approved"} disabled={!!busy || isProductionActive} onReviewed={onRefresh} onRecomposed={recomposed} />)}</div></article>)}</div>}
   </section>;
 }
 
@@ -527,8 +529,8 @@ function jobStageLabel(stage: string) {
   } as Record<string, string>)[stage] ?? "正在生成图片并执行质检";
 }
 
-function CandidateCard({ candidate, referenceUrls, selected, onReviewed }: { candidate: ProductionSnapshot["pages"][number]["candidates"][number]; referenceUrls: string[]; selected: boolean; onReviewed: () => Promise<void> }) {
-  const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [showQaOverlay, setShowQaOverlay] = useState(false);
+function CandidateCard({ projectId, pageId, candidate, referenceUrls, selected, disabled, onReviewed, onRecomposed }: { projectId: string; pageId: string; candidate: ProductionSnapshot["pages"][number]["candidates"][number]; referenceUrls: string[]; selected: boolean; disabled: boolean; onReviewed: () => Promise<void>; onRecomposed: () => Promise<void> }) {
+  const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [showQaOverlay, setShowQaOverlay] = useState(false); const [showTypography, setShowTypography] = useState(false);
   const blocking = candidate.qa?.issues.some((issue) => ["P0", "P1"].includes(issue.severity));
   const layout = candidate.qa?.evidence?.layout as { canvas?: number[]; safe_area?: number[]; text_bbox?: number[]; subject_bbox?: number[] } | undefined;
   const technicalIssues = candidate.qa?.issues.filter((issue) => issue.code.includes("unavailable")) ?? [];
@@ -566,7 +568,8 @@ function CandidateCard({ candidate, referenceUrls, selected, onReviewed }: { can
       {blocking && <input className="override-input" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="P0/P1 人工覆盖原因（必填）" />}
       {busy && <OperationFeedback label="正在提交审核结果" compact />}
       {error && <div className="notice error">{error}</div>}
-      <div className="candidate-actions"><button className="secondary" disabled={busy} onClick={() => void review("rejected")}>{busy ? "提交中…" : "不采用"}</button><button className="primary" disabled={busy || selected} onClick={() => void review("approved")}>{busy ? "提交中…" : selected ? "已确认" : "确认此图"}</button></div>
+      {showTypography && <TypographyEditor projectId={projectId} pageId={pageId} candidate={candidate} onCancel={() => setShowTypography(false)} onComplete={async () => { setShowTypography(false); await onRecomposed(); }} />}
+      <div className="candidate-actions"><button className="ghost-button" disabled={busy || disabled} onClick={() => setShowTypography((visible) => !visible)}>{showTypography ? "收起排版" : "调整文字排版"}</button><button className="secondary" disabled={busy || disabled} onClick={() => void review("rejected")}>{busy ? "提交中…" : "不采用"}</button><button className="primary" disabled={busy || disabled || selected} onClick={() => void review("approved")}>{busy ? "提交中…" : selected ? "已确认" : "确认此图"}</button></div>
     </div>
   </div>;
 }

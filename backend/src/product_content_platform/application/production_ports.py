@@ -71,6 +71,7 @@ class PageProductionEngine(Protocol):
         prompt_version: PromptVersion,
         source_candidate: Candidate,
         reference_paths: list[Path],
+        typography: dict[str, Any] | None = None,
     ) -> ProducedCandidate: ...
 
     def resolve(self, relative_path: str) -> Path: ...
@@ -85,6 +86,17 @@ class ArchiveExporter(Protocol):
     ) -> Path: ...
 
     def resolve(self, file_name: str) -> Path: ...
+
+    def stitch(
+        self,
+        export_name: str,
+        images: list[Path],
+        *,
+        direction: str,
+        gap: int,
+        background_color: str,
+        alignment: str,
+    ) -> Path: ...
 
 
 class ProductionRepository(Protocol):
