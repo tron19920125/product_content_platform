@@ -54,6 +54,7 @@ class ReviewEvidence:
     generated_image_path: str = ""
     reference_image_path: str = ""
     product_reference_image_path: str = ""
+    product_reference_image_paths: list[str] = field(default_factory=list)
     generation: dict[str, Any] | None = None
     review_plan: dict[str, Any] | None = None
 
@@ -68,6 +69,7 @@ class ReviewEvidence:
             "generated_image_path": self.generated_image_path,
             "reference_image_path": self.reference_image_path,
             "product_reference_image_path": self.product_reference_image_path,
+            "product_reference_image_paths": self.product_reference_image_paths,
             "generated_ocr_lines": self.generated_ocr_lines,
             "reference_ocr_lines": self.reference_ocr_lines,
             "target_region": target_region,
@@ -102,7 +104,8 @@ class ReviewEvidence:
                     "non-target regions remain stable using both images and visual-difference evidence."
                 ),
                 "brand_consistency": (
-                    "Judge only evidence available in the prompt and reference image: preserve existing logo, model "
+                    "Judge only evidence available in the prompt and all product reference images together: preserve "
+                    "existing logo, model "
                     "marks, product identity, and visual style; reject invented or visibly damaged brand marks. "
                     "Do not claim formal brand-guideline compliance without an explicit brand specification."
                 ),
@@ -219,9 +222,24 @@ def build_review_messages(evidence: ReviewEvidence) -> list[dict[str, Any]]:
     reference_image = _image_content_part(evidence.reference_image_path)
     if reference_image:
         user_content.extend([{"type": "text", "text": "原始参考图或原切片："}, reference_image])
-    product_reference_image = _image_content_part(evidence.product_reference_image_path)
-    if product_reference_image:
-        user_content.extend([{"type": "text", "text": "目标产品参考图："}, product_reference_image])
+    product_reference_paths = list(dict.fromkeys([
+        *evidence.product_reference_image_paths,
+        evidence.product_reference_image_path,
+    ]))
+    product_reference_images = [
+        image_part for path in product_reference_paths
+        if path and (image_part := _image_content_part(path))
+    ]
+    if product_reference_images:
+        user_content.append({
+            "type": "text",
+            "text": f"同一目标产品的参考图（共 {len(product_reference_images)} 张，需综合判断）：",
+        })
+        for index, image_part in enumerate(product_reference_images, start=1):
+            user_content.extend([
+                {"type": "text", "text": f"产品参考图 {index}："},
+                image_part,
+            ])
 
     return [
         {
@@ -244,7 +262,9 @@ def build_review_messages(evidence: ReviewEvidence) -> list[dict[str, Any]]:
                 "For replace_product tasks, compare three roles separately: the source slice defines the product's "
                 "geometry, placement, angle, perspective, occlusion, layout, text, background, and all non-product "
                 "content; the target product reference defines product identity and visible appearance; the generated "
-                "candidate must combine both. Fail clear wrong-product, wrong product count, major structural mismatch, "
+                "candidate must combine both. When multiple target product references are supplied, treat them as "
+                "complementary views/details of the same product rather than separate products. Fail clear wrong-product, "
+                "wrong product count, major structural mismatch, "
                 "product relocation, broken occlusion, or material non-product drift. Use review rather than inventing "
                 "a detail that is not visible in the target product reference. "
                 "Apply this verdict policy strictly: FAIL if any review_item result is fail or any explicit "

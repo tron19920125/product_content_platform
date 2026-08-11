@@ -117,7 +117,11 @@ class LocalProductionEngine:
             composed_path = candidate_root / "composed.png"
             report(
                 "generating_background", candidate_percent(.08),
-                label="Azure 正在生成无商品场景底图",
+                label=(
+                    "Azure 正在生成场景底图，随后合成原样商品层"
+                    if reference_strategy == "layered_product"
+                    else "Azure 正在依据多张参考图生成商品与场景"
+                ),
                 candidate_index=index, candidate_count=total_candidates,
             )
             generator_meta = self._generator.generate(
@@ -133,7 +137,11 @@ class LocalProductionEngine:
             )
             report(
                 "compositing_product", candidate_percent(.58),
-                label="合成参考商品图层",
+                label=(
+                    "正在合成原样商品图层"
+                    if reference_strategy == "layered_product"
+                    else "模型商品与场景已生成，正在校验构图"
+                ),
                 candidate_index=index, candidate_count=total_candidates,
                 image_elapsed_seconds=generator_meta.get("elapsed_seconds"),
             )
@@ -568,7 +576,7 @@ class LocalProductionEngine:
                 similarity_box = generator_meta.get("product_bbox")
                 if bbox_source == "layered_reference":
                     reference_similarity = 1.0
-                elif similarity_box:
+                elif similarity_box and bbox_source != "model_generated_target_region":
                     reference_similarity = self._reference_similarity(
                         reference_paths[0], base_path, tuple(similarity_box)
                     )
@@ -598,10 +606,12 @@ class LocalProductionEngine:
                     "authoritative_body": page.body,
                     "product_layer_file": generator_meta.get("product_layer_file", ""),
                     "reference_strategy": generator_meta.get("reference_strategy", ""),
+                    "product_generated_by_model": generator_meta.get("product_generated_by_model", False),
                 }
                 combined_review = self._quality_toolkit.review_candidate(
                     output_path=output_path,
                     reference_path=reference_paths[0] if reference_paths else None,
+                    reference_paths=reference_paths,
                     prompt=prompt,
                     review_plan=review_plan,
                     visual_review=visual_review,
@@ -677,7 +687,13 @@ class LocalProductionEngine:
                     "copy_number_allowlist": copy_number_allowlist,
                     "invented_numbers": invented,
                 },
-                "reference_consistency": {"reference_count": len(reference_paths), "generator_source": generator_meta.get("source_reference", ""), "product_similarity": reference_similarity},
+                "reference_consistency": {
+                    "reference_count": len(reference_paths),
+                    "generator_source": generator_meta.get("source_reference", ""),
+                    "generator_sources": generator_meta.get("source_references", []),
+                    "product_generated_by_model": generator_meta.get("product_generated_by_model", False),
+                    "product_similarity": reference_similarity,
+                },
                 "brand_and_multi_page": {"font": compose_meta["font"], "text_color": compose_meta["text_color"], "template_id": page.template_id},
                 "text_review": text_review,
                 "visual_review": visual_review,
@@ -696,7 +712,8 @@ class LocalProductionEngine:
         """Build production QA from structured facts instead of re-interpreting copy with an LLM."""
         layout_instruction = self._layout_spec(page.template_id)["instruction"]
         reference_requirement = (
-            "商品外观、颜色、结构、品牌标识位置和物理控制面板应与参考图一致"
+            "综合全部商品外观图和局部细节图判断同一商品身份：允许按视觉目标生成新角度、透视、"
+            "环境光影和效果，但商品轮廓、比例、颜色、材质、门体、把手、控制面板及关键结构应保持一致"
             if reference_paths
             else "商品外观需要人工确认，因为没有提供参考图"
         )
@@ -743,6 +760,8 @@ class LocalProductionEngine:
                 "copy_review_owner": "deterministic_ocr",
                 "product_composition_strategy": reference_strategy,
                 "reference_product_layer_is_exact_source": reference_strategy == "layered_product",
+                "product_generated_by_model": reference_strategy == "model_edit" and bool(reference_paths),
+                "reference_image_count": len(reference_paths),
             },
         }
 
@@ -967,7 +986,14 @@ class LocalProductionEngine:
             "不要生成、绘制、复制或暗示任何商品、家电、机器、展台占位块、商品轮廓或商品文字；"
             "在模板商品允许区域保留连续、自然、可承接商品层的墙面和地面，并保持光向一致。"
             if reference_strategy == "layered_product"
-            else "商品必须完整出现在画面内，不得裁切机身、门体或关键结构。"
+            else (
+                "最高优先级：输入的全部商品外观图和局部细节图共同定义同一件商品。"
+                "必须由模型把商品直接生成在场景中，不能复制粘贴、抠图贴层或把参考图当作平面贴纸；"
+                "可以依据视觉目标生成新的拍摄角度、透视、材质反射、环境光影和使用效果，但必须保持"
+                "商品身份稳定，包括主体轮廓、长宽比例、主色、材质、门体、把手、控制面板及关键结构。"
+                "只生成一件完整商品，不得重复、拼贴、裁切机身、门体或关键结构；让商品与地面接触、"
+                "投影、遮挡和环境反射自然一致。"
+            )
         )
         guardrails = (
             f"构图约束：{layout_instruction}。"

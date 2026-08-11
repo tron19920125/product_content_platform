@@ -153,6 +153,7 @@ class ProductQualityToolkit:
         bbox: tuple[float, float, float, float],
         number_allowlist: list[str],
         progress: Callable[[str], None] | None = None,
+        reference_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
         """Return real OCR and multimodal evidence in Azure mode, deterministic evidence locally."""
         if self.mode != "azure":
@@ -188,6 +189,10 @@ class ProductQualityToolkit:
                 )
             ]
         reference_lines = []
+        all_reference_paths = list(dict.fromkeys([
+            *(reference_paths or []),
+            *([reference_path] if reference_path else []),
+        ]))
         if reference_path:
             if progress:
                 progress("ocr_reference")
@@ -219,6 +224,7 @@ class ProductQualityToolkit:
                     user_prompt=prompt,
                     generated_image_path=str(output_path),
                     product_reference_image_path=str(reference_path or ""),
+                    product_reference_image_paths=[str(path) for path in all_reference_paths],
                     generated_ocr_lines=generated_ocr,
                     reference_ocr_lines=reference_ocr,
                     visual_review=visual_review,

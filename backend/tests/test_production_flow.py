@@ -137,6 +137,20 @@ class ProductionFlowTest(unittest.TestCase):
 
     def test_lifestyle_demo_recipe_runs_custom_template_with_quality_override(self) -> None:
         project_id = self._create_planned_project()
+        detail = io.BytesIO()
+        Image.new("RGB", (320, 320), "#31383a").save(detail, format="PNG")
+        uploaded_detail = self.client.post(
+            f"/api/projects/{project_id}/assets?file_name=x11-detail.png&usage=detail",
+            content=detail.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(201, uploaded_detail.status_code)
+        uploaded_brand = self.client.post(
+            f"/api/projects/{project_id}/assets?file_name=brand-board.png&usage=brand",
+            content=detail.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(201, uploaded_brand.status_code)
         template_response = self.client.post(
             "/api/templates",
             json={
@@ -166,7 +180,7 @@ class ProductionFlowTest(unittest.TestCase):
 
         demo_prompt = next(
             item for item in self.client.get("/api/prompts").json()
-            if item["id"] == "prompt-lifestyle-scene-v2"
+            if item["id"] == "prompt-lifestyle-scene-v3"
         )
         recipe_response = self.client.post(
             "/api/recipes",
@@ -174,7 +188,7 @@ class ProductionFlowTest(unittest.TestCase):
                 "name": "最小生活场景演示配方",
                 "prompt_version_id": demo_prompt["id"],
                 "model": "local-preview",
-                "model_params": {"quality": "high", "reference_strategy": "layered_product"},
+                "model_params": {"quality": "high", "reference_strategy": "model_edit"},
                 "template_ids": [template["id"]],
                 "qa_policy": "commerce-basic-v1",
                 "candidate_count": 1,
@@ -207,12 +221,15 @@ class ProductionFlowTest(unittest.TestCase):
                 "size": "1024x1024",
                 "quality": "medium",
                 "template_id": template["id"],
-                "reference_strategy": "layered_product",
+                "reference_strategy": "model_edit",
                 "max_auto_regenerations": 0,
             },
             candidate["metadata"]["effective_generation"],
         )
         self.assertIn("完整环境叙事", candidate["prompt"])
+        self.assertIn("全部商品外观图和局部细节图", candidate["prompt"])
+        self.assertIn("不能复制粘贴、抠图贴层", candidate["prompt"])
+        self.assertEqual(2, row["job"]["trace"]["reference_count"])
         self.assertIn("高端住宅洗衣房", candidate["prompt"])
         self.assertNotIn(scene["title"], candidate["prompt"])
         self.assertNotIn(scene["body"], candidate["prompt"])

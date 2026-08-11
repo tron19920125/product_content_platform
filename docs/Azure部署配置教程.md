@@ -42,6 +42,7 @@
 PCP_GENERATION_MODE=azure
 PCP_QA_MODE=azure
 PCP_IMAGE_QUALITY=high
+PCP_MAX_IMAGE_REFERENCES=6
 
 AZURE_AUTH_MODE=managed_identity
 
@@ -130,8 +131,8 @@ macOS / Linux 使用：
 2. 确认后端服务已经关联正确的托管身份；
 3. 确认该身份在 OpenAI 和 Vision 两个资源上均拥有对应角色；
 4. 重启服务，使环境变量生效；
-5. 选择 `2048x2048` 模板执行一次单图 `High` 生产，确认底图、商品层、文字层与合成图均为模板尺寸；
-6. 上传参考商品图，确认 `layered_product` 路径只让模型生成场景底图，商品由参考图独立合成；如使用模型编辑策略，再单独确认图片编辑 Endpoint；
+5. 选择 `2048x2048` 模板执行一次单图 `High` 生产，确认模型生成图、文字层与合成图均为模板尺寸；
+6. 上传两张以上同一商品的外观/细节参考图，选择“多参考图生成商品”，确认调用图片编辑 Endpoint、候选元数据中的 `product_generated_by_model=true`、`reference_count` 正确且没有 `product_layer.png`；`PCP_MAX_IMAGE_REFERENCES` 默认 6，允许 1—16；
 7. 开启 Azure 质检，确认 OCR、审查计划和多模态审查均能返回结果；
 8. 若资源使用防火墙或私有终结点，确认承载服务的网络和 DNS 能访问资源 Endpoint。
 

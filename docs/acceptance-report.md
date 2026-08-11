@@ -4,7 +4,18 @@
 
 ## 结论
 
-MVP 已完成从模板、配方、Prompt、参考素材、真实 Azure 场景生图、参考商品分层合成、确定性文字排版、OCR/LLM 质检、人工审核到正式导出的闭环。Windows 可用一条 PowerShell 命令启动/停止前后端；macOS/Linux 提供等价的一条 Bash 命令。仓库不包含 `.env`、密钥、数据库、用户素材、日志或真实生成文件。
+本文件主体记录 2026-08-11 完成的旧 `layered_product` 五页验收，作为历史回归基线保留。当前默认正式链路已迁移为“多参考图由模型直接生成商品与场景 + 确定性文字排版”；旧记录中的商品分层合成和 `product_layer.png` 不再代表推荐方案。
+
+MVP 已完成从模板、配方、Prompt、参考素材、真实 Azure 场景生图、确定性文字排版、OCR/LLM 质检、人工审核到正式导出的闭环。Windows 可用一条 PowerShell 命令启动/停止前后端；macOS/Linux 提供等价的一条 Bash 命令。仓库不包含 `.env`、密钥、数据库、用户素材、日志或真实生成文件。
+
+## 当前多参考模型生成验收（2026-08-11）
+
+- 项目：`b9ca13d8-4f90-489a-bca1-205eba56984a`，候选：`be28494f-f7e3-42c7-8deb-76baeceaf0aa`。
+- 输入：同一商品的 1 张商品外观图和 1 张局部细节图；任务追踪与生成元数据均记录 `reference_count=2`，无参考图被省略。
+- 生成：Azure `2048x2048 / high / model_edit / input_fidelity=high`，图片输入 token 为 2048；`product_generated_by_model=true`。
+- 分层：`base.png` 已包含模型生成的商品与场景，系统只追加 `text_layer.png`；不存在 `background.png` 或 `product_layer.png`，因此不是商品贴图流程。
+- 质检：单候选完成，QA `pass / 98`，无 P0—P3 问题；页面显示 2 张参考图、100% 完成和 3 分 34 秒实际用时。
+- 视觉：商品与木饰面柜体、石材地面、窗光、接触投影和环境反射自然融合，左上留白由确定性文字层排版，满足当前最小演示验收。
 
 ## 可直接演示的案例
 

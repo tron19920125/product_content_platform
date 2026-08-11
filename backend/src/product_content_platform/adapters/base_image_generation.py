@@ -99,6 +99,8 @@ class LocalBaseImageGenerator:
         return {
             "provider": "local-preview",
             "source_reference": source_used,
+            "source_references": [str(path) for path in reference_paths],
+            "reference_count": len(reference_paths),
             "product_bbox": list(product_box),
             "prompt_chars": len(prompt),
             "requested_size": size,
@@ -106,6 +108,8 @@ class LocalBaseImageGenerator:
             "quality": quality,
             "reference_strategy": reference_strategy,
             "product_bbox_source": "deterministic_composite",
+            "product_generated_by_model": False,
+            "local_reference_emulation": bool(reference_paths),
         }
 
 
@@ -142,9 +146,15 @@ class AzureImageGenerator:
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
         requested_width, requested_height = validate_image_size(size)
         quality = validate_image_quality(quality)
+        valid_reference_paths = [
+            path for path in reference_paths
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ]
+        reference_limit = _reference_limit()
+        selected_reference_paths = valid_reference_paths[:reference_limit]
         configured_generation_endpoint = os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT", "")
-        layered_reference = bool(reference_paths) and reference_strategy == "layered_product"
-        if reference_paths and not layered_reference:
+        layered_reference = bool(selected_reference_paths) and reference_strategy == "layered_product"
+        if selected_reference_paths and not layered_reference:
             configured_edit_endpoint = os.environ.get("AZURE_OPENAI_IMAGE_EDIT_ENDPOINT", "")
             image_endpoint = (
                 configured_edit_endpoint
@@ -155,11 +165,11 @@ class AzureImageGenerator:
             image_endpoint = configured_generation_endpoint or default_generation_endpoint()
         token_provider = token_provider_from_env(endpoint=image_endpoint)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if reference_paths and not layered_reference:
+        if selected_reference_paths and not layered_reference:
             result = edit_image(
                 prompt=prompt,
-                reference_image_path=reference_paths[0],
-                additional_reference_paths=reference_paths[1:3],
+                reference_image_path=selected_reference_paths[0],
+                additional_reference_paths=selected_reference_paths[1:],
                 output_dir=output_path.parent,
                 bearer_token=token,
                 api_key=api_key,
@@ -167,6 +177,7 @@ class AzureImageGenerator:
                 endpoint=image_endpoint,
                 quality=quality,
                 size=size,
+                input_fidelity="high",
             )
         else:
             result = generate_image(
@@ -194,28 +205,47 @@ class AzureImageGenerator:
             product_bbox = list(
                 _composite_reference_product(
                     background_path=background_path,
-                    reference_path=reference_paths[0],
+                    reference_path=selected_reference_paths[0],
                     output_path=output_path,
                     target_box=_scaled_box(layout.get("product_box") or (.20, .32, .80, .94), width, height),
                 )
             )
             product_bbox_source = "layered_reference"
+        elif selected_reference_paths:
+            product_bbox = list(
+                _scaled_box(layout.get("product_box") or (.20, .32, .80, .94), width, height)
+            )
+            product_bbox_source = "model_generated_target_region"
         metadata = {
             "provider": "azure-gpt-image",
-            "source_reference": str(reference_paths[0]) if reference_paths else "",
+            "source_reference": str(selected_reference_paths[0]) if selected_reference_paths else "",
+            "source_references": [str(path) for path in selected_reference_paths],
+            "reference_count": len(selected_reference_paths),
+            "reference_limit": reference_limit,
+            "omitted_reference_count": max(0, len(valid_reference_paths) - len(selected_reference_paths)),
+            "input_fidelity": "high" if selected_reference_paths else "",
             "elapsed_seconds": result.elapsed_seconds,
             "usage": result.usage,
             "requested_size": size,
             "actual_size": f"{width}x{height}",
             "quality": quality,
-            "reference_strategy": "layered_product" if layered_reference else ("model_edit" if reference_paths else "text_to_image"),
+            "reference_strategy": "layered_product" if layered_reference else ("model_edit" if selected_reference_paths else "text_to_image"),
             "product_bbox_source": product_bbox_source,
+            "product_generated_by_model": bool(selected_reference_paths and not layered_reference),
             "background_file": "background.png" if layered_reference else "",
             "product_layer_file": "product_layer.png" if layered_reference else "",
         }
         if product_bbox is not None:
             metadata["product_bbox"] = product_bbox
         return metadata
+
+
+def _reference_limit() -> int:
+    try:
+        configured = int(os.environ.get("PCP_MAX_IMAGE_REFERENCES", "6"))
+    except ValueError:
+        configured = 6
+    return max(1, min(16, configured))
 
 
 def _scaled_box(values: Any, width: int, height: int) -> tuple[int, int, int, int]:

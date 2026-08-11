@@ -404,7 +404,9 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   const isProductionActive = activeJobs > 0;
   const canExport = snapshot?.ready_for_export ?? false;
   const immediateActionLabel = productionActionLabel(busy);
-  const referenceUrl = referenceAssets[0] ? api.assetUrl(referenceAssets[0].id) : "";
+  const referenceUrls = referenceAssets
+    .filter((asset) => asset.usage === "product" || asset.usage === "detail")
+    .map((asset) => api.assetUrl(asset.id));
   useEffect(() => {
     if (!publishedRecipes.length || publishedRecipes.some((item) => item.id === recipeId)) return;
     const first = publishedRecipes[0];
@@ -446,7 +448,7 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     {error && <div className="notice error">{error}</div>}
     {message && <div className="notice success">{message}</div>}
     {downloadUrl && <div className="notice success">正式结果已生成：<a href={downloadUrl}>下载 ZIP 交付包</a></div>}
-    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-pages">{snapshot.pages.map((row) => <article className="production-page" key={row.page.id}><div className="production-page-head"><div><span>第 {row.page.order} 页 · {pageTypeLabel(row.page.page_type)}</span><h4>{row.page.title}</h4></div><div>{row.candidates.length > 0 && <><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void recompose(row.page.id)}>{busy === `recompose-${row.page.id}` ? "排版中…" : "仅重新排版"}</button><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(row.page.id)}>{busy === `regenerate-${row.page.id}` ? "重生成中…" : "重新生成本页"}</button></>}{row.job && <StatusBadge status={row.job.status} />}{row.decision?.decision === "approved" && <StatusBadge status="approved" />}</div></div><PageJobState job={row.job} candidates={row.candidates} />{row.job?.error && <div className="notice error">{row.job.error}</div>}<div className="candidate-grid">{row.candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} referenceUrl={referenceUrl} selected={row.decision?.candidate_id === candidate.id && row.decision.decision === "approved"} onReviewed={onRefresh} />)}</div></article>)}</div>}
+    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-pages">{snapshot.pages.map((row) => <article className="production-page" key={row.page.id}><div className="production-page-head"><div><span>第 {row.page.order} 页 · {pageTypeLabel(row.page.page_type)}</span><h4>{row.page.title}</h4></div><div>{row.candidates.length > 0 && <><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void recompose(row.page.id)}>{busy === `recompose-${row.page.id}` ? "排版中…" : "仅重新排版"}</button><button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(row.page.id)}>{busy === `regenerate-${row.page.id}` ? "重生成中…" : "重新生成本页"}</button></>}{row.job && <StatusBadge status={row.job.status} />}{row.decision?.decision === "approved" && <StatusBadge status="approved" />}</div></div><PageJobState job={row.job} candidates={row.candidates} />{row.job?.error && <div className="notice error">{row.job.error}</div>}<div className="candidate-grid">{row.candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} referenceUrls={referenceUrls} selected={row.decision?.candidate_id === candidate.id && row.decision.decision === "approved"} onReviewed={onRefresh} />)}</div></article>)}</div>}
   </section>;
 }
 
@@ -525,7 +527,7 @@ function jobStageLabel(stage: string) {
   } as Record<string, string>)[stage] ?? "正在生成图片并执行质检";
 }
 
-function CandidateCard({ candidate, referenceUrl, selected, onReviewed }: { candidate: ProductionSnapshot["pages"][number]["candidates"][number]; referenceUrl: string; selected: boolean; onReviewed: () => Promise<void> }) {
+function CandidateCard({ candidate, referenceUrls, selected, onReviewed }: { candidate: ProductionSnapshot["pages"][number]["candidates"][number]; referenceUrls: string[]; selected: boolean; onReviewed: () => Promise<void> }) {
   const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [showQaOverlay, setShowQaOverlay] = useState(false);
   const blocking = candidate.qa?.issues.some((issue) => ["P0", "P1"].includes(issue.severity));
   const layout = candidate.qa?.evidence?.layout as { canvas?: number[]; safe_area?: number[]; text_bbox?: number[]; subject_bbox?: number[] } | undefined;
@@ -543,7 +545,7 @@ function CandidateCard({ candidate, referenceUrl, selected, onReviewed }: { cand
       </>}
       <span>排名 #{candidate.rank}</span>
       {layout && <button type="button" className={`qa-overlay-toggle ${showQaOverlay ? "active" : ""}`} aria-pressed={showQaOverlay} onClick={() => setShowQaOverlay((visible) => !visible)}>{showQaOverlay ? "隐藏质检框" : "显示质检框"}</button>}
-      {referenceUrl && <div className="reference-thumb"><img src={referenceUrl} alt="商品参考图" /><small>参考图</small></div>}
+      {referenceUrls.length > 0 && <div className="reference-thumb"><img src={referenceUrls[0]} alt="商品参考图" /><small>{referenceUrls.length} 张参考图</small></div>}
     </div>
     <div className="candidate-summary">
       <div><strong>{candidate.score} 分</strong><StatusBadge status={candidate.qa?.status ?? "review"} /></div>
@@ -555,7 +557,7 @@ function CandidateCard({ candidate, referenceUrl, selected, onReviewed }: { cand
         <div className="layer-links">
           {candidate.background_url && <a href={api.resolveUrl(candidate.background_url)} target="_blank" rel="noreferrer">场景背景</a>}
           {candidate.product_layer_url && <a href={api.resolveUrl(candidate.product_layer_url)} target="_blank" rel="noreferrer">原样商品层</a>}
-          <a href={api.resolveUrl(candidate.base_url)} target="_blank" rel="noreferrer">无字底图</a>
+          <a href={api.resolveUrl(candidate.base_url)} target="_blank" rel="noreferrer">模型生成图（无营销文字）</a>
           <a href={api.resolveUrl(candidate.text_layer_url)} target="_blank" rel="noreferrer">文字层</a>
           <a href={api.resolveUrl(candidate.composed_url)} target="_blank" rel="noreferrer">最终合成图</a>
         </div>
@@ -601,11 +603,11 @@ function CatalogPanel() {
   const [prompts, setPrompts] = useState<PromptVersion[]>([]);
   const [capabilities, setCapabilities] = useState<ImageCapabilities | null>(null);
   const [promptName, setPromptName] = useState("");
-  const [promptBody, setPromptBody] = useState("为{{product_name}}制作高端电商视觉底图。页面目标：{{visual_goal}}。生成真实空间、自然光、材质层次和克制的辅助陈设。{{scene_prompt_hint}}。{{composition_instruction}}。最终文字由后期排版，底图不要生成营销文字。");
+  const [promptBody, setPromptBody] = useState("为{{product_name}}制作高端电商广告图。页面目标：{{visual_goal}}。综合全部商品外观与细节参考图，在真实空间中重新生成同一商品；允许调整拍摄角度、透视、环境光影和效果，但保持商品轮廓、比例、颜色、材质与关键结构一致。{{scene_prompt_hint}}。{{composition_instruction}}。最终文字由后期排版，生成图不要新增营销文字。");
   const [recipeName, setRecipeName] = useState("");
   const [recipePrompt, setRecipePrompt] = useState("");
   const [newRecipeQuality, setNewRecipeQuality] = useState("high");
-  const [newRecipeReferenceStrategy, setNewRecipeReferenceStrategy] = useState("layered_product");
+  const [newRecipeReferenceStrategy, setNewRecipeReferenceStrategy] = useState("model_edit");
   const [newRecipeAutoRepair, setNewRecipeAutoRepair] = useState("0");
   const [recipeCandidates, setRecipeCandidates] = useState(1);
   const [recipeTemplates, setRecipeTemplates] = useState<string[]>([]);
@@ -680,8 +682,8 @@ function CatalogPanel() {
     {error && <div className="notice error">{error}</div>}
 
     <section className="panel recipe-explainer">
-      <div className="panel-heading"><h3>一张图是怎么生成的</h3><p>Prompt 不负责最终排字，它只生成有场景、有光影并按模板留白的视觉底图。</p></div>
-      <div className="recipe-flow"><article><b>1</b><strong>页面模板</strong><span>画布尺寸、文字区、商品区</span></article><i>＋</i><article><b>2</b><strong>底图 Prompt</strong><span>只控制场景、光影与留白</span></article><i>＋</i><article><b>3</b><strong>商品层</strong><span>原样合成参考商品，避免模型重绘</span></article><i>＋</i><article><b>4</b><strong>生成配方</strong><span>策略、质量、候选数、质检</span></article><i>→</i><article className="result"><b>5</b><strong>文字层</strong><span>把准确标题和正文排入留白区</span></article></div>
+      <div className="panel-heading"><h3>一张图是怎么生成的</h3><p>模型综合多张商品参考图生成商品与场景；准确营销文案最后单独排版。</p></div>
+      <div className="recipe-flow"><article><b>1</b><strong>页面模板</strong><span>画布尺寸、文字区、商品区</span></article><i>＋</i><article><b>2</b><strong>多张参考图</strong><span>共同定义商品身份与细节</span></article><i>＋</i><article><b>3</b><strong>生图 Prompt</strong><span>控制角度、场景、光影与留白</span></article><i>＋</i><article><b>4</b><strong>生成配方</strong><span>策略、质量、候选数、质检</span></article><i>→</i><article className="result"><b>5</b><strong>模型图 + 文字层</strong><span>商品与场景由模型生成，文案精确排版</span></article></div>
     </section>
 
     <div className="catalog-layout template-catalog-layout">
@@ -705,7 +707,7 @@ function CatalogPanel() {
 
     <div className="catalog-layout recipe-catalog-layout">
       <section className="panel recipe-panel">
-        <div className="panel-heading"><h3>生成配方</h3><p>把底图 Prompt、模型参数、模板范围和质检策略固定为可复用方案。</p></div>
+        <div className="panel-heading"><h3>生成配方</h3><p>把生图 Prompt、参考策略、模型参数、模板范围和质检策略固定为可复用方案。</p></div>
         <div className="recipe-list">{recipes.map((recipe) => {
           const prompt = prompts.find((item) => item.id === recipe.prompt_version_id);
           return <article className={`recipe-card ${recipe.id === "commerce-lifestyle-demo-v1" ? "featured" : ""}`} key={recipe.id}><div className="recipe-card-head"><StatusBadge status={recipe.status} />{recipe.id === "commerce-lifestyle-demo-v1" && <span className="demo-tag">推荐演示</span>}</div><h3>{recipe.name}</h3><p>{prompt?.name ?? recipe.prompt_version_id}</p><div className="recipe-meta"><span>默认质量 {qualityLabel(recipeQuality(recipe))}</span><span>{referenceStrategyLabel(recipe)}</span><span>{Number(recipe.model_params.max_auto_regenerations ?? 0) > 0 ? "自动修复最多 1 次" : "单次生成"}</span><span>每页 {recipe.candidate_count} 个候选</span><span>{recipe.template_ids.length} 个模板</span></div><small>{recipe.model} · {recipe.qa_policy}</small>{recipe.status === "draft" && <button className="secondary" disabled={!!busy} onClick={() => void publishRecipe(recipe.id)}>{busy === `publish-recipe-${recipe.id}` ? "发布中…" : "发布配方"}</button>}</article>;
@@ -715,11 +717,11 @@ function CatalogPanel() {
         <div className="panel-heading"><h3>配置新配方</h3><p>质量是默认值，实际生产时仍可临时覆盖。</p></div>
         <div className="catalog-form">
           <Field label="配方名称"><input required disabled={!!busy} value={recipeName} onChange={(event) => setRecipeName(event.target.value)} placeholder="例如：洗衣机场景图配方" /></Field>
-          <Field label="底图 Prompt"><select required disabled={!!busy} value={recipePrompt} onChange={(event) => setRecipePrompt(event.target.value)}>{publishedPrompts.map((item) => <option key={item.id} value={item.id}>{item.name} V{item.version}</option>)}</select></Field>
+          <Field label="生图 Prompt"><select required disabled={!!busy} value={recipePrompt} onChange={(event) => setRecipePrompt(event.target.value)}>{publishedPrompts.map((item) => <option key={item.id} value={item.id}>{item.name} V{item.version}</option>)}</select></Field>
           <div className="form-grid compact"><Field label="默认质量"><select value={newRecipeQuality} onChange={(event) => setNewRecipeQuality(event.target.value)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></Field><Field label="每页候选"><select value={recipeCandidates} onChange={(event) => setRecipeCandidates(Number(event.target.value))}><option value={1}>1 张</option><option value={2}>2 张</option><option value={3}>3 张</option></select></Field></div>
-          <Field label="参考商品处理"><select value={newRecipeReferenceStrategy} onChange={(event) => setNewRecipeReferenceStrategy(event.target.value)}><option value="layered_product">原样商品层（推荐，避免重绘）</option><option value="model_edit">模型参考图编辑（适合融合创意）</option></select></Field>
+          <Field label="参考商品处理"><select value={newRecipeReferenceStrategy} onChange={(event) => setNewRecipeReferenceStrategy(event.target.value)}><option value="model_edit">多参考图生成商品（推荐，可生成新角度/光影）</option><option value="layered_product">原样商品贴图（仅兼容旧方案）</option></select></Field>
           <Field label="自动图片修复"><select value={newRecipeAutoRepair} onChange={(event) => setNewRecipeAutoRepair(event.target.value)}><option value="0">关闭（每候选只调用一次生图）</option><option value="1">最多自动重生 1 次</option></select></Field>
-          <small className="form-help">原样商品层：模型只生成空场景，系统把参考商品抠出后合成；模型编辑：参考图直接发送给生图模型，融合更自然但商品细节可能变化。</small>
+          <small className="form-help">推荐模式会把商品外观图和局部细节图一起发送给模型，由模型直接生成商品与场景；允许新角度和环境效果，并由审查综合核对全部参考图。原样贴图只用于必须像素级不变的旧流程。</small>
           <fieldset className="template-checks"><legend>适用模板</legend>{templates.map((template) => <label key={template.id}><input type="checkbox" checked={recipeTemplates.includes(template.id)} onChange={(event) => setRecipeTemplates((current) => event.target.checked ? [...current, template.id] : current.filter((id) => id !== template.id))} /><span>{template.name}<small>{template.size}</small></span></label>)}</fieldset>
           <button className="primary" disabled={!!busy}>{busy === "create-recipe" ? "保存中…" : "保存配方草稿"}</button>
         </div>
@@ -727,9 +729,9 @@ function CatalogPanel() {
     </div>
 
     <section className="panel prompt-panel">
-      <div className="panel-heading"><h3>底图生成指令（Prompt）</h3><p>这里只描述模型需要生成的视觉内容；真实标题、正文和字号不进入生图 Prompt。</p></div>
+      <div className="panel-heading"><h3>图片生成指令（Prompt）</h3><p>这里描述模型要生成的商品、角度、效果、场景和留白；真实标题、正文和字号不进入生图 Prompt。</p></div>
       <div className="prompt-runtime-preview"><div><span>选择模板查看运行时合并结果</span><select value={previewTemplateId} onChange={(event) => setPreviewTemplateId(event.target.value)}>{templates.map((template) => <option key={template.id} value={template.id}>{template.name} · {template.size}</option>)}</select></div><pre>{compilePromptPreview(selectedPrompt?.body ?? "", previewTemplate)}</pre></div>
-      <div className="prompt-layout"><div className="prompt-list">{prompts.map((prompt) => <article key={prompt.id}><div><StatusBadge status={prompt.status} /><strong>{prompt.name} · V{prompt.version}</strong></div><p>{prompt.body}</p><small>{prompt.variables.map((item) => `{{${item}}}`).join(" · ") || "无变量"}</small>{prompt.status === "draft" && <button className="secondary" disabled={!!busy} onClick={() => void publishPrompt(prompt.id)}>{busy === `publish-prompt-${prompt.id}` ? "发布中…" : "发布此版本"}</button>}</article>)}</div><form className="catalog-form" onSubmit={createPrompt}><h4>新建底图 Prompt</h4><input required disabled={!!busy} value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder="Prompt 名称" /><textarea required disabled={!!busy} rows={11} value={promptBody} onChange={(event) => setPromptBody(event.target.value)} /><small className="form-help">推荐包含 {"{{visual_goal}}"}、{"{{scene_prompt_hint}}"} 和 {"{{composition_instruction}}"}。</small><button className="primary" disabled={!!busy}>{busy === "create-prompt" ? "保存中…" : "保存为草稿"}</button></form></div>
+      <div className="prompt-layout"><div className="prompt-list">{prompts.map((prompt) => <article key={prompt.id}><div><StatusBadge status={prompt.status} /><strong>{prompt.name} · V{prompt.version}</strong></div><p>{prompt.body}</p><small>{prompt.variables.map((item) => `{{${item}}}`).join(" · ") || "无变量"}</small>{prompt.status === "draft" && <button className="secondary" disabled={!!busy} onClick={() => void publishPrompt(prompt.id)}>{busy === `publish-prompt-${prompt.id}` ? "发布中…" : "发布此版本"}</button>}</article>)}</div><form className="catalog-form" onSubmit={createPrompt}><h4>新建生图 Prompt</h4><input required disabled={!!busy} value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder="Prompt 名称" /><textarea required disabled={!!busy} rows={11} value={promptBody} onChange={(event) => setPromptBody(event.target.value)} /><small className="form-help">推荐包含 {"{{visual_goal}}"}、{"{{scene_prompt_hint}}"} 和 {"{{composition_instruction}}"}。</small><button className="primary" disabled={!!busy}>{busy === "create-prompt" ? "保存中…" : "保存为草稿"}</button></form></div>
     </section>
   </div>;
 }
@@ -772,7 +774,7 @@ function recipeQuality(recipe?: Recipe) {
   return ["low", "medium", "high"].includes(quality) ? quality : "high";
 }
 function qualityLabel(value: string) { return ({ low: "Low（快速）", medium: "Medium（均衡）", high: "High（精细）" } as Record<string, string>)[value] ?? value; }
-function referenceStrategyLabel(recipe: Recipe) { return recipe.model_params.reference_strategy === "layered_product" ? "原样商品层" : "模型参考编辑"; }
+function referenceStrategyLabel(recipe: Recipe) { return recipe.model_params.reference_strategy === "layered_product" ? "原样商品贴图（兼容）" : "多参考图生成商品"; }
 function preflightComponentLabel(value: string) { return ({ image_generation: "图片生成", vision_ocr: "OCR", llm_review: "LLM 审查" } as Record<string, string>)[value] ?? value; }
 function compilePromptPreview(body: string, template?: TemplateDefinition) {
   const values: Record<string, string> = {
@@ -784,7 +786,7 @@ function compilePromptPreview(body: string, template?: TemplateDefinition) {
     composition_instruction: template?.composition_instruction ?? "在上方保留干净、低细节的文字安全区，商品主体不得进入该区域",
   };
   const compiled = body.replace(/{{(\w+)}}/g, (_, key: string) => values[key] ?? `[${key}]`);
-  return `${compiled}\n\n[系统运行时追加]\n${values.composition_instruction}。仅生成视觉底图，不生成标题、正文、标语、参数或装饰性字符。商品本体自带的真实铭牌和控制面板除外。`;
+  return `${compiled}\n\n[系统运行时追加]\n${values.composition_instruction}。综合全部商品参考图，由模型直接生成商品、角度、效果与场景；不使用商品贴图。不要生成标题、正文、标语、参数或装饰性字符。商品本体自带的真实铭牌和控制面板除外。`;
 }
 
 export default App;

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from product_content_platform.domain import (
+    AssetUsage,
     BatchItemStatus,
     BatchStatus,
     Candidate,
@@ -94,25 +95,28 @@ class ProductionApplication:
         )
         self._repository.ensure_seed_data(prompt, recipe)
         demo_prompt = PromptVersion(
-            id="prompt-lifestyle-scene-v2",
+            id="prompt-lifestyle-scene-v3",
             prompt_asset_id="prompt-lifestyle-scene",
-            name="高端生活方式场景底图 Prompt",
-            version=2,
+            name="高端生活方式多参考生成 Prompt",
+            version=3,
             body=(
-                "为{{product_name}}（{{model}}）制作具有完整环境叙事的高端电商广告场景底图。"
+                "为{{product_name}}（{{model}}）制作具有完整环境叙事的高端电商广告图。"
                 "页面视觉目标：{{visual_goal}}。"
                 "场景应包含真实建筑空间、墙面与地面材质、自然光或柔和电影光、可信投影、"
                 "与{{category}}使用情境相关的克制辅助陈设和前后景层次，避免只有纯白背景和孤立商品。"
                 "模板场景建议：{{scene_prompt_hint}}。模板构图：{{composition_instruction}}。"
-                "商品会使用用户参考图作为独立商品层后期合成，场景底图不得自行生成商品；"
-                "最终营销标题和正文也由独立文字层统一排版，底图中不要生成任何文字。"
+                "把输入的全部商品外观图和局部细节图视为同一件真实商品的多视角证据，直接在场景中"
+                "重新生成一个完整商品；允许按页面目标调整拍摄角度、透视、环境反射和光影效果，但必须"
+                "保持商品轮廓、比例、颜色、材质、门体、把手、控制面板和关键结构的一致性，不得把参考图"
+                "当作平面贴纸粘贴，也不得拼出多个重复商品。最终营销标题和正文由独立文字层统一排版，"
+                "生成图中不要新增营销文字、占位符或水印。"
             ),
             variables=(
                 "product_name", "model", "category", "visual_goal",
                 "scene_prompt_hint", "composition_instruction",
             ),
             status=PublishStatus.PUBLISHED,
-            change_note="黄金演示：场景底图、原样商品层与文字层三层合成",
+            change_note="黄金演示：多参考图生成商品与场景，营销文字独立排版",
         )
         demo_recipe = Recipe(
             id="commerce-lifestyle-demo-v1",
@@ -122,7 +126,7 @@ class ProductionApplication:
             model=model,
             model_params={
                 "quality": "high",
-                "reference_strategy": "layered_product",
+                "reference_strategy": "model_edit",
                 "max_auto_regenerations": 0,
             },
             template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
@@ -371,15 +375,25 @@ class ProductionApplication:
         plan = self._platform.get_plan(project_id)
         pages = {page.id: page for page in plan.items}
         jobs = self._latest_jobs(project_id)
-        reference_paths = [
-            self._resolve_asset(asset.storage_path)
-            for asset in self._platform.list_assets(project_id)
+        assets = self._platform.list_assets(project_id)
+        product_assets = [
+            asset for asset in assets
             if asset.mime_type.startswith("image/")
+            and asset.usage in {AssetUsage.PRODUCT, AssetUsage.DETAIL}
         ]
+        usage_order = {AssetUsage.PRODUCT: 0, AssetUsage.DETAIL: 1}
+        product_assets.sort(key=lambda asset: (usage_order[asset.usage], asset.created_at, asset.id))
+        reference_limit = self._reference_limit()
+        selected_assets = product_assets[:reference_limit]
+        reference_paths = [self._resolve_asset(asset.storage_path) for asset in selected_assets]
+        omitted_reference_count = max(0, len(product_assets) - len(selected_assets))
         for page_id, job in jobs.items():
             if job.status is not JobStatus.QUEUED or page_id not in pages:
                 continue
-            self._process_job(job, project, pages[page_id], reference_paths)
+            self._process_job(
+                job, project, pages[page_id], reference_paths,
+                omitted_reference_count=omitted_reference_count,
+            )
         latest = self._latest_jobs(project_id)
         if latest and all(job.status is JobStatus.FAILED for job in latest.values()):
             self._platform.set_project_status(project_id, ProjectStatus.REVIEWING)
@@ -695,7 +709,15 @@ class ProductionApplication:
         }
         return self._exporter.create(f"batch_{batch.name}", files, documents)
 
-    def _process_job(self, job: GenerationJob, project: Any, page: Any, reference_paths: list[Path]) -> None:
+    def _process_job(
+        self,
+        job: GenerationJob,
+        project: Any,
+        page: Any,
+        reference_paths: list[Path],
+        *,
+        omitted_reference_count: int = 0,
+    ) -> None:
         recipe = self._get_recipe(job.recipe_id, published_required=True)
         effective_quality = validate_image_quality(
             str(job.trace.get("quality") or recipe.model_params.get("quality") or "high")
@@ -716,6 +738,8 @@ class ProductionApplication:
                     "attempt_started_at": attempt_started_at.isoformat(),
                     "reference_count": len(reference_paths),
                     "reference_files": [path.name for path in reference_paths],
+                    "reference_limit": self._reference_limit(),
+                    "omitted_reference_count": omitted_reference_count,
                 },
                 updated_at=attempt_started_at,
             )
@@ -759,6 +783,11 @@ class ProductionApplication:
                 candidates: list[Candidate] = []
                 qa_results: list[QAResult] = []
                 for result in produced:
+                    generator_metadata = result.metadata.get("generator") or {}
+                    generator_metadata["available_reference_count"] = (
+                        len(reference_paths) + omitted_reference_count
+                    )
+                    generator_metadata["omitted_reference_count"] = omitted_reference_count
                     candidate_id = str(uuid4())
                     candidates.append(
                         Candidate(
@@ -805,6 +834,14 @@ class ProductionApplication:
                 self._repository.update_job(current)
                 if current.attempt >= current.max_attempts:
                     return
+
+    @staticmethod
+    def _reference_limit() -> int:
+        try:
+            configured = int(os.environ.get("PCP_MAX_IMAGE_REFERENCES", "6"))
+        except ValueError:
+            configured = 6
+        return max(1, min(16, configured))
 
     def _delivery_files(self, snapshot: dict[str, Any], prefix: str) -> tuple[dict[str, Path], dict[str, Any], list[dict[str, Any]]]:
         files: dict[str, Path] = {}
