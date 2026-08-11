@@ -67,6 +67,7 @@ export type PagePlan = {
   id: string;
   project_id: string;
   version: number;
+  layout_library_id: string;
   confirmed: boolean;
   items: PageItem[];
   created_at: string;
@@ -75,20 +76,40 @@ export type PagePlan = {
 
 export type TemplateDefinition = {
   id: string;
+  template_key: string;
+  library_id: string;
   name: string;
   page_types: string[];
   layout: string;
   safe_area: number;
+  safe_area_box: [number, number, number, number];
   width: number;
   height: number;
   size: string;
+  title_box: [number, number, number, number];
+  body_box: [number, number, number, number];
   text_box: [number, number, number, number];
   product_box: [number, number, number, number];
   product_anchor_box: [number, number, number, number];
   composition_instruction: string;
   scene_prompt_hint: string;
+  version: number;
+  status: "draft" | "published" | "archived";
   is_builtin: boolean;
   base_template_id?: string;
+};
+
+export type LayoutLibrary = {
+  id: string;
+  name: string;
+  description: string;
+  width: number;
+  height: number;
+  size: string;
+  tags: string[];
+  status: "draft" | "published" | "archived";
+  is_builtin: boolean;
+  template_count: number;
 };
 
 export type ImageCapabilities = {
@@ -294,13 +315,35 @@ export const api = {
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<PagePlan>;
   },
-  generatePlan: (projectId: string) =>
-    request<PagePlan>(`/projects/${projectId}/plan`, { method: "POST" }),
-  savePlan: (projectId: string, plan: Pick<PagePlan, "items" | "confirmed">) =>
+  generatePlan: (projectId: string, layoutLibraryId = "library-square-2048") =>
+    request<PagePlan>(`/projects/${projectId}/plan`, {
+      method: "POST",
+      body: JSON.stringify({ layout_library_id: layoutLibraryId }),
+    }),
+  savePlan: (projectId: string, plan: Pick<PagePlan, "items" | "confirmed" | "layout_library_id">) =>
     request<PagePlan>(`/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(plan) }),
-  listTemplates: () => request<TemplateDefinition[]>("/templates"),
+  listLayoutLibraries: () => request<LayoutLibrary[]>("/layout-libraries"),
+  getLayoutLibrary: (id: string) => request<LayoutLibrary>(`/layout-libraries/${id}`),
+  createLayoutLibrary: (payload: { name: string; size: string; description?: string; tags?: string[] }) =>
+    request<LayoutLibrary>("/layout-libraries", { method: "POST", body: JSON.stringify(payload) }),
+  listTemplates: (libraryId?: string, includeDrafts = false) => {
+    const query = new URLSearchParams();
+    if (libraryId) query.set("library_id", libraryId);
+    if (includeDrafts) query.set("include_drafts", "true");
+    return request<TemplateDefinition[]>(`/templates${query.size ? `?${query}` : ""}`);
+  },
   createTemplate: (payload: { name: string; page_types: string[]; base_template_id: string; size: string }) =>
     request<TemplateDefinition>("/templates", { method: "POST", body: JSON.stringify(payload) }),
+  createTemplateDraft: (libraryId: string, payload: Partial<TemplateDefinition> & { name: string; page_types: string[] }) =>
+    request<TemplateDefinition>(`/layout-libraries/${libraryId}/templates`, { method: "POST", body: JSON.stringify(payload) }),
+  updateTemplateDraft: (id: string, payload: Partial<TemplateDefinition>) =>
+    request<TemplateDefinition>(`/templates/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+  deleteTemplateDraft: async (id: string) => {
+    const response = await fetch(`${API_BASE}/templates/${id}`, { method: "DELETE" });
+    if (!response.ok) throw await responseError(response);
+  },
+  createTemplateVersion: (id: string) => request<TemplateDefinition>(`/templates/${id}/new-version`, { method: "POST" }),
+  publishTemplate: (id: string) => request<TemplateDefinition>(`/templates/${id}/publish`, { method: "POST" }),
   getImageCapabilities: () => request<ImageCapabilities>("/image-capabilities"),
   listRecipes: () => request<Recipe[]>("/recipes"),
   listPrompts: () => request<PromptVersion[]>("/prompts"),

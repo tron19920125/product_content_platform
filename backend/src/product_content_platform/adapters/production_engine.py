@@ -153,7 +153,13 @@ class LocalProductionEngine:
                 product_bbox = tuple(generator_meta.get("product_bbox") or product_anchor_bbox)
             generator_meta["layout"] = {
                 "template_id": page.template_id,
+                "template_key": template.get("template_key") or page.template_id,
+                "template_version": int(template.get("version", 1)),
+                "library_id": template.get("library_id") or "",
+                "canvas_size": template.get("size") or generation_size,
                 "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
+                "reserved_title_box": list(self._scaled_box(template.get("title_box") or template["text_box"], *canvas_size)),
+                "reserved_body_box": list(self._scaled_box(template.get("body_box") or template["text_box"], *canvas_size)),
                 "product_anchor_box": list(product_anchor_bbox),
                 "allowed_product_extent_box": list(allowed_product_bbox),
             }
@@ -231,7 +237,13 @@ class LocalProductionEngine:
                     product_bbox = tuple(generator_meta.get("product_bbox") or product_anchor_bbox)
                 generator_meta["layout"] = {
                     "template_id": page.template_id,
+                    "template_key": template.get("template_key") or page.template_id,
+                    "template_version": int(template.get("version", 1)),
+                    "library_id": template.get("library_id") or "",
+                    "canvas_size": template.get("size") or generation_size,
                     "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
+                    "reserved_title_box": list(self._scaled_box(template.get("title_box") or template["text_box"], *canvas_size)),
+                    "reserved_body_box": list(self._scaled_box(template.get("body_box") or template["text_box"], *canvas_size)),
                     "product_anchor_box": list(product_anchor_bbox),
                     "allowed_product_extent_box": list(allowed_product_bbox),
                 }
@@ -406,6 +418,17 @@ class LocalProductionEngine:
         product_bbox: tuple[int, int, int, int],
         typography: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        template = self._layout_spec(page.template_id)
+        if template.get("title_box") and template.get("body_box"):
+            return self._compose_separate_text_regions(
+                base_path=base_path,
+                text_path=text_path,
+                output_path=output_path,
+                page=page,
+                product_bbox=product_bbox,
+                typography=typography,
+                template=template,
+            )
         styles = typography or {}
         base = Image.open(base_path).convert("RGBA")
         width, height = base.size
@@ -540,6 +563,147 @@ class LocalProductionEngine:
             "background_luminance": round(self._region_luminance(base, color_sample_box), 2),
             "color_sample_box": list(color_sample_box),
             "repair_applied": repair_applied,
+        }
+
+    def _compose_separate_text_regions(
+        self,
+        *,
+        base_path: Path,
+        text_path: Path,
+        output_path: Path,
+        page: PageItem,
+        product_bbox: tuple[int, int, int, int],
+        typography: dict[str, Any] | None,
+        template: dict[str, Any],
+    ) -> dict[str, Any]:
+        styles = typography or {}
+        base = Image.open(base_path).convert("RGBA")
+        width, height = base.size
+        layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        title_box = self._scaled_box(template["title_box"], width, height)
+        body_box = self._scaled_box(template["body_box"], width, height)
+        text_box = (
+            min(title_box[0], body_box[0]), min(title_box[1], body_box[1]),
+            max(title_box[2], body_box[2]), max(title_box[3], body_box[3]),
+        )
+        safe_area = self._scaled_box(template.get("safe_area_box") or (.065, .055, .935, .945), width, height)
+        short_edge = min(width, height)
+        requested_title_size = int(styles.get("title_font_size") or round(short_edge * {1: .065, 2: .058, 3: .052, 4: .047, 5: .042}.get(page.heading_level, .058)))
+        requested_body_size = int(styles.get("body_font_size") or round(short_edge * .029))
+        title_min = min(requested_title_size, max(24, round(short_edge * .028)))
+        body_min = min(requested_body_size, max(18, round(short_edge * .016)))
+        title_spacing = int(styles.get("title_line_spacing") if styles.get("title_line_spacing") is not None else max(8, round(short_edge * .006)))
+        body_spacing = int(styles.get("body_line_spacing") if styles.get("body_line_spacing") is not None else max(6, round(short_edge * .0045)))
+        title_body_gap = int(styles.get("title_body_gap") if styles.get("title_body_gap") is not None else max(18, round(short_edge * .018)))
+        font_family = str(styles.get("font_family") or "system_sans")
+        text_align = str(styles.get("text_align") or "left")
+        vertical_align = str(styles.get("vertical_align") or "top")
+        offset_x = int(styles.get("offset_x") or 0)
+        offset_y = int(styles.get("offset_y") or 0)
+
+        def fit_region(
+            copy: str,
+            region: tuple[int, int, int, int],
+            requested_size: int,
+            minimum_size: int,
+            maximum_lines: int,
+            spacing: int,
+        ) -> tuple[list[str], ImageFont.FreeTypeFont | ImageFont.ImageFont, tuple[int, int, int, int], int, int, int, bool]:
+            region_width = region[2] - region[0]
+            region_height = region[3] - region[1]
+            fit_width = max(80, region_width - abs(offset_x))
+            size = requested_size
+            shrunk = False
+            while True:
+                lines, font = self._fit_lines(draw, copy, fit_width, size, minimum_size, maximum_lines, font_family)
+                rendered = "\n".join(lines)
+                measured = draw.multiline_textbbox((0, 0), rendered, font=font, spacing=spacing, align=text_align)
+                measured_width = measured[2] - measured[0]
+                measured_height = measured[3] - measured[1]
+                if measured_height <= region_height or font.size <= minimum_size:
+                    break
+                size = max(minimum_size, font.size - 2)
+                shrunk = True
+            if text_align == "center":
+                requested_left = region[0] + (region_width - measured_width) // 2 + offset_x
+            elif text_align == "right":
+                requested_left = region[2] - measured_width + offset_x
+            else:
+                requested_left = region[0] + offset_x
+            visible_left = min(max(region[0], requested_left), max(region[0], region[2] - measured_width))
+            if vertical_align == "center":
+                requested_top = region[1] + (region_height - measured_height) // 2 + offset_y
+            elif vertical_align == "bottom":
+                requested_top = region[3] - measured_height + offset_y
+            else:
+                requested_top = region[1] + offset_y
+            visible_top = min(max(region[1], requested_top), max(region[1], region[3] - measured_height))
+            origin_x = visible_left - measured[0]
+            origin_y = visible_top - measured[1]
+            clamped = visible_left != requested_left or visible_top != requested_top
+            return lines, font, measured, origin_x, origin_y, measured_height, shrunk or clamped
+
+        title_lines, title_font, _, title_x, title_y, _, title_repaired = fit_region(
+            page.title, title_box, requested_title_size, title_min, 2, title_spacing,
+        )
+        body_lines, body_font, _, body_x, body_y, _, body_repaired = fit_region(
+            page.body, body_box, requested_body_size, body_min, 4, body_spacing,
+        )
+        title_text = "\n".join(title_lines)
+        body_text = "\n".join(body_lines)
+        title_bbox = draw.multiline_textbbox((title_x, title_y), title_text, font=title_font, spacing=title_spacing, align=text_align)
+        body_bbox = draw.multiline_textbbox((body_x, body_y), body_text, font=body_font, spacing=body_spacing, align=text_align)
+        rendered_bbox = (
+            min(title_bbox[0], body_bbox[0]), min(title_bbox[1], body_bbox[1]),
+            max(title_bbox[2], body_bbox[2]), max(title_bbox[3], body_bbox[3]),
+        )
+        color_sample_box = (
+            max(0, rendered_bbox[0]), max(0, rendered_bbox[1]),
+            min(width, rendered_bbox[2]), min(height, rendered_bbox[3]),
+        )
+        auto_title_color, auto_body_color, auto_color_name = self._text_colors(base, color_sample_box)
+        title_color = self._parse_hex_color(styles.get("title_color")) or auto_title_color
+        body_color = self._parse_hex_color(styles.get("body_color")) or auto_body_color
+        title_color_name = self._rgba_to_hex(title_color)
+        body_color_name = self._rgba_to_hex(body_color)
+        draw.multiline_text((title_x, title_y), title_text, font=title_font, fill=title_color, spacing=title_spacing, align=text_align)
+        draw.multiline_text((body_x, body_y), body_text, font=body_font, fill=body_color, spacing=body_spacing, align=text_align)
+        text_path.parent.mkdir(parents=True, exist_ok=True)
+        layer.save(text_path, format="PNG")
+        Image.alpha_composite(base, layer).convert("RGB").save(output_path, format="PNG")
+        font_path = self._font_paths.get(font_family) or self._font_path
+        return {
+            "canvas": [width, height],
+            "safe_area": list(safe_area),
+            "text_box": list(text_box),
+            "title_box": list(title_box),
+            "body_box": list(body_box),
+            "rendered_text_bbox": list(rendered_bbox),
+            "rendered_title_bbox": list(title_bbox),
+            "rendered_body_bbox": list(body_bbox),
+            "product_bbox": list(product_bbox),
+            "title_font_size": title_font.size,
+            "title_lines": title_lines,
+            "heading_level": page.heading_level,
+            "body_font_size": body_font.size,
+            "body_lines": body_lines,
+            "font": font_path.name if font_path else "PillowDefault",
+            "font_family": font_family,
+            "text_color": auto_color_name if not styles.get("title_color") and not styles.get("body_color") else f"{title_color_name}/{body_color_name}",
+            "title_color": title_color_name,
+            "body_color": body_color_name,
+            "text_align": text_align,
+            "vertical_align": vertical_align,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "title_line_spacing": title_spacing,
+            "body_line_spacing": body_spacing,
+            "title_body_gap": title_body_gap,
+            "typography_overrides": dict(styles),
+            "background_luminance": round(self._region_luminance(base, color_sample_box), 2),
+            "color_sample_box": list(color_sample_box),
+            "repair_applied": title_repaired or body_repaired or title_font.size < requested_title_size or body_font.size < requested_body_size,
         }
 
     def _inspect(
@@ -724,7 +888,17 @@ class LocalProductionEngine:
             "evidence": {
                 "ocr": ocr_evidence,
                 "base_image_text": base_text_evidence,
-                "layout": {"canvas": compose_meta["canvas"], "safe_area": list(safe), "text_bbox": list(rendered), "subject_bbox": list(product), "overlap_ratio": round(overlap, 4)},
+                "layout": {
+                    "canvas": compose_meta["canvas"],
+                    "safe_area": list(safe),
+                    "text_bbox": list(rendered),
+                    "title_box": list(compose_meta.get("title_box") or compose_meta["text_box"]),
+                    "body_box": list(compose_meta.get("body_box") or compose_meta["text_box"]),
+                    "subject_bbox": list(product),
+                    "subject_anchor_box": list((generator_meta.get("layout") or {}).get("product_anchor_box") or product),
+                    "subject_allowed_box": list((generator_meta.get("layout") or {}).get("allowed_product_extent_box") or product),
+                    "overlap_ratio": round(overlap, 4),
+                },
                 "composition_provenance": {
                     "post_composed": True,
                     "renderer": "Pillow",
@@ -956,6 +1130,11 @@ class LocalProductionEngine:
 
     def _text_box(self, template_id: str, width: int, height: int) -> tuple[int, int, int, int]:
         x1, y1, x2, y2 = self._layout_spec(template_id)["text_box"]
+        return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
+
+    @staticmethod
+    def _scaled_box(box: Any, width: int, height: int) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = box
         return int(width * x1), int(height * y1), int(width * x2), int(height * y2)
 
     def _product_box(self, template_id: str, width: int, height: int) -> tuple[int, int, int, int]:

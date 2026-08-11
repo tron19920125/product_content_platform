@@ -161,6 +161,7 @@ class PagePlan:
     project_id: str
     version: int
     items: tuple[PageItem, ...]
+    layout_library_id: str = "library-square-2048"
     confirmed: bool = False
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)

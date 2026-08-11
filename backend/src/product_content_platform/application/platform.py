@@ -154,6 +154,7 @@ class PlatformApplication:
                     replace(item, id=str(uuid4()), status=PageStatus.DRAFT)
                     for item in source_plan.items
                 ),
+                layout_library_id=source_plan.layout_library_id,
                 confirmed=False,
             )
             self._repository.save_plan(plan, cloned)
@@ -200,7 +201,12 @@ class PlatformApplication:
         self.get_project(project_id)
         return self._repository.list_assets(project_id)
 
-    def generate_plan(self, project_id: str) -> PagePlan:
+    def generate_plan(
+        self,
+        project_id: str,
+        layout_library_id: str = "library-square-2048",
+        template_ids: dict[PageType, str] | None = None,
+    ) -> PagePlan:
         project = self.get_project(project_id)
         profile = project.profile
         points = list(profile.selling_points)
@@ -209,18 +215,27 @@ class PlatformApplication:
         parameters = " · ".join(f"{key} {value}" for key, value in list(profile.parameters.items())[:4])
         if not parameters:
             parameters = f"型号 {profile.model or profile.sku}"
+        default_template_ids = {
+            PageType.HERO: "hero-center",
+            PageType.SELLING_POINT: "split-left",
+            PageType.FUNCTION: "split-right",
+            PageType.SCENE: "scene-overlay",
+            PageType.PARAMETERS: "data-grid",
+        }
+        selected_template_ids = {**default_template_ids, **(template_ids or {})}
         page_specs = [
-            (PageType.HERO, profile.name, first_point, "清晰呈现商品全貌与品牌气质", "hero-center", 1),
-            (PageType.SELLING_POINT, first_point, f"围绕{first_point}说明核心价值", "突出一个核心部件或使用效果", "split-left", 2),
-            (PageType.FUNCTION, second_point, f"围绕{second_point}说明功能体验", "通过细节或功能场景解释卖点", "split-right", 2),
-            (PageType.SCENE, "融入理想生活", f"让{profile.name}自然融入目标用户的生活空间", "完整生活场景，商品主体清晰可见", "scene-overlay", 2),
-            (PageType.PARAMETERS, "关键参数", parameters, "结构化展示已确认的商品事实", "data-grid", 2),
+            (PageType.HERO, profile.name, first_point, "清晰呈现商品全貌与品牌气质", selected_template_ids[PageType.HERO], 1),
+            (PageType.SELLING_POINT, first_point, f"围绕{first_point}说明核心价值", "突出一个核心部件或使用效果", selected_template_ids[PageType.SELLING_POINT], 2),
+            (PageType.FUNCTION, second_point, f"围绕{second_point}说明功能体验", "通过细节或功能场景解释卖点", selected_template_ids[PageType.FUNCTION], 2),
+            (PageType.SCENE, "融入理想生活", f"让{profile.name}自然融入目标用户的生活空间", "完整生活场景，商品主体清晰可见", selected_template_ids[PageType.SCENE], 2),
+            (PageType.PARAMETERS, "关键参数", parameters, "结构化展示已确认的商品事实", selected_template_ids[PageType.PARAMETERS], 2),
         ]
         existing = self._repository.get_plan(project_id)
         plan = PagePlan(
             id=existing.id if existing else str(uuid4()),
             project_id=project_id,
             version=(existing.version + 1) if existing else 1,
+            layout_library_id=layout_library_id,
             items=tuple(
                 PageItem(
                     id=str(uuid4()),
@@ -248,7 +263,13 @@ class PlatformApplication:
             raise EntityNotFoundError(f"项目尚未生成页面规划: {project_id}")
         return plan
 
-    def save_plan(self, project_id: str, items: Iterable[PageItem], confirmed: bool = False) -> PagePlan:
+    def save_plan(
+        self,
+        project_id: str,
+        items: Iterable[PageItem],
+        confirmed: bool = False,
+        layout_library_id: str = "",
+    ) -> PagePlan:
         project = self.get_project(project_id)
         current = self._repository.get_plan(project_id)
         if current is None:
@@ -259,6 +280,7 @@ class PlatformApplication:
             project_id=project_id,
             version=current.version + 1,
             items=tuple(replace(item, status=PageStatus.READY if confirmed else PageStatus.DRAFT) for item in normalized),
+            layout_library_id=layout_library_id or current.layout_library_id,
             confirmed=confirmed,
             created_at=current.created_at,
         )

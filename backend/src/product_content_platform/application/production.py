@@ -32,6 +32,13 @@ from .platform import PlatformApplication
 from .production_ports import ArchiveExporter, PageProductionEngine, ProductionRepository
 
 
+BUILTIN_TEMPLATE_IDS = (
+    "hero-center", "split-left", "split-right", "scene-overlay", "data-grid",
+    "landscape-story-left-v1", "landscape-feature-band-v1", "landscape-editorial-right-v1",
+    "portrait-story-top-v1", "portrait-feature-bottom-v1", "portrait-detail-stack-v1",
+)
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -89,7 +96,7 @@ class ProductionApplication:
             prompt_version_id=prompt.id,
             model=model,
             model_params=model_params,
-            template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
+            template_ids=BUILTIN_TEMPLATE_IDS,
             qa_policy="commerce-basic-v1",
             candidate_count=2,
         )
@@ -129,7 +136,7 @@ class ProductionApplication:
                 "reference_strategy": "model_edit",
                 "max_auto_regenerations": 0,
             },
-            template_ids=("hero-center", "split-left", "split-right", "scene-overlay", "data-grid"),
+            template_ids=BUILTIN_TEMPLATE_IDS,
             qa_policy="commerce-basic-v1",
             candidate_count=1,
         )

@@ -20,6 +20,7 @@ from product_content_platform.adapters import (
     SkuImportParser,
     SQLitePlatformRepository,
     SQLiteProductionRepository,
+    seed_showcase_projects,
 )
 from product_content_platform.application import (
     BatchSkuInput,
@@ -126,7 +127,14 @@ class PagePlanUpdatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[PageItemPayload] = Field(min_length=1)
+    layout_library_id: str | None = None
     confirmed: bool = False
+
+
+class PagePlanGeneratePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layout_library_id: str = "library-square-2048"
 
 
 class PromptCreatePayload(BaseModel):
@@ -158,6 +166,42 @@ class TemplateCreatePayload(BaseModel):
     page_types: list[str] = Field(min_length=1)
     base_template_id: str = Field(min_length=1)
     size: str = Field(min_length=3)
+
+
+class LayoutLibraryCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    size: str = Field(min_length=3)
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class TemplateDraftCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    page_types: list[str] = Field(min_length=1)
+    base_template_id: str = ""
+    title_box: list[float] | None = None
+    body_box: list[float] | None = None
+    product_box: list[float] | None = None
+    product_anchor_box: list[float] | None = None
+    safe_area_box: list[float] | None = None
+    scene_prompt_hint: str = ""
+
+
+class TemplateDraftUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    page_types: list[str] | None = None
+    title_box: list[float] | None = None
+    body_box: list[float] | None = None
+    product_box: list[float] | None = None
+    product_anchor_box: list[float] | None = None
+    safe_area_box: list[float] | None = None
+    scene_prompt_hint: str | None = None
 
 
 class ProductionStartPayload(BaseModel):
@@ -250,6 +294,15 @@ def create_app(
         platform, production_repository, engine, exporter, assets.resolve
     )
     production.seed_defaults("azure-gpt-image" if settings.generation_mode == "azure" else "local-preview")
+    if database_path is None:
+        seed_showcase_projects(
+            source_root=Path(__file__).resolve().parents[4] / "examples" / "showcases",
+            production_root=effective_production_root,
+            repository=repository,
+            platform=platform,
+            production_repository=production_repository,
+            asset_store=assets,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -372,9 +425,23 @@ def create_app(
         return FileResponse(path, media_type=asset.mime_type, filename=asset.file_name)
 
     @app.post("/api/projects/{project_id}/plan", status_code=201)
-    def generate_project_plan(project_id: str) -> dict[str, Any]:
+    def generate_project_plan(project_id: str, payload: PagePlanGeneratePayload | None = None) -> dict[str, Any]:
         try:
-            return plan_to_dict(platform.generate_plan(project_id))
+            library_id = payload.layout_library_id if payload else "library-square-2048"
+            catalog.library(library_id)
+            library_templates = catalog.templates(library_id=library_id)
+            template_ids: dict[PageType, str] = {}
+            for page_type in PageType:
+                matching = next((item for item in library_templates if page_type.value in item["page_types"]), None)
+                if matching is None:
+                    matching = library_templates[0] if library_templates else None
+                if matching is not None:
+                    template_ids[page_type] = matching["id"]
+            if not template_ids:
+                raise DomainValidationError("版式库中没有已发布模板")
+            return plan_to_dict(platform.generate_plan(project_id, library_id, template_ids))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -387,27 +454,112 @@ def create_app(
 
     @app.put("/api/projects/{project_id}/plan")
     def save_project_plan(project_id: str, payload: PagePlanUpdatePayload) -> dict[str, Any]:
-        template_ids = {item["id"] for item in catalog.templates()}
+        library_id = payload.layout_library_id
+        if library_id is None:
+            template_library_by_id = {item["id"]: item["library_id"] for item in catalog.templates()}
+            inferred_libraries = {
+                template_library_by_id[item.template_id]
+                for item in payload.items
+                if item.template_id in template_library_by_id
+            }
+            if len(inferred_libraries) != 1:
+                raise HTTPException(status_code=422, detail="旧版请求中的模板必须全部属于同一个版式库")
+            library_id = inferred_libraries.pop()
+        try:
+            catalog.library(library_id)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        template_by_id = {item["id"]: item for item in catalog.templates(library_id=library_id)}
+        template_ids = set(template_by_id)
         unknown = sorted({item.template_id for item in payload.items if item.template_id not in template_ids})
         if unknown:
-            raise HTTPException(status_code=422, detail=f"未知模板: {', '.join(unknown)}")
+            raise HTTPException(status_code=422, detail=f"模板不属于当前版式库或尚未发布: {', '.join(unknown)}")
+        incompatible = sorted(
+            item.template_id
+            for item in payload.items
+            if item.page_type.value not in template_by_id[item.template_id]["page_types"]
+        )
+        if incompatible:
+            raise HTTPException(status_code=422, detail=f"模板不支持所选页面类型: {', '.join(incompatible)}")
         try:
             return plan_to_dict(
-                platform.save_plan(project_id, [item.to_domain() for item in payload.items], payload.confirmed)
+                platform.save_plan(
+                    project_id,
+                    [item.to_domain() for item in payload.items],
+                    payload.confirmed,
+                    library_id,
+                )
             )
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/api/layout-libraries")
+    def list_layout_libraries() -> list[dict[str, Any]]:
+        return catalog.libraries()
+
+    @app.get("/api/layout-libraries/{library_id}")
+    def get_layout_library(library_id: str) -> dict[str, Any]:
+        try:
+            return catalog.library(library_id)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/layout-libraries", status_code=201)
+    def create_layout_library(payload: LayoutLibraryCreatePayload) -> dict[str, Any]:
+        try:
+            return catalog.create_library(**payload.model_dump())
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/api/templates")
-    def list_templates() -> list[dict[str, Any]]:
-        return catalog.templates()
+    def list_templates(library_id: str | None = None, include_drafts: bool = False) -> list[dict[str, Any]]:
+        try:
+            return catalog.templates(library_id=library_id, include_drafts=include_drafts)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/templates", status_code=201)
     def create_template(payload: TemplateCreatePayload) -> dict[str, Any]:
         try:
             return catalog.create_template(**payload.model_dump())
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/layout-libraries/{library_id}/templates", status_code=201)
+    def create_template_draft(library_id: str, payload: TemplateDraftCreatePayload) -> dict[str, Any]:
+        try:
+            return catalog.create_template_draft(library_id=library_id, **payload.model_dump())
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/api/templates/{template_id}")
+    def update_template_draft(template_id: str, payload: TemplateDraftUpdatePayload) -> dict[str, Any]:
+        try:
+            return catalog.update_template_draft(template_id, **payload.model_dump(exclude_none=True))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/templates/{template_id}", status_code=204)
+    def delete_template_draft(template_id: str) -> Response:
+        try:
+            catalog.delete_template_draft(template_id)
+            return Response(status_code=204)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/templates/{template_id}/new-version", status_code=201)
+    def create_template_version(template_id: str) -> dict[str, Any]:
+        try:
+            return catalog.create_next_version(template_id)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/templates/{template_id}/publish")
+    def publish_template(template_id: str) -> dict[str, Any]:
+        try:
+            return catalog.publish_template(template_id)
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -781,6 +933,7 @@ def plan_to_dict(plan: PagePlan) -> dict[str, Any]:
         "id": plan.id,
         "project_id": plan.project_id,
         "version": plan.version,
+        "layout_library_id": plan.layout_library_id,
         "confirmed": plan.confirmed,
         "items": [
             {

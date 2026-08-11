@@ -4,7 +4,7 @@ import {
   api,
   Asset,
   Batch,
-  ImageCapabilities,
+  LayoutLibrary,
   PageItem,
   PagePlan,
   ProductionSnapshot,
@@ -16,8 +16,9 @@ import {
   TemplateDefinition,
 } from "./api";
 import { StitchComposer, TypographyEditor } from "./production-tools";
+import { LayoutCenter } from "./layout-center";
 
-type Tab = "projects" | "batches" | "catalog";
+type Tab = "projects" | "batches" | "layouts" | "generation";
 type Role = "business" | "admin";
 
 const emptyProfile = (): ProductProfile => ({
@@ -80,6 +81,10 @@ function App() {
     () => projects.filter((project) => !["completed", "archived"].includes(project.status)).length,
     [projects],
   );
+  const visibleProjectCount = useMemo(
+    () => projects.filter((project) => project.status !== "archived").length,
+    [projects],
+  );
   const batchSkuCount = useMemo(
     () => batches.reduce((total, batch) => total + (batch.progress.total ?? batch.items.length), 0),
     [batches],
@@ -87,7 +92,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar tab={tab} role={role} preflight={preflight} setRole={(next) => { setRole(next); if (next === "business" && tab === "catalog") setTab("projects"); setSelectedProjectId(null); }} setTab={(next) => { setTab(next); setSelectedProjectId(null); }} />
+      <Sidebar tab={tab} role={role} preflight={preflight} setRole={(next) => { setRole(next); if (next === "business" && ["layouts", "generation"].includes(tab)) setTab("projects"); setSelectedProjectId(null); }} setTab={(next) => { setTab(next); setSelectedProjectId(null); }} />
       {selectedProjectId ? (
         <ProjectWorkspace
           projectId={selectedProjectId}
@@ -98,7 +103,7 @@ function App() {
         <main>
           <header className="topbar">
             <div><p className="eyebrow">WORKSPACE</p><h2>{tabTitle(tab)}</h2></div>
-            {tab !== "catalog" && (
+            {(tab === "projects" || tab === "batches") && (
               <button className="primary" onClick={() => tab === "projects" ? setShowProjectForm(true) : setShowBatchForm(true)}>
                 ＋ {tab === "projects" ? "新建项目" : "新建批次"}
               </button>
@@ -106,7 +111,7 @@ function App() {
           </header>
 
           <section className="metrics">
-            <Metric label="项目总数" value={projects.length} hint="本地持久化" />
+            <Metric label="项目总数" value={visibleProjectCount} hint="不含已归档" />
             <Metric label="进行中" value={activeCount} hint="待策划或生产" />
             <Metric label="批量任务" value={batches.length} hint={`${batchSkuCount} 个 SKU`} />
             <Metric label="当前阶段" value="策划与模板" hint="素材、导入、规划" text />
@@ -116,7 +121,7 @@ function App() {
           {loading ? <OperationFeedback label="正在连接本地服务" detail="正在读取项目与批次数据，请稍候。" /> : (
             tab === "projects" ? <ProjectTable projects={projects} onOpen={setSelectedProjectId} onRefresh={refresh} /> :
             tab === "batches" ? <BatchTable batches={batches} onOpenProject={setSelectedProjectId} onRefresh={refresh} /> :
-            <CatalogPanel />
+            tab === "layouts" ? <LayoutCenter /> : <CatalogPanel />
           )}
         </main>
       )}
@@ -134,7 +139,8 @@ function Sidebar({ tab, role, preflight, setRole, setTab }: { tab: Tab; role: Ro
     <nav>
       <button className={tab === "projects" ? "active" : ""} onClick={() => setTab("projects")}><span>01</span> 商品项目</button>
       <button className={tab === "batches" ? "active" : ""} onClick={() => setTab("batches")}><span>02</span> 批量任务</button>
-      {role === "admin" && <button className={tab === "catalog" ? "active" : ""} onClick={() => setTab("catalog")}><span>03</span> 固定配置</button>}
+      {role === "admin" && <button className={tab === "layouts" ? "active" : ""} onClick={() => setTab("layouts")}><span>03</span> 版式中心</button>}
+      {role === "admin" && <button className={tab === "generation" ? "active" : ""} onClick={() => setTab("generation")}><span>04</span> 生成配置</button>}
     </nav>
     <div className="role-switch"><span>当前角色</span><select value={role} onChange={(event) => setRole(event.target.value as Role)}><option value="business">业务用户</option><option value="admin">管理员 / 专家</option></select></div>
     <SystemStatus preflight={preflight} />
@@ -155,6 +161,8 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   const [project, setProject] = useState<Project | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [plan, setPlan] = useState<PagePlan | null>(null);
+  const [layoutLibraries, setLayoutLibraries] = useState<LayoutLibrary[]>([]);
+  const [draftLibraryId, setDraftLibraryId] = useState("library-square-2048");
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [production, setProduction] = useState<ProductionSnapshot | null>(null);
@@ -170,15 +178,19 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
     : productionJobs.length > 0 && productionJobs.every((job) => job.status === "failed")
       ? "failed"
       : project?.status ?? "draft";
+  const activeLibraryId = plan?.layout_library_id ?? draftLibraryId;
+  const activeLibrary = layoutLibraries.find((item) => item.id === activeLibraryId);
+  const availableTemplates = templates.filter((item) => item.library_id === activeLibraryId);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [projectRow, assetRows, planRow, templateRows, recipeRows] = await Promise.all([
-        api.getProject(projectId), api.listAssets(projectId), api.getPlan(projectId), api.listTemplates(), api.listRecipes(),
+      const [projectRow, assetRows, planRow, templateRows, recipeRows, libraryRows] = await Promise.all([
+        api.getProject(projectId), api.listAssets(projectId), api.getPlan(projectId), api.listTemplates(), api.listRecipes(), api.listLayoutLibraries(),
       ]);
-      setProject(projectRow); setAssets(assetRows); setPlan(planRow); setTemplates(templateRows); setRecipes(recipeRows);
+      setProject(projectRow); setAssets(assetRows); setPlan(planRow); setTemplates(templateRows); setRecipes(recipeRows); setLayoutLibraries(libraryRows);
+      setDraftLibraryId(planRow?.layout_library_id ?? libraryRows.find((item) => item.id === "library-square-2048")?.id ?? libraryRows[0]?.id ?? "library-square-2048");
       if (planRow) {
         setProduction(await api.getProduction(projectId));
       } else {
@@ -210,7 +222,7 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   async function generatePlan() {
     setBusy("generate"); setError(""); setMessage("");
     try {
-      const nextPlan = await api.generatePlan(projectId);
+      const nextPlan = await api.generatePlan(projectId, draftLibraryId);
       const [projectRow] = await Promise.all([api.getProject(projectId), onChanged()]);
       setPlan(nextPlan); setProject(projectRow); setProduction(null);
       setMessage("已生成新的五页规划草稿；请检查并确认规划，然后再启动图片生产。");
@@ -223,7 +235,7 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
     if (!plan) return;
     setBusy(confirmed ? "confirm" : "save"); setError(""); setMessage("");
     try {
-      const saved = await api.savePlan(projectId, { items: plan.items, confirmed });
+      const saved = await api.savePlan(projectId, { items: plan.items, layout_library_id: plan.layout_library_id, confirmed });
       const [productionRow, projectRow] = await Promise.all([
         api.getProduction(projectId), api.getProject(projectId), onChanged(),
       ]);
@@ -256,8 +268,26 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
 
   function addPage() {
     if (!plan) return;
-    const template = templates.find((item) => item.page_types.includes("selling_point")) ?? templates[0];
+    const template = availableTemplates.find((item) => item.page_types.includes("selling_point")) ?? availableTemplates[0];
     setPlan({ ...plan, confirmed: false, items: [...plan.items, { id: crypto.randomUUID(), order: plan.items.length + 1, page_type: "selling_point", title: "新页面标题", body: "请填写页面文案", visual_goal: "请填写视觉目标", template_id: template?.id ?? "split-left", heading_level: 2, status: "draft" }] });
+  }
+
+  function selectLayoutLibrary(libraryId: string) {
+    setDraftLibraryId(libraryId);
+    if (!plan || libraryId === plan.layout_library_id) return;
+    const nextTemplates = templates.filter((item) => item.library_id === libraryId);
+    if (!nextTemplates.length) {
+      setError("所选版式库还没有已发布模板，请先在版式中心发布模板");
+      return;
+    }
+    const remappedItems = plan.items.map((item) => {
+      const nextTemplate = nextTemplates.find((template) => template.page_types.includes(item.page_type)) ?? nextTemplates[0];
+      return { ...item, template_id: nextTemplate.id, status: "draft" as const };
+    });
+    setPlan({ ...plan, layout_library_id: libraryId, confirmed: false, items: remappedItems });
+    setProduction(null);
+    setError("");
+    setMessage("已切换版式库并按页面类型重新匹配模板；请检查横竖版构图后重新确认规划");
   }
 
   if (loading || !project) return <main><OperationFeedback label="正在加载项目工作台" detail="正在同步商品档案、内容规划和生产状态。" /></main>;
@@ -294,9 +324,11 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
           <button className={plan ? "ghost-button" : "primary"} disabled={!!busy} onClick={() => void generatePlan()}>{busy === "generate" ? "生成规划中…" : plan ? "重新生成规划" : "生成内容规划"}</button>
         </div>
       </div>
+      <LayoutLibraryPicker libraries={layoutLibraries} selectedId={activeLibraryId} onSelect={selectLayoutLibrary} disabled={!!busy} />
       {!plan ? <div className="empty-state inline-empty">录入卖点和参数后，可生成一套五页内容结构。</div> : <div className="plan-list">
         <div className="recipe-banner"><div><span>可用配方</span><strong>{recipes.filter((item) => item.status === "published").length} 套已发布配方</strong></div><small>在生产阶段选择配方，生成记录会锁定具体版本</small></div>
-        {plan.items.map((item, index) => <PageEditor key={item.id} item={item} templates={templates} onChange={(patch) => updatePage(index, patch)} onMoveUp={() => movePage(index, -1)} onMoveDown={() => movePage(index, 1)} onDelete={() => deletePage(index)} first={index === 0} last={index === plan.items.length - 1} />)}
+        <div className="active-library-note"><strong>{activeLibrary?.name ?? "当前版式库"}</strong><span>{activeLibrary?.size ?? ""} · 页面预览按实际宽高比缩放展示，生产仍使用真实像素尺寸</span></div>
+        {plan.items.map((item, index) => <PageEditor key={item.id} item={item} templates={availableTemplates} onChange={(patch) => updatePage(index, patch)} onMoveUp={() => movePage(index, -1)} onMoveDown={() => movePage(index, 1)} onDelete={() => deletePage(index)} first={index === 0} last={index === plan.items.length - 1} />)}
       </div>}
     </section>
     {plan && !plan.confirmed && <div className="production-gate" role="status"><span>下一步</span><div><strong>图片生产尚未开始</strong><p>当前是规划草稿。请先检查页面内容并点击“确认规划”，确认后才会显示生产按钮和实时进度。</p></div></div>}
@@ -361,6 +393,25 @@ function ProfileEditor({ project, onClose, onSaved }: { project: Project; onClos
   return <Dialog title="编辑商品档案" subtitle="型号、数字和参数将作为质检的事实依据。" onClose={onClose}><form onSubmit={submit}><Field label="项目名称"><input required value={projectName} onChange={(event) => setProjectName(event.target.value)} /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(event) => setProfile({ ...profile, sku: event.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(event) => setProfile({ ...profile, model: event.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(event) => setProfile({ ...profile, name: event.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(event) => setProfile({ ...profile, category: event.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(event) => setSellingPoints(event.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(event) => setParameters(event.target.value)} /></Field><Field label="品牌要求"><textarea rows={2} value={profile.brand_requirements} onChange={(event) => setProfile({ ...profile, brand_requirements: event.target.value })} /></Field><Field label="输出要求"><textarea rows={2} value={profile.output_requirements} onChange={(event) => setProfile({ ...profile, output_requirements: event.target.value })} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="保存档案" /></form></Dialog>;
 }
 
+function LayoutLibraryPicker({ libraries, selectedId, onSelect, disabled }: { libraries: LayoutLibrary[]; selectedId: string; onSelect: (id: string) => void; disabled: boolean }) {
+  return <div className="project-library-picker">
+    <div className="project-library-copy"><strong>选择本项目的版式库</strong><span>一个项目规划只使用同一画布尺寸，便于批量生成与后续长图拼接。</span></div>
+    <div className="project-library-options">
+      {libraries.map((library) => <button
+        type="button"
+        key={library.id}
+        className={library.id === selectedId ? "selected" : ""}
+        disabled={disabled}
+        onClick={() => onSelect(library.id)}
+      >
+        <span className="library-ratio-icon"><i style={{ aspectRatio: `${library.width} / ${library.height}` }} /></span>
+        <span><strong>{library.name}</strong><small>{library.size} · {library.template_count} 个模板</small></span>
+        {library.id === selectedId && <b>当前</b>}
+      </button>)}
+    </div>
+  </div>;
+}
+
 function PageEditor({ item, templates, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; templates: TemplateDefinition[]; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
   const template = templates.find((row) => row.id === item.template_id) ?? templates[0];
   const compatible = templates.filter((row) => row.page_types.includes(item.page_type));
@@ -376,9 +427,10 @@ function PageEditor({ item, templates, onChange, onMoveUp, onMoveDown, onDelete,
 }
 
 function TemplatePreview({ item, template }: { item: PageItem; template?: TemplateDefinition }) {
-  const textBox = template?.text_box ?? [0.09, 0.07, 0.91, 0.29];
+  const titleBox = template?.title_box ?? template?.text_box ?? [0.09, 0.07, 0.91, 0.18];
+  const bodyBox = template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
   const productBox = template?.product_anchor_box ?? template?.product_box ?? [0.20, 0.32, 0.80, 0.94];
-  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy" style={regionStyle(textBox)}><strong>{item.title}</strong><span>{item.body}</span></div><div className="product-shape" style={regionStyle(productBox)}><i /><b /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
+  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><strong>{item.title}</strong></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><span>{item.body}</span></div><div className="product-shape" style={regionStyle(productBox)}><i /><b /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
 }
 
 function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; onRefresh: () => Promise<void> }) {
@@ -535,10 +587,12 @@ function CandidateCard({ projectId, pageId, candidate, referenceUrls, selected, 
   const layout = candidate.qa?.evidence?.layout as { canvas?: number[]; safe_area?: number[]; text_bbox?: number[]; subject_bbox?: number[] } | undefined;
   const technicalIssues = candidate.qa?.issues.filter((issue) => issue.code.includes("unavailable")) ?? [];
   const qualityIssues = candidate.qa?.issues.filter((issue) => !issue.code.includes("unavailable")) ?? [];
+  const generatorMetadata = candidate.metadata?.generator as { size?: string; layout?: { canvas_size?: string } } | undefined;
+  const candidateAspectRatio = imageAspectRatio(generatorMetadata?.size ?? generatorMetadata?.layout?.canvas_size);
   const overlay = (bbox?: number[]) => { const canvas = layout?.canvas ?? [900, 1200]; return bbox?.length === 4 ? { left: `${bbox[0] / canvas[0] * 100}%`, top: `${bbox[1] / canvas[1] * 100}%`, width: `${(bbox[2] - bbox[0]) / canvas[0] * 100}%`, height: `${(bbox[3] - bbox[1]) / canvas[1] * 100}%` } : undefined; };
   async function review(decision: "approved" | "rejected") { setBusy(true); setError(""); try { await api.reviewCandidate(candidate.id, decision, reason); await onReviewed(); } catch (value) { setError(value instanceof Error ? value.message : "审核失败"); } finally { setBusy(false); } }
   return <div className={`candidate-card ${selected ? "selected" : ""}`}>
-    <div className="candidate-image">
+    <div className="candidate-image" style={{ aspectRatio: candidateAspectRatio }}>
       <img src={api.resolveUrl(candidate.composed_url)} alt={`候选 ${candidate.candidate_index}`} />
       {showQaOverlay && <>
         {layout?.safe_area && <i className="qa-box safe" style={overlay(layout.safe_area)} />}
@@ -577,7 +631,19 @@ function CandidateCard({ projectId, pageId, candidate, referenceUrls, selected, 
 function ProjectTable({ projects, onOpen, onRefresh }: { projects: Project[]; onOpen: (id: string) => void; onRefresh: () => Promise<void> }) {
   const [busy, setBusy] = useState(""); const [error, setError] = useState("");
   async function clone(project: Project) { setBusy(project.id); setError(""); try { const copied = await api.cloneProject(project.id); await onRefresh(); onOpen(copied.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "复制失败"); } finally { setBusy(""); } }
-  return <section className="panel"><div className="panel-heading"><h3>最近项目</h3><p>进入项目后上传素材、生成并确认多页内容规划。</p></div>{busy && <OperationFeedback label="正在复制项目" detail="正在复制商品档案与页面规划。" compact />}{error && <div className="notice error">{error}</div>}{projects.length === 0 ? <div className="empty-state">还没有商品项目，先创建一个项目。</div> : <div className="table-wrap"><table><thead><tr><th>项目</th><th>SKU / 型号</th><th>品类</th><th>状态</th><th>创建时间</th><th /></tr></thead><tbody>{projects.map((project) => <tr key={project.id}><td><strong>{project.name}</strong><small>{project.profile.name}</small></td><td>{project.profile.sku}<small>{project.profile.model || "未填写型号"}</small></td><td>{project.profile.category}</td><td><StatusBadge status={project.status} /></td><td>{formatDate(project.created_at)}</td><td><div className="table-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}>{busy === project.id ? "复制中…" : "复制"}</button><button className="table-action" disabled={!!busy} onClick={() => onOpen(project.id)}>进入项目 →</button></div></td></tr>)}</tbody></table></div>}</section>;
+  const showcases = projects.filter((project) => project.id.startsWith("showcase-"));
+  const regularProjects = projects.filter((project) => !project.id.startsWith("showcase-") && project.status !== "archived");
+  return <div className="project-catalog">
+    {showcases.length > 0 && <section className="panel showcase-panel">
+      <div className="panel-heading"><h3>内置示例项目</h3><p>部署后直接可见，无需调用生图模型；可进入查看分层结果，或复制为自己的项目继续调整。</p></div>
+      <div className="showcase-grid">{showcases.map((project) => <article key={project.id} className="showcase-card">
+        <button className="showcase-image" onClick={() => onOpen(project.id)}><img src={api.resolveUrl(`/api/candidates/${project.id}-candidate-1/files/composed`)} alt={project.name} /></button>
+        <div><span className="demo-tag">内置审计示例</span><strong>{project.name.replace("[示例] ", "")}</strong><small>{showcaseSize(project.id)} · High · 独立文字层</small></div>
+        <div className="showcase-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}>{busy === project.id ? "复制中…" : "以此创建项目"}</button><button className="table-action" onClick={() => onOpen(project.id)}>查看完整结果 →</button></div>
+      </article>)}</div>
+    </section>}
+    <section className="panel"><div className="panel-heading"><h3>最近项目</h3><p>进入项目后上传素材、生成并确认多页内容规划。</p></div>{busy && <OperationFeedback label="正在复制项目" detail="正在复制商品档案与页面规划。" compact />}{error && <div className="notice error">{error}</div>}{regularProjects.length === 0 ? <div className="empty-state">还没有自己的商品项目，可复制上方示例或创建新项目。</div> : <div className="table-wrap"><table><thead><tr><th>项目</th><th>SKU / 型号</th><th>品类</th><th>状态</th><th>创建时间</th><th /></tr></thead><tbody>{regularProjects.map((project) => <tr key={project.id}><td><strong>{project.name}</strong><small>{project.profile.name}</small></td><td>{project.profile.sku}<small>{project.profile.model || "未填写型号"}</small></td><td>{project.profile.category}</td><td><StatusBadge status={project.status} /></td><td>{formatDate(project.created_at)}</td><td><div className="table-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}>{busy === project.id ? "复制中…" : "复制"}</button><button className="table-action" disabled={!!busy} onClick={() => onOpen(project.id)}>进入项目 →</button></div></td></tr>)}</tbody></table></div>}</section>
+  </div>;
 }
 
 function BatchTable({ batches, onOpenProject, onRefresh }: { batches: Batch[]; onOpenProject: (id: string) => void; onRefresh: () => Promise<void> }) {
@@ -604,7 +670,6 @@ function CatalogPanel() {
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [prompts, setPrompts] = useState<PromptVersion[]>([]);
-  const [capabilities, setCapabilities] = useState<ImageCapabilities | null>(null);
   const [promptName, setPromptName] = useState("");
   const [promptBody, setPromptBody] = useState("为{{product_name}}制作高端电商广告图。页面目标：{{visual_goal}}。综合全部商品外观与细节参考图，在真实空间中重新生成同一商品；允许调整拍摄角度、透视、环境光影和效果，但保持商品轮廓、比例、颜色、材质与关键结构一致。{{scene_prompt_hint}}。{{composition_instruction}}。最终文字由后期排版，生成图不要新增营销文字。");
   const [recipeName, setRecipeName] = useState("");
@@ -614,27 +679,19 @@ function CatalogPanel() {
   const [newRecipeAutoRepair, setNewRecipeAutoRepair] = useState("0");
   const [recipeCandidates, setRecipeCandidates] = useState(1);
   const [recipeTemplates, setRecipeTemplates] = useState<string[]>([]);
-  const [templateName, setTemplateName] = useState("");
-  const [templateBase, setTemplateBase] = useState("");
-  const [templatePageType, setTemplatePageType] = useState<PageItem["page_type"]>("scene");
-  const [templateSize, setTemplateSize] = useState("2048x2048");
-  const [customWidth, setCustomWidth] = useState("2048");
-  const [customHeight, setCustomHeight] = useState("2048");
   const [previewTemplateId, setPreviewTemplateId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
 
   const refresh = useCallback(async () => {
-    const [templateRows, recipeRows, promptRows, imageCapabilities] = await Promise.all([
-      api.listTemplates(), api.listRecipes(), api.listPrompts(), api.getImageCapabilities(),
+    const [templateRows, recipeRows, promptRows] = await Promise.all([
+      api.listTemplates(), api.listRecipes(), api.listPrompts(),
     ]);
     setTemplates(templateRows);
     setRecipes(recipeRows);
     setPrompts(promptRows);
-    setCapabilities(imageCapabilities);
     setRecipePrompt((current) => current || promptRows.find((item) => item.status === "published")?.id || "");
     setRecipeTemplates((current) => current.length ? current : templateRows.map((item) => item.id));
-    setTemplateBase((current) => current || templateRows.find((item) => item.id === "scene-overlay")?.id || templateRows[0]?.id || "");
     setPreviewTemplateId((current) => current || templateRows[0]?.id || "");
   }, []);
 
@@ -643,18 +700,7 @@ function CatalogPanel() {
   const publishedPrompts = prompts.filter((item) => item.status === "published");
   const selectedPrompt = prompts.find((item) => item.id === recipePrompt) ?? publishedPrompts[0];
   const previewTemplate = templates.find((item) => item.id === previewTemplateId) ?? templates[0];
-  const effectiveTemplateSize = templateSize === "custom" ? `${customWidth}x${customHeight}` : templateSize;
   const activeModel = recipes.find((item) => item.status === "published")?.model ?? "azure-gpt-image";
-
-  async function createTemplate(event: FormEvent) {
-    event.preventDefault(); setBusy("create-template"); setError("");
-    try {
-      await api.createTemplate({ name: templateName, page_types: [templatePageType], base_template_id: templateBase, size: effectiveTemplateSize });
-      setTemplateName("");
-      await refresh();
-    } catch (value) { setError(value instanceof Error ? value.message : "模板创建失败"); }
-    finally { setBusy(""); }
-  }
 
   async function createPrompt(event: FormEvent) {
     event.preventDefault(); setBusy("create-prompt"); setError("");
@@ -689,25 +735,6 @@ function CatalogPanel() {
       <div className="recipe-flow"><article><b>1</b><strong>页面模板</strong><span>画布尺寸、文字区、商品区</span></article><i>＋</i><article><b>2</b><strong>多张参考图</strong><span>共同定义商品身份与细节</span></article><i>＋</i><article><b>3</b><strong>生图 Prompt</strong><span>控制角度、场景、光影与留白</span></article><i>＋</i><article><b>4</b><strong>生成配方</strong><span>策略、质量、候选数、质检</span></article><i>→</i><article className="result"><b>5</b><strong>模型图 + 文字层</strong><span>商品与场景由模型生成，文案精确排版</span></article></div>
     </section>
 
-    <div className="catalog-layout template-catalog-layout">
-      <section className="panel">
-        <div className="panel-heading"><h3>页面模板</h3><p>模板是尺寸与布局的唯一来源；预览比例与实际生成画布一致。</p></div>
-        <div className="template-grid">{templates.map((template) => <article key={template.id}><TemplatePreview item={{ id: template.id, order: 1, page_type: (template.page_types[0] ?? "hero") as PageItem["page_type"], title: template.name, body: "后期排版的标题与正文", visual_goal: "", template_id: template.id, status: "draft" }} template={template} /><p><strong>{template.size}</strong> · {template.page_types.map(pageTypeLabel).join(" / ")} · {template.is_builtin ? "系统模板" : "自定义模板"}</p></article>)}</div>
-      </section>
-      <form className="panel catalog-side-form" onSubmit={createTemplate}>
-        <div className="panel-heading"><h3>新建模板</h3><p>选择布局骨架和尺寸，系统会同步生图留白与后期文字坐标。</p></div>
-        <div className="catalog-form">
-          <Field label="模板名称"><input required disabled={!!busy} value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="例如：竖版生活场景" /></Field>
-          <Field label="布局骨架"><select required disabled={!!busy} value={templateBase} onChange={(event) => setTemplateBase(event.target.value)}>{templates.filter((item) => item.is_builtin).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-          <Field label="适用页面"><select value={templatePageType} onChange={(event) => setTemplatePageType(event.target.value as PageItem["page_type"])}><option value="hero">主视觉</option><option value="selling_point">核心卖点</option><option value="function">功能说明</option><option value="scene">生活场景</option><option value="parameters">商品参数</option></select></Field>
-          <Field label="生成尺寸"><select value={templateSize} onChange={(event) => setTemplateSize(event.target.value)}>{capabilities?.size_presets.map((item) => <option key={item.value} value={item.value}>{item.label} · {item.value}{item.experimental ? "（实验性）" : ""}</option>)}<option value="custom">自定义尺寸</option></select></Field>
-          {templateSize === "custom" && <div className="dimension-fields"><Field label="宽度"><input type="number" min={16} max={3840} step={16} value={customWidth} onChange={(event) => setCustomWidth(event.target.value)} /></Field><span>×</span><Field label="高度"><input type="number" min={16} max={3840} step={16} value={customHeight} onChange={(event) => setCustomHeight(event.target.value)} /></Field></div>}
-          <small className="form-help">最大正方形：{capabilities?.custom_size.max_square ?? "2880x2880"}；自定义宽高必须是 16 的倍数。</small>
-          <button className="secondary" disabled={!!busy}>{busy === "create-template" ? "保存中…" : "保存模板"}</button>
-        </div>
-      </form>
-    </div>
-
     <div className="catalog-layout recipe-catalog-layout">
       <section className="panel recipe-panel">
         <div className="panel-heading"><h3>生成配方</h3><p>把生图 Prompt、参考策略、模型参数、模板范围和质检策略固定为可复用方案。</p></div>
@@ -741,9 +768,10 @@ function CatalogPanel() {
 
 function ProjectForm({ onClose, onCreated }: { onClose: () => void; onCreated: (projectId?: string) => Promise<void> }) {
   const [projectName, setProjectName] = useState(""); const [profile, setProfile] = useState(emptyProfile()); const [sellingPoints, setSellingPoints] = useState(""); const [parameters, setParameters] = useState("容量=12kg"); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
-  async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(""); try { const parsedParameters = Object.fromEntries(parameters.split(/\n|[;；]/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(/[=：:]/, 2).map((part) => part.trim())).filter(([key, value]) => key && value)); const project = await api.createProject({ project_name: projectName, profile: { ...profile, parameters: parsedParameters, selling_points: sellingPoints.split("\n").map((item) => item.trim()).filter(Boolean) } }); await onCreated(project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setSaving(false); } }
-  async function createDemo() { setSaving(true); setError(""); try { const result = await api.createLaundryDemo(); await onCreated(result.project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "演示项目创建失败"); } finally { setSaving(false); } }
-  return <Dialog title="新建商品项目" subtitle="先建立结构化商品档案，再上传素材并生成内容规划。" onClose={onClose}><div className="golden-demo-callout"><div><strong>直接体验黄金演示</strong><p>自动建立 2048×2048 单页洗护场景、High 默认质量和已调优规划。创建后只需上传自己的商品参考图。</p></div><button type="button" className="secondary" disabled={saving} onClick={() => void createDemo()}>{saving ? "创建中…" : "创建黄金演示项目"}</button></div><div className="dialog-divider"><span>或手动创建</span></div><form onSubmit={submit}><Field label="项目名称"><input required value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(e) => setProfile({ ...profile, sku: e.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(e) => setProfile({ ...profile, model: e.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(e) => setProfile({ ...profile, category: e.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(e) => setParameters(e.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="创建项目" /></form></Dialog>;
+  const [libraries, setLibraries] = useState<LayoutLibrary[]>([]); const [libraryId, setLibraryId] = useState("library-square-2048");
+  useEffect(() => { void api.listLayoutLibraries().then((rows) => { setLibraries(rows); if (!rows.some((item) => item.id === libraryId) && rows[0]) setLibraryId(rows[0].id); }).catch(() => undefined); }, []);
+  async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(""); try { const parsedParameters = Object.fromEntries(parameters.split(/\n|[;；]/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(/[=：:]/, 2).map((part) => part.trim())).filter(([key, value]) => key && value)); const project = await api.createProject({ project_name: projectName, profile: { ...profile, parameters: parsedParameters, selling_points: sellingPoints.split("\n").map((item) => item.trim()).filter(Boolean) } }); await api.generatePlan(project.id, libraryId); await onCreated(project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setSaving(false); } }
+  return <Dialog title="新建商品项目" subtitle="先选择成品画布比例，再建立商品档案和对应页面规划。" onClose={onClose}><div className="golden-demo-callout"><div><strong>需要参考？</strong><p>项目首页已内置方形、最大横版和最大竖版三套完整结果，可直接查看或复制。</p></div></div><form onSubmit={submit}><LayoutLibraryPicker libraries={libraries} selectedId={libraryId} onSelect={setLibraryId} disabled={saving} /><Field label="项目名称"><input required value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(e) => setProfile({ ...profile, sku: e.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(e) => setProfile({ ...profile, model: e.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(e) => setProfile({ ...profile, category: e.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(e) => setParameters(e.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="创建项目并生成规划" /></form></Dialog>;
 }
 
 function BatchForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
@@ -765,9 +793,11 @@ function batchOperationLabel(value: string) { return ({ start: "正在提交批�
 function statusLabel(status: string) { return ({ draft: "草稿", ready: "待执行", queued: "排队中", running: "执行中", planned: "已策划", producing: "生产中", reviewing: "审核中", review: "需确认", pass: "通过", needs_review: "待审核", approved: "已确认", rejected: "不采用", completed: "已完成", partial_failed: "部分失败", paused: "已暂停", failed: "失败", archived: "已归档", published: "已发布", testing: "测试中", deprecated: "已停用", pending: "待处理" } as Record<string, string>)[status] ?? status; }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(value: number) { return value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`; }
-function tabTitle(tab: Tab) { return tab === "projects" ? "商品项目" : tab === "batches" ? "多 SKU 批量任务" : "模板与配方"; }
+function tabTitle(tab: Tab) { return tab === "projects" ? "商品项目" : tab === "batches" ? "多 SKU 批量任务" : tab === "layouts" ? "版式中心" : "生成配置"; }
 function pageTypeLabel(value: string) { return ({ hero: "主视觉", selling_point: "核心卖点", function: "功能说明", scene: "生活场景", parameters: "商品参数" } as Record<string, string>)[value] ?? value; }
 function usageLabel(value: Asset["usage"]) { return ({ product: "商品外观", detail: "局部细节", brand: "品牌风格", scene: "场景参考" } as Record<Asset["usage"], string>)[value]; }
+function showcaseSize(projectId: string) { return projectId.includes("landscape") ? "3840×2160 横版" : projectId.includes("portrait") ? "2160×3840 竖版" : "2048×2048 方形"; }
+function imageAspectRatio(value?: string) { const match = value?.match(/^(\d+)x(\d+)$/i); return match ? `${match[1]} / ${match[2]}` : "1 / 1"; }
 function regionStyle(box: readonly number[]): CSSProperties {
   const [left = 0, top = 0, right = 1, bottom = 1] = box;
   return { position: "absolute", left: `${left * 100}%`, top: `${top * 100}%`, width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%` };

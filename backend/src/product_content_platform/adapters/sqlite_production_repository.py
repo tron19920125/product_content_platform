@@ -41,6 +41,8 @@ class SQLiteProductionRepository:
             existing.model != recipe.model
             or existing.model_params != recipe.model_params
             or existing.prompt_version_id != recipe.prompt_version_id
+            or existing.template_ids != recipe.template_ids
+            or existing.qa_policy != recipe.qa_policy
         ):
             self.save_recipe(replace(recipe, created_at=existing.created_at))
 

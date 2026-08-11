@@ -105,12 +105,13 @@ class SQLitePlatformRepository:
             connection.execute(
                 """
                 INSERT INTO page_plans
-                    (id, project_id, version, items, confirmed, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (id, project_id, version, items, layout_library_id, confirmed, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id) DO UPDATE SET
                     id = excluded.id,
                     version = excluded.version,
                     items = excluded.items,
+                    layout_library_id = excluded.layout_library_id,
                     confirmed = excluded.confirmed,
                     updated_at = excluded.updated_at
                 """,
@@ -119,6 +120,7 @@ class SQLitePlatformRepository:
                     plan.project_id,
                     plan.version,
                     json.dumps(items, ensure_ascii=False),
+                    plan.layout_library_id,
                     int(plan.confirmed),
                     plan.created_at.isoformat(),
                     plan.updated_at.isoformat(),
@@ -150,6 +152,7 @@ class SQLitePlatformRepository:
             project_id=row["project_id"],
             version=int(row["version"]),
             items=items,
+            layout_library_id=row["layout_library_id"],
             confirmed=bool(row["confirmed"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -322,6 +325,7 @@ class SQLitePlatformRepository:
                     project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
                     version INTEGER NOT NULL,
                     items TEXT NOT NULL,
+                    layout_library_id TEXT NOT NULL DEFAULT 'library-square-2048',
                     confirmed INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -333,6 +337,11 @@ class SQLitePlatformRepository:
                 connection.execute("ALTER TABLE assets ADD COLUMN source TEXT NOT NULL DEFAULT 'user_upload'")
             if "authorization_status" not in asset_columns:
                 connection.execute("ALTER TABLE assets ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'unconfirmed'")
+            plan_columns = {row[1] for row in connection.execute("PRAGMA table_info(page_plans)").fetchall()}
+            if "layout_library_id" not in plan_columns:
+                connection.execute(
+                    "ALTER TABLE page_plans ADD COLUMN layout_library_id TEXT NOT NULL DEFAULT 'library-square-2048'"
+                )
 
     @staticmethod
     def _insert_project(connection: sqlite3.Connection, project: Project) -> None:

@@ -3,6 +3,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Some launchers inject both `Path` and `PATH`. Windows PowerShell treats the
+# process environment as case-insensitive when spawning a child and otherwise
+# fails with "Item has already been added". Canonicalize it before Start-Process.
+$processEnvironment = [Environment]::GetEnvironmentVariables("Process")
+$pathKeys = @($processEnvironment.Keys | Where-Object { [string]$_ -ieq "Path" })
+if ($pathKeys.Count -gt 1) {
+    $canonicalPath = [Environment]::GetEnvironmentVariable("Path", "Process")
+    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $canonicalPath, "Process")
+}
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RunRoot = Join-Path $ProjectRoot ".run"
 $LogRoot = Join-Path $ProjectRoot "data\logs"

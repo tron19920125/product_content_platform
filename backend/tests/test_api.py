@@ -162,6 +162,35 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(200, confirmed.status_code)
         self.assertTrue(confirmed.json()["confirmed"])
 
+    def test_plan_uses_one_layout_library_and_rejects_cross_library_templates(self) -> None:
+        project = self.client.post(
+            "/api/projects",
+            json={"project_name": "横版详情页", "profile": self.profile_payload("WIDE-01")},
+        ).json()
+        generated = self.client.post(
+            f"/api/projects/{project['id']}/plan",
+            json={"layout_library_id": "library-landscape-3840"},
+        )
+        self.assertEqual(201, generated.status_code, generated.text)
+        plan = generated.json()
+        self.assertEqual("library-landscape-3840", plan["layout_library_id"])
+        landscape_ids = {item["id"] for item in self.client.get(
+            "/api/templates?library_id=library-landscape-3840"
+        ).json()}
+        self.assertTrue({item["template_id"] for item in plan["items"]} <= landscape_ids)
+
+        plan["items"][0]["template_id"] = "hero-center"
+        rejected = self.client.put(
+            f"/api/projects/{project['id']}/plan",
+            json={
+                "layout_library_id": "library-landscape-3840",
+                "items": plan["items"],
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(422, rejected.status_code)
+        self.assertIn("不属于当前版式库", rejected.json()["detail"])
+
     def test_import_batch_from_csv(self) -> None:
         content = (
             "SKU,商品名称,品类,型号,卖点,参数\n"
