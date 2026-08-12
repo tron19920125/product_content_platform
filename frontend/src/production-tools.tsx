@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { api, Candidate, ProductionSnapshot, TypographySettings } from "./api";
+import { TextLayoutEditor } from "./text-layout-editor";
+import { Icon } from "./ui";
 
 type TypographyEditorProps = {
   projectId: string;
@@ -58,7 +60,7 @@ function initialTypography(candidate: Candidate): TypographyFormState {
   };
 }
 
-export function TypographyEditor({ projectId, pageId, candidate, onComplete, onCancel }: TypographyEditorProps) {
+function LegacyTypographyEditor({ projectId, pageId, candidate, onComplete, onCancel }: TypographyEditorProps) {
   const [form, setForm] = useState<TypographyFormState>(() => initialTypography(candidate));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -122,6 +124,10 @@ export function TypographyEditor({ projectId, pageId, candidate, onComplete, onC
   </form>;
 }
 
+export function TypographyEditor({ candidate, onComplete, onCancel }: TypographyEditorProps) {
+  return <TextLayoutEditor candidate={candidate} onComplete={onComplete} onCancel={onCancel} />;
+}
+
 type StitchComposerProps = {
   projectId: string;
   snapshot: ProductionSnapshot;
@@ -168,6 +174,7 @@ export function StitchComposer({ projectId, snapshot, disabled = false }: Stitch
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
+  const [dragId, setDragId] = useState("");
 
   useEffect(() => {
     setSelectedIds((current) => {
@@ -197,6 +204,19 @@ export function StitchComposer({ projectId, snapshot, disabled = false }: Stitch
       if (index < 0 || target < 0 || target >= current.length) return current;
       const next = [...current];
       [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function moveTo(id: string, targetId: string) {
+    setDownloadUrl("");
+    setSelectedIds((current) => {
+      const index = current.indexOf(id);
+      const target = current.indexOf(targetId);
+      if (index < 0 || target < 0 || index === target) return current;
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
       return next;
     });
   }
@@ -231,7 +251,7 @@ export function StitchComposer({ projectId, snapshot, disabled = false }: Stitch
       </div>
       <div className="stitch-order-panel">
         <span className="tool-label">拼接顺序</span>
-        {selected.length === 0 ? <p>请至少选择 2 张图片。</p> : <ol>{selected.map((item, index) => <li key={item.id}><b>{index + 1}</b><img src={item.url} alt="" /><span>第 {item.pageOrder} 页 · 候选 {item.candidateIndex}</span><button type="button" aria-label="上移" disabled={index === 0 || busy} onClick={() => move(item.id, -1)}>↑</button><button type="button" aria-label="下移" disabled={index === selected.length - 1 || busy} onClick={() => move(item.id, 1)}>↓</button></li>)}</ol>}
+        {selected.length === 0 ? <p>请至少选择 2 张图片。</p> : <ol>{selected.map((item, index) => <li key={item.id} draggable={!busy} className={dragId === item.id ? "dragging" : ""} onDragStart={() => setDragId(item.id)} onDragEnd={() => setDragId("")} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (dragId) moveTo(dragId, item.id); setDragId(""); }}><span className="stitch-drag-handle" aria-hidden="true"><Icon name="grip"/></span><b>{index + 1}</b><img src={item.url} alt="" /><span>第 {item.pageOrder} 页 · 候选 {item.candidateIndex}</span><button type="button" aria-label="上移" disabled={index === 0 || busy} onClick={() => move(item.id, -1)}>↑</button><button type="button" aria-label="下移" disabled={index === selected.length - 1 || busy} onClick={() => move(item.id, 1)}>↓</button></li>)}</ol>}
       </div>
     </div>
     <div className="stitch-options">

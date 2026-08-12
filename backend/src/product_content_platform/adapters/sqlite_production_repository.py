@@ -20,6 +20,7 @@ from product_content_platform.domain import (
     Recipe,
     ReviewDecision,
     ReviewDecisionType,
+    TextDocument,
 )
 
 
@@ -229,6 +230,82 @@ class SQLiteProductionRepository:
             row = connection.execute("SELECT * FROM qa_results WHERE candidate_id = ?", (candidate_id,)).fetchone()
         return self._qa_from_row(row) if row else None
 
+    def save_qa_result(self, result: QAResult) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO qa_results
+                    (id, candidate_id, status, score, issues, evidence, suggested_fix, repair_applied, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET
+                    id=excluded.id, status=excluded.status, score=excluded.score,
+                    issues=excluded.issues, evidence=excluded.evidence,
+                    suggested_fix=excluded.suggested_fix, repair_applied=excluded.repair_applied,
+                    created_at=excluded.created_at
+                """,
+                (
+                    result.id, result.candidate_id, result.status.value, result.score,
+                    json.dumps(result.issues, ensure_ascii=False),
+                    json.dumps(result.evidence, ensure_ascii=False), result.suggested_fix,
+                    int(result.repair_applied), result.created_at.isoformat(),
+                ),
+            )
+
+    def update_candidate_status(self, candidate_id: str, status: CandidateStatus) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE candidates SET status = ? WHERE id = ?", (status.value, candidate_id)
+            )
+            if cursor.rowcount == 0:
+                raise LookupError(candidate_id)
+
+    def save_text_document(self, document: TextDocument) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO text_documents
+                    (candidate_id, version, layers, status, source, ai_reasoning, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document.candidate_id, document.version,
+                    json.dumps([layer.to_dict() for layer in document.layers], ensure_ascii=False),
+                    document.status, document.source, document.ai_reasoning,
+                    document.created_at.isoformat(), document.updated_at.isoformat(),
+                ),
+            )
+
+    def get_text_document(self, candidate_id: str, version: int | None = None) -> TextDocument | None:
+        query = "SELECT * FROM text_documents WHERE candidate_id = ?"
+        params: tuple[object, ...] = (candidate_id,)
+        if version is not None:
+            query += " AND version = ?"
+            params = (candidate_id, version)
+        query += " ORDER BY version DESC LIMIT 1"
+        with self._connect() as connection:
+            row = connection.execute(query, params).fetchone()
+        if row is None:
+            return None
+        return TextDocument.from_dict({
+            "candidate_id": row["candidate_id"], "version": row["version"],
+            "layers": json.loads(row["layers"]), "status": row["status"],
+            "source": row["source"], "ai_reasoning": row["ai_reasoning"],
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        })
+
+    def list_text_documents(self, candidate_id: str) -> list[TextDocument]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM text_documents WHERE candidate_id = ? ORDER BY version DESC",
+                (candidate_id,),
+            ).fetchall()
+        return [TextDocument.from_dict({
+            "candidate_id": row["candidate_id"], "version": row["version"],
+            "layers": json.loads(row["layers"]), "status": row["status"],
+            "source": row["source"], "ai_reasoning": row["ai_reasoning"],
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }) for row in rows]
+
     def save_decision(self, decision: ReviewDecision) -> None:
         with self._connect() as connection:
             if decision.decision is ReviewDecisionType.APPROVED:
@@ -239,12 +316,12 @@ class SQLiteProductionRepository:
             connection.execute(
                 """
                 INSERT INTO review_decisions
-                    (id, project_id, page_id, candidate_id, decision, override_reason, reviewer, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, project_id, page_id, candidate_id, decision, override_reason, qa_disposition, reviewer, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision.id, decision.project_id, decision.page_id, decision.candidate_id,
-                    decision.decision.value, decision.override_reason, decision.reviewer,
+                    decision.decision.value, decision.override_reason, decision.qa_disposition, decision.reviewer,
                     decision.created_at.isoformat(),
                 ),
             )
@@ -354,6 +431,18 @@ class SQLiteProductionRepository:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS text_documents (
+                    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+                    version INTEGER NOT NULL,
+                    layers TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    ai_reasoning TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(candidate_id, version)
+                );
+
                 CREATE TABLE IF NOT EXISTS review_decisions (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -361,11 +450,17 @@ class SQLiteProductionRepository:
                     candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
                     decision TEXT NOT NULL,
                     override_reason TEXT NOT NULL DEFAULT '',
+                    qa_disposition TEXT NOT NULL DEFAULT 'qa_completed',
                     reviewer TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 """
             )
+            review_columns = {row["name"] for row in connection.execute("PRAGMA table_info(review_decisions)")}
+            if "qa_disposition" not in review_columns:
+                connection.execute(
+                    "ALTER TABLE review_decisions ADD COLUMN qa_disposition TEXT NOT NULL DEFAULT 'qa_completed'"
+                )
 
     @staticmethod
     def _prompt_from_row(row: sqlite3.Row) -> PromptVersion:
@@ -429,5 +524,6 @@ class SQLiteProductionRepository:
             id=row["id"], project_id=row["project_id"], page_id=row["page_id"],
             candidate_id=row["candidate_id"], decision=ReviewDecisionType(row["decision"]),
             override_reason=row["override_reason"], reviewer=row["reviewer"],
+            qa_disposition=row["qa_disposition"] if "qa_disposition" in row.keys() else "qa_completed",
             created_at=datetime.fromisoformat(row["created_at"]),
         )

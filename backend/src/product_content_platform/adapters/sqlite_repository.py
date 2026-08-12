@@ -58,8 +58,8 @@ class SQLitePlatformRepository:
                 """
                 INSERT INTO assets
                     (id, project_id, usage, file_name, mime_type, storage_path, size_bytes,
-                     source, authorization_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset.id,
@@ -70,7 +70,6 @@ class SQLitePlatformRepository:
                     asset.storage_path,
                     asset.size_bytes,
                     asset.source,
-                    asset.authorization_status,
                     asset.created_at.isoformat(),
                 ),
             )
@@ -354,7 +353,6 @@ class SQLitePlatformRepository:
                     storage_path TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     source TEXT NOT NULL DEFAULT 'user_upload',
-                    authorization_status TEXT NOT NULL DEFAULT 'unconfirmed',
                     created_at TEXT NOT NULL
                 );
 
@@ -393,8 +391,8 @@ class SQLitePlatformRepository:
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
             if "source" not in asset_columns:
                 connection.execute("ALTER TABLE assets ADD COLUMN source TEXT NOT NULL DEFAULT 'user_upload'")
-            if "authorization_status" not in asset_columns:
-                connection.execute("ALTER TABLE assets ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'unconfirmed'")
+            if "authorization_status" in asset_columns:
+                connection.execute("ALTER TABLE assets DROP COLUMN authorization_status")
             plan_columns = {row[1] for row in connection.execute("PRAGMA table_info(page_plans)").fetchall()}
             if "layout_library_id" not in plan_columns:
                 connection.execute(
@@ -444,7 +442,6 @@ class SQLitePlatformRepository:
             storage_path=row["storage_path"],
             size_bytes=int(row["size_bytes"]),
             source=row["source"],
-            authorization_status=row["authorization_status"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 

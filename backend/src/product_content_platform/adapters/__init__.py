@@ -8,6 +8,7 @@ from .production_engine import LocalProductionEngine
 from .sqlite_repository import SQLitePlatformRepository
 from .sqlite_production_repository import SQLiteProductionRepository
 from .showcase_seeder import seed_showcase_projects
+from .font_catalog import FontCatalog
 
 __all__ = [
     "FixedContentCatalog",
@@ -21,4 +22,5 @@ __all__ = [
     "SQLitePlatformRepository",
     "SQLiteProductionRepository",
     "seed_showcase_projects",
+    "FontCatalog",
 ]

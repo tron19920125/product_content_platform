@@ -173,3 +173,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Check
 - `docs/AI商品图文内容生产与智能质检平台IP方案.md`
 - `docs/spec-completion.md`
 - `docs/acceptance-report.md`
+- `docs/text-layout-workflow.md`（任意文字图层、字体预览、AI 初排与 QA 审计）

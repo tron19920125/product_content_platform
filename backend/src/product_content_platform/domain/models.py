@@ -142,7 +142,6 @@ class Asset:
     storage_path: str
     size_bytes: int
     source: str = "user_upload"
-    authorization_status: str = "unconfirmed"
     created_at: datetime = field(default_factory=utc_now)
 
 

@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   api,
@@ -20,9 +20,30 @@ import { StitchComposer, TypographyEditor } from "./production-tools";
 import { LayoutCenter } from "./layout-center";
 import { PlanningRunProgress, PlanningSuggestionPanel } from "./planning-assistant";
 import { CandidateEditPanel, CandidateHistory } from "./candidate-editor";
+import { Icon, IconButton, IconName } from "./ui";
+import { statusLabel, statusTone } from "./status";
 
 type Tab = "projects" | "batches" | "layouts" | "generation";
 type Role = "business" | "admin";
+type ProjectTab = "profile" | "planning" | "production" | "review" | "delivery";
+
+const PROJECT_TABS: Array<{ key: ProjectTab; label: string; icon: IconName }> = [
+  { key: "profile", label: "商品资料", icon: "profile" },
+  { key: "planning", label: "内容规划", icon: "plan" },
+  { key: "production", label: "图片生产", icon: "image" },
+  { key: "review", label: "质检审核", icon: "review" },
+  { key: "delivery", label: "交付导出", icon: "export" },
+];
+
+const isTab = (value: string | null): value is Tab => ["projects", "batches", "layouts", "generation"].includes(value ?? "");
+const isProjectTab = (value: string | null): value is ProjectTab => PROJECT_TABS.some((item) => item.key === value);
+const locationParams = () => new URLSearchParams(window.location.hash.replace(/^#/, ""));
+function updateLocation(patch: Record<string, string | null>) {
+  const params = locationParams();
+  Object.entries(patch).forEach(([key, value]) => value ? params.set(key, value) : params.delete(key));
+  const hash = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash ? `#${hash}` : ""}`);
+}
 
 const emptyProfile = (): ProductProfile => ({
   sku: "",
@@ -37,16 +58,33 @@ const emptyProfile = (): ProductProfile => ({
 });
 
 function App() {
-  const [tab, setTab] = useState<Tab>("projects");
+  const [tab, setTab] = useState<Tab>(() => {
+    const value = locationParams().get("section");
+    return isTab(value) ? value : "projects";
+  });
   const [projects, setProjects] = useState<Project[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => locationParams().get("project"));
   const [role, setRole] = useState<Role>("admin");
   const [preflight, setPreflight] = useState<SystemPreflight | null>(null);
+  const [navCollapsed, setNavCollapsed] = useState(() => window.localStorage.getItem("pcp-nav-collapsed") === "true");
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false);
+
+  useEffect(() => {
+    const syncLocation = () => {
+      const params = locationParams();
+      const nextSection = params.get("section");
+      setTab(isTab(nextSection) ? nextSection : "projects");
+      setSelectedProjectId(params.get("project"));
+    };
+    window.addEventListener("hashchange", syncLocation);
+    window.addEventListener("popstate", syncLocation);
+    return () => { window.removeEventListener("hashchange", syncLocation); window.removeEventListener("popstate", syncLocation); };
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -92,62 +130,93 @@ function App() {
     () => batches.reduce((total, batch) => total + (batch.progress.total ?? batch.items.length), 0),
     [batches],
   );
+  const taskItems = useMemo(() => [
+    ...projects.filter((project) => ["producing", "reviewing"].includes(project.status)).map((project) => ({ id: project.id, title: project.name, detail: project.status === "producing" ? "图片生产正在进行" : "有候选图等待审核", status: project.status, projectId: project.id })),
+    ...batches.filter((batch) => ["running", "paused", "partial_failed"].includes(batch.status)).map((batch) => ({ id: batch.id, title: batch.name, detail: `${batch.progress.completed ?? 0}/${batch.progress.total ?? batch.items.length} 个 SKU 已完成`, status: batch.status, projectId: "" })),
+  ], [batches, projects]);
+  const openProject = (id: string) => {
+    setSelectedProjectId(id);
+    updateLocation({ section: "projects", project: id, tab: "profile" });
+  };
+  const openSection = (next: Tab) => {
+    setTab(next);
+    setSelectedProjectId(null);
+    updateLocation({ section: next, project: null, tab: null });
+  };
 
   return (
-    <div className="app-shell">
-      <Sidebar tab={tab} role={role} preflight={preflight} setRole={(next) => { setRole(next); if (next === "business" && ["layouts", "generation"].includes(tab)) setTab("projects"); setSelectedProjectId(null); }} setTab={(next) => { setTab(next); setSelectedProjectId(null); }} />
+    <div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}>
+      <a className="skip-link" href="#main-content">跳到主要内容</a>
+      <Sidebar collapsed={navCollapsed} onToggle={() => setNavCollapsed((current) => { const next = !current; window.localStorage.setItem("pcp-nav-collapsed", String(next)); return next; })} tab={tab} role={role} preflight={preflight} setRole={(next) => { setRole(next); if (next === "business" && ["layouts", "generation"].includes(tab)) openSection("projects"); else { setSelectedProjectId(null); updateLocation({ project: null, tab: null }); } }} setTab={openSection} />
       {selectedProjectId ? (
         <ProjectWorkspace
           projectId={selectedProjectId}
-          onBack={() => setSelectedProjectId(null)}
+          onBack={() => { setSelectedProjectId(null); updateLocation({ project: null, tab: null }); }}
           onChanged={refresh}
         />
       ) : (
-        <main>
+        <main id="main-content">
           <header className="topbar">
-            <div><p className="eyebrow">WORKSPACE</p><h2>{tabTitle(tab)}</h2></div>
-            {(tab === "projects" || tab === "batches") && (
+            <div><p className="page-context">内容生产平台</p><h2>{tabTitle(tab)}</h2></div>
+            <div className="topbar-actions"><button className={`task-center-trigger ${taskItems.length ? "has-tasks" : ""}`} aria-expanded={taskCenterOpen} onClick={() => setTaskCenterOpen((current) => !current)}><Icon name="clock"/><span>任务</span>{taskItems.length > 0 && <b>{taskItems.length}</b>}</button>{(tab === "projects" || tab === "batches") && (
               <button className="primary" onClick={() => tab === "projects" ? setShowProjectForm(true) : setShowBatchForm(true)}>
-                ＋ {tab === "projects" ? "新建项目" : "新建批次"}
+                <Icon name="plus" />{tab === "projects" ? "创建项目" : "创建批次"}
               </button>
-            )}
+            )}</div>
           </header>
+          {taskCenterOpen && (
+            <TaskCenter
+              items={taskItems}
+              onClose={() => setTaskCenterOpen(false)}
+              onOpenProject={(id) => { openProject(id); setTaskCenterOpen(false); }}
+            />
+          )}
 
-          <section className="metrics">
+          {(tab === "projects" || tab === "batches") && <section className="metrics">
             <Metric label="项目总数" value={visibleProjectCount} hint="不含已归档" />
             <Metric label="进行中" value={activeCount} hint="待策划或生产" />
             <Metric label="批量任务" value={batches.length} hint={`${batchSkuCount} 个 SKU`} />
             <Metric label="当前阶段" value="策划与模板" hint="素材、导入、规划" text />
-          </section>
+          </section>}
 
           {error && <div className="notice error">{error}</div>}
           {loading ? <OperationFeedback label="正在连接本地服务" detail="正在读取项目与批次数据，请稍候。" /> : (
-            tab === "projects" ? <ProjectTable projects={projects} onOpen={setSelectedProjectId} onRefresh={refresh} /> :
-            tab === "batches" ? <BatchTable batches={batches} onOpenProject={setSelectedProjectId} onRefresh={refresh} /> :
+            tab === "projects" ? <ProjectTable projects={projects} onOpen={openProject} onRefresh={refresh} /> :
+            tab === "batches" ? <BatchTable batches={batches} onOpenProject={openProject} onRefresh={refresh} /> :
             tab === "layouts" ? <LayoutCenter /> : <CatalogPanel />
           )}
         </main>
       )}
 
-      {showProjectForm && <ProjectForm onClose={() => setShowProjectForm(false)} onCreated={async (projectId) => { setShowProjectForm(false); await refresh(); if (projectId) setSelectedProjectId(projectId); }} />}
+      {showProjectForm && <ProjectForm onClose={() => setShowProjectForm(false)} onCreated={async (projectId) => { setShowProjectForm(false); await refresh(); if (projectId) openProject(projectId); }} />}
       {showBatchForm && <BatchForm onClose={() => setShowBatchForm(false)} onCreated={async () => { setShowBatchForm(false); await refresh(); }} />}
     </div>
   );
 }
 
-function Sidebar({ tab, role, preflight, setRole, setTab }: { tab: Tab; role: Role; preflight: SystemPreflight | null; setRole: (role: Role) => void; setTab: (tab: Tab) => void }) {
-  return <aside className="sidebar">
-    <div className="brand-mark">PC</div>
-    <div><p className="eyebrow">PRODUCT CONTENT</p><h1>商品内容生产平台</h1></div>
+function Sidebar({ tab, role, preflight, collapsed, onToggle, setRole, setTab }: { tab: Tab; role: Role; preflight: SystemPreflight | null; collapsed: boolean; onToggle: () => void; setRole: (role: Role) => void; setTab: (tab: Tab) => void }) {
+  const items: Array<{ key: Tab; label: string; icon: IconName; admin?: boolean }> = [
+    { key: "projects", label: "项目", icon: "projects" }, { key: "batches", label: "批量任务", icon: "batch" },
+    { key: "layouts", label: "版式中心", icon: "layout", admin: true }, { key: "generation", label: "生成配置", icon: "settings", admin: true },
+  ];
+  return <aside className="sidebar" aria-label="全局导航">
+    <div className="brand"><div className="brand-mark">C</div><div className="brand-copy"><strong>内容工场</strong><span>Content Studio</span></div></div>
     <nav>
-      <button className={tab === "projects" ? "active" : ""} onClick={() => setTab("projects")}><span>01</span> 商品项目</button>
-      <button className={tab === "batches" ? "active" : ""} onClick={() => setTab("batches")}><span>02</span> 批量任务</button>
-      {role === "admin" && <button className={tab === "layouts" ? "active" : ""} onClick={() => setTab("layouts")}><span>03</span> 版式中心</button>}
-      {role === "admin" && <button className={tab === "generation" ? "active" : ""} onClick={() => setTab("generation")}><span>04</span> 生成配置</button>}
+      {items.filter((item) => !item.admin || role === "admin").map((item) => <button key={item.key} aria-label={item.label} aria-current={tab === item.key ? "page" : undefined} title={collapsed ? item.label : undefined} className={tab === item.key ? "active" : ""} onClick={() => setTab(item.key)}><Icon name={item.icon} /><span>{item.label}</span></button>)}
     </nav>
     <div className="role-switch"><span>当前角色</span><select value={role} onChange={(event) => setRole(event.target.value as Role)}><option value="business">业务用户</option><option value="admin">管理员 / 专家</option></select></div>
     <SystemStatus preflight={preflight} />
+    <IconButton className="nav-collapse" icon="back" label={collapsed ? "展开导航" : "收起导航"} onClick={onToggle} />
   </aside>;
+}
+
+function TaskCenter({ items, onClose, onOpenProject }: { items: Array<{ id: string; title: string; detail: string; status: string; projectId: string }>; onClose: () => void; onOpenProject: (id: string) => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  return <aside className="task-center" aria-label="后台任务中心"><header><div><h3>后台任务</h3><p>离开原页面后任务仍会继续。</p></div><IconButton icon="close" label="关闭任务中心" onClick={onClose}/></header>{items.length ? <div>{items.map((item) => <button key={item.id} disabled={!item.projectId} onClick={() => item.projectId && onOpenProject(item.projectId)}><StatusBadge status={item.status}/><span><strong>{item.title}</strong><small>{item.detail}</small></span><Icon name="chevron-down"/></button>)}</div> : <div className="task-center-empty"><Icon name="check"/><strong>当前没有运行中的任务</strong><p>生成、导出和批量任务会显示在这里。</p></div>}</aside>;
 }
 
 function SystemStatus({ preflight }: { preflight: SystemPreflight | null }) {
@@ -161,6 +230,12 @@ function SystemStatus({ preflight }: { preflight: SystemPreflight | null }) {
 }
 
 function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string; onBack: () => void; onChanged: () => Promise<void> }) {
+  const [activeTab, setActiveTab] = useState<ProjectTab>(() => {
+    const locationTab = locationParams().get("tab");
+    if (isProjectTab(locationTab)) return locationTab;
+    const stored = window.sessionStorage.getItem(`project-tab:${projectId}`);
+    return isProjectTab(stored) ? stored : "profile";
+  });
   const [project, setProject] = useState<Project | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [plan, setPlan] = useState<PagePlan | null>(null);
@@ -175,6 +250,7 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
+  const [selectedPlanPageId, setSelectedPlanPageId] = useState("");
   const productionJobs = production?.pages.flatMap((row) => row.job ? [row.job] : []) ?? [];
   const hasActiveProduction = productionJobs.some((job) => ["queued", "running"].includes(job.status));
   const hasActivePlanning = planningRun ? ["queued", "running"].includes(planningRun.status) : false;
@@ -186,6 +262,19 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   const activeLibraryId = plan?.layout_library_id ?? draftLibraryId;
   const activeLibrary = layoutLibraries.find((item) => item.id === activeLibraryId);
   const availableTemplates = templates.filter((item) => item.library_id === activeLibraryId);
+  const reviewCount = production?.pages.filter((row) => row.candidates.some((candidate) => candidate.qa?.status !== "pass") || !row.decision).length ?? 0;
+  const approvedCount = production?.pages.filter((row) => row.decision?.decision === "approved").length ?? 0;
+
+  const selectTab = (next: ProjectTab) => {
+    setActiveTab(next);
+    window.sessionStorage.setItem(`project-tab:${projectId}`, next);
+    updateLocation({ section: "projects", project: projectId, tab: next });
+  };
+
+  useEffect(() => {
+    if (!plan?.items.length) { setSelectedPlanPageId(""); return; }
+    if (!plan.items.some((item) => item.id === selectedPlanPageId)) setSelectedPlanPageId(plan.items[0].id);
+  }, [plan, selectedPlanPageId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -292,6 +381,14 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
     setPlan({ ...plan, confirmed: false, items: items.map((item, itemIndex) => ({ ...item, order: itemIndex + 1, status: "draft" })) });
   }
 
+  function reorderPage(index: number, target: number) {
+    if (!plan || index === target || index < 0 || target < 0 || index >= plan.items.length || target >= plan.items.length) return;
+    const items = [...plan.items];
+    const [moved] = items.splice(index, 1);
+    items.splice(target, 0, moved);
+    setPlan({ ...plan, confirmed: false, items: items.map((item, itemIndex) => ({ ...item, order: itemIndex + 1, status: "draft" })) });
+  }
+
   function deletePage(index: number) {
     if (!plan || plan.items.length <= 1) return;
     setPlan({ ...plan, confirmed: false, items: plan.items.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, order: itemIndex + 1, status: "draft" })) });
@@ -321,20 +418,31 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
     setMessage("已切换版式库并按页面类型重新匹配模板；请检查横竖版构图后重新确认规划");
   }
 
-  if (loading || !project) return <main><OperationFeedback label="正在加载项目工作台" detail="正在同步商品档案、内容规划和生产状态。" /></main>;
-  return <main className="project-workspace">
+  if (loading || !project) return <main id="main-content"><OperationFeedback label="正在加载项目工作台" detail="正在同步商品档案、内容规划和生产状态。" /></main>;
+  return <main id="main-content" className={`project-workspace project-tab-${activeTab}`}>
     <header className="topbar workspace-topbar">
-      <div><button className="back-button" onClick={onBack}>← 返回项目</button><p className="eyebrow">{project.profile.sku} · {project.profile.category}</p><h2>{project.name}</h2></div>
-      <StatusBadge status={workspaceStatus} />
+      <div><button className="back-button" onClick={onBack}><Icon name="back" /> 返回项目</button><div className="workspace-title"><h2>{project.name}</h2><IconButton label="编辑商品档案" icon="edit" onClick={() => setEditingProfile(true)} /></div><p className="workspace-meta">{project.profile.sku} · {project.profile.category}<span>已保存</span></p></div>
+      <div className="workspace-header-actions"><StatusBadge status={workspaceStatus} />{activeTab === "production" && plan?.confirmed && <button className="primary" onClick={() => document.querySelector(".production-panel")?.scrollIntoView({ behavior: "smooth" })}>查看生产任务</button>}</div>
     </header>
-    <div className="workflow-strip">
-      <span className="done">1 商品资料</span><i>→</i><span className={plan ? "done" : "active"}>2 内容规划</span><i>→</i><span className={plan?.confirmed ? "done" : ""}>3 固定配方</span><i>→</i><span className={production?.pages.some((row) => row.candidates.length) ? "done" : ""}>4 图片生产与质检</span>
-    </div>
+    <nav className="project-tabs" role="tablist" aria-label="项目流程" onKeyDown={(event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = PROJECT_TABS.findIndex((item) => item.key === activeTab);
+      const target = event.key === "Home" ? 0 : event.key === "End" ? PROJECT_TABS.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + PROJECT_TABS.length) % PROJECT_TABS.length;
+      selectTab(PROJECT_TABS[target].key);
+      (event.currentTarget.children[target] as HTMLElement | undefined)?.focus();
+    }}>
+      {PROJECT_TABS.map((item) => {
+        const badge = item.key === "review" && reviewCount ? reviewCount : item.key === "delivery" && approvedCount ? approvedCount : 0;
+        const complete = item.key === "profile" || (item.key === "planning" && !!plan) || (item.key === "production" && !!production?.pages.some((row) => row.candidates.length)) || (item.key === "review" && approvedCount > 0) || (item.key === "delivery" && !!production?.ready_for_export);
+        return <button key={item.key} role="tab" aria-selected={activeTab === item.key} tabIndex={activeTab === item.key ? 0 : -1} className={`${activeTab === item.key ? "active" : ""} ${complete ? "complete" : ""}`} onClick={() => selectTab(item.key)}><Icon name={item.icon} /><span>{item.label}</span>{badge > 0 && <b>{badge}</b>}</button>;
+      })}
+    </nav>
     {error && <div className="notice error">{error}</div>}
     {message && <div className="notice success">{message}</div>}
     {busy && <OperationFeedback label={projectOperationLabel(busy)} detail="操作完成前请保持当前页面打开。" compact />}
 
-    <section className="workspace-grid">
+    {activeTab === "profile" && <section className="workspace-grid profile-workspace">
       <article className="panel compact-panel">
         <div className="panel-heading editable-heading"><div><h3>商品档案</h3><p>数字、型号和参数作为已确认事实进入后续生成。</p></div><button className="ghost-button mini" onClick={() => setEditingProfile(true)}>编辑资料</button></div>
         <div className="profile-details">
@@ -344,9 +452,9 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
         </div>
       </article>
       <AssetPanel projectId={projectId} assets={assets} onUploaded={async () => { setAssets(await api.listAssets(projectId)); setProject(await api.getProject(projectId)); }} />
-    </section>
+    </section>}
 
-    <section className="panel planning-panel">
+    {activeTab === "planning" && <section className="panel planning-panel">
       <div className="panel-heading planning-heading">
         <div><h3>多页内容规划</h3><p>{plan ? `版本 V${plan.version} · ${plan.confirmed ? "已确认" : "草稿"}` : "基于商品资料生成主视觉、卖点、功能、场景和参数页。"}</p></div>
         <div className="button-row">
@@ -355,34 +463,64 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
           <button className={plan ? "ghost-button" : "primary"} disabled={!!busy || hasActivePlanning} onClick={() => void generatePlan()}>{busy === "generate" || hasActivePlanning ? "AI 规划中…" : plan ? "重新规划文案" : "AI 生成内容规划"}</button>
         </div>
       </div>
-      <LayoutLibraryPicker libraries={layoutLibraries} selectedId={activeLibraryId} onSelect={selectLayoutLibrary} disabled={!!busy} />
       {planningRun && ["queued", "running", "failed"].includes(planningRun.status) && <PlanningRunProgress run={planningRun} />}
       {planningRun?.status === "completed" && <PlanningSuggestionPanel run={planningRun} currentPlan={plan} applying={busy === "apply-planning"} onApply={applyPlanningSuggestion} onClose={() => void dismissPlanningSuggestion()} />}
-      {!plan ? <div className="empty-state inline-empty">录入卖点和参数后，可生成一套五页内容结构。</div> : <div className="plan-list">
-        <div className="recipe-banner"><div><span>可用配方</span><strong>{recipes.filter((item) => item.status === "published").length} 套已发布配方</strong></div><small>在生产阶段选择配方，生成记录会锁定具体版本</small></div>
-        <div className="active-library-note"><strong>{activeLibrary?.name ?? "当前版式库"}</strong><span>{activeLibrary?.size ?? ""} · 页面预览按实际宽高比缩放展示，生产仍使用真实像素尺寸</span></div>
-        {plan.items.map((item, index) => <PageEditor key={item.id} item={item} templates={availableTemplates} onChange={(patch) => updatePage(index, patch)} onMoveUp={() => movePage(index, -1)} onMoveDown={() => movePage(index, 1)} onDelete={() => deletePage(index)} first={index === 0} last={index === plan.items.length - 1} />)}
-      </div>}
-    </section>
-    {plan && !plan.confirmed && <div className="production-gate" role="status"><span>下一步</span><div><strong>图片生产尚未开始</strong><p>当前是规划草稿。请先检查页面内容并点击“确认规划”，确认后才会显示生产按钮和实时进度。</p></div></div>}
-    {plan?.confirmed && <ProductionPanel projectId={projectId} recipes={recipes} referenceAssets={assets.filter((item) => item.mime_type.startsWith("image/"))} snapshot={production} onRefresh={async () => { setProduction(await api.getProduction(projectId)); setProject(await api.getProject(projectId)); await onChanged(); }} />}
+      {!plan ? <div className="empty-state inline-empty"><strong>还没有内容规划</strong><p>录入商品卖点和参数后，可生成一套多页内容结构。</p><button className="primary" disabled={!!busy || hasActivePlanning} onClick={() => void generatePlan()}>{hasActivePlanning ? "规划中…" : "生成内容规划"}</button></div> : <PlanningWorkbench
+        plan={plan}
+        selectedPageId={selectedPlanPageId}
+        templates={availableTemplates}
+        libraries={layoutLibraries}
+        activeLibrary={activeLibrary}
+        activeLibraryId={activeLibraryId}
+        recipeCount={recipes.filter((item) => item.status === "published").length}
+        disabled={!!busy}
+        onSelectPage={setSelectedPlanPageId}
+        onSelectLibrary={selectLayoutLibrary}
+        onChangePage={(index, patch) => updatePage(index, patch)}
+        onMovePage={movePage}
+        onReorderPage={reorderPage}
+        onDeletePage={deletePage}
+      />}
+    </section>}
+    {activeTab === "production" && <>{plan && !plan.confirmed && <div className="production-gate" role="status"><span>下一步</span><div><strong>图片生产尚未开始</strong><p>当前是规划草稿。请先检查页面内容并点击“确认规划”。</p></div><button className="secondary" onClick={() => selectTab("planning")}>前往内容规划</button></div>}{!plan && <FlowEmptyState icon="plan" title="还没有内容规划" detail="先生成或手动创建页面结构，再开始图片生产。" action="前往内容规划" onAction={() => selectTab("planning")} />}{plan?.confirmed && <ProductionPanel mode="production" projectId={projectId} recipes={recipes} referenceAssets={assets.filter((item) => item.mime_type.startsWith("image/"))} snapshot={production} onRefresh={async () => { setProduction(await api.getProduction(projectId)); setProject(await api.getProject(projectId)); await onChanged(); }} />}</>}
+    {activeTab === "review" && (production?.pages.some((row) => row.candidates.length) ? <ProductionPanel mode="review" projectId={projectId} recipes={recipes} referenceAssets={assets.filter((item) => item.mime_type.startsWith("image/"))} snapshot={production} onRefresh={async () => { setProduction(await api.getProduction(projectId)); setProject(await api.getProject(projectId)); await onChanged(); }} /> : <FlowEmptyState icon="review" title="还没有可审核的候选图" detail="完成图片生产后，候选图和 QA 问题会集中显示在这里。" action="前往图片生产" onAction={() => selectTab("production")} />)}
+    {activeTab === "delivery" && (production?.pages.some((row) => row.candidates.length) ? <DeliveryWorkspace projectId={projectId} snapshot={production} /> : <FlowEmptyState icon="export" title="还没有可交付的图片" detail="至少完成一页图片生产后，才能编排顺序并导出。" action="前往图片生产" onAction={() => selectTab("production")} />)}
     {editingProfile && <ProfileEditor project={project} onClose={() => setEditingProfile(false)} onSaved={async () => { setEditingProfile(false); await load(); await onChanged(); setMessage("商品档案已更新，再次确认页面规划后可重新生产"); }} />}
   </main>;
+}
+
+function FlowEmptyState({ icon, title, detail, action, onAction }: { icon: IconName; title: string; detail: string; action: string; onAction: () => void }) {
+  return <section className="flow-empty"><Icon name={icon} size={36} /><h3>{title}</h3><p>{detail}</p><button className="primary" onClick={onAction}>{action}</button></section>;
+}
+
+function DeliveryWorkspace({ projectId, snapshot }: { projectId: string; snapshot: ProductionSnapshot }) {
+  const approved = snapshot.pages.filter((row) => row.decision?.decision === "approved").length;
+  const [busy, setBusy] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const [error, setError] = useState("");
+  const candidateCount = snapshot.pages.reduce((total, row) => total + row.candidates.length, 0);
+  async function exportPackage() {
+    setBusy(true); setError("");
+    try { const result = await api.exportProject(projectId); setDownloadUrl(api.resolveUrl(result.download_url)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "导出失败"); }
+    finally { setBusy(false); }
+  }
+  return <section className="delivery-workspace"><header className="section-heading"><div><h3>交付导出</h3><p>默认选择已通过页面，按原始分辨率拼接并导出。</p></div><div className="delivery-header-actions"><div className="delivery-summary"><strong>{approved}/{snapshot.pages.length}</strong><span>页面已通过</span></div><button className="primary" disabled={busy || approved === 0} onClick={() => void exportPackage()}><Icon name="download"/>{busy ? "正在打包…" : "导出交付包"}</button></div></header>{error && <div className="notice error">{error}</div>}{downloadUrl && <div className="notice success delivery-download"><strong>交付包已生成</strong><a href={downloadUrl}>下载 ZIP 文件</a></div>}{candidateCount > 1 ? <StitchComposer projectId={projectId} snapshot={snapshot} /> : <section className="single-delivery"><Icon name="image" size={30}/><div><strong>当前项目只有 1 张交付图片</strong><p>无需拼接；点击上方“导出交付包”即可下载原图、分层文件与质检记录。</p></div></section>}</section>;
 }
 
 function AssetPanel({ projectId, assets, onUploaded }: { projectId: string; assets: Asset[]; onUploaded: () => Promise<void> }) {
   const [file, setFile] = useState<File | null>(null);
   const [usage, setUsage] = useState<Asset["usage"]>("product");
-  const [authorizationStatus, setAuthorizationStatus] = useState<Asset["authorization_status"]>("unconfirmed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [uploadedFileName, setUploadedFileName] = useState("");
+  const [dragActive, setDragActive] = useState(false);
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!file) return;
     const form = event.currentTarget;
     setBusy(true); setError(""); setUploadedFileName("");
     try {
-      const uploaded = await api.uploadAsset(projectId, file, usage, authorizationStatus);
+      const uploaded = await api.uploadAsset(projectId, file, usage);
       form.reset();
       setFile(null);
       setUploadedFileName(uploaded.file_name);
@@ -395,15 +533,14 @@ function AssetPanel({ projectId, assets, onUploaded }: { projectId: string; asse
     <div className="panel-heading"><h3>参考素材</h3><p>支持商品、细节、品牌和场景参考，单文件不超过 25MB。</p></div>
     <form className="asset-upload" onSubmit={upload}>
       <select value={usage} onChange={(event) => setUsage(event.target.value as Asset["usage"])}><option value="product">商品外观</option><option value="detail">局部细节</option><option value="brand">品牌风格</option><option value="scene">场景参考</option></select>
-      <select value={authorizationStatus} onChange={(event) => setAuthorizationStatus(event.target.value as Asset["authorization_status"])}><option value="unconfirmed">授权待确认</option><option value="authorized">已授权使用</option><option value="restricted">限制使用</option></select>
-      <label className="file-picker"><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadedFileName(""); setError(""); }} /><span>{file?.name ?? "选择素材文件"}</span></label>
+      <label className={`file-picker ${dragActive ? "drag-active" : ""}`} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); setFile(event.dataTransfer.files?.[0] ?? null); setUploadedFileName(""); setError(""); }}><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadedFileName(""); setError(""); }} /><span>{dragActive ? "松开以添加素材" : file?.name ?? "选择或拖入素材文件"}</span></label>
       <button className="secondary" disabled={!file || busy}>{busy ? "上传绑定中…" : "上传并绑定"}</button>
     </form>
     {busy && <OperationFeedback label="正在上传素材" detail="正在保存文件并绑定到当前项目，完成前请勿开始生产。" compact />}
     {file && !busy && <div className="notice warning asset-notice">已选择 <strong>{file.name}</strong>，但尚未上传；当前生产任务不会使用此文件。请点击“上传并绑定”。</div>}
     {uploadedFileName && <div className="notice success asset-notice"><strong>{uploadedFileName}</strong> 已上传并绑定到当前项目，可用于下一次生产。</div>}
     {error && <div className="notice error">{error}</div>}
-    <div className="asset-list">{assets.length === 0 ? <p className="muted">尚未上传参考素材</p> : assets.map((asset) => <a key={asset.id} href={api.assetUrl(asset.id)} target="_blank" rel="noreferrer" className="asset-item">{asset.mime_type.startsWith("image/") ? <img src={api.assetUrl(asset.id)} alt="" /> : <span className="pdf-icon">PDF</span>}<div><strong>{asset.file_name}</strong><small>{usageLabel(asset.usage)} · {formatBytes(asset.size_bytes)} · {asset.authorization_status === "authorized" ? "已授权" : asset.authorization_status === "restricted" ? "限制使用" : "授权待确认"}</small></div></a>)}</div>
+    <div className="asset-list">{assets.length === 0 ? <p className="muted">尚未上传参考素材</p> : assets.map((asset) => <a key={asset.id} href={api.assetUrl(asset.id)} target="_blank" rel="noreferrer" className="asset-item">{asset.mime_type.startsWith("image/") ? <img src={api.assetUrl(asset.id)} alt="" /> : <span className="pdf-icon">PDF</span>}<div><strong>{asset.file_name}</strong><small>{usageLabel(asset.usage)} · {formatBytes(asset.size_bytes)}</small></div></a>)}</div>
   </article>;
 }
 
@@ -445,6 +582,32 @@ function LayoutLibraryPicker({ libraries, selectedId, onSelect, disabled }: { li
   </div>;
 }
 
+function PlanningWorkbench({ plan, selectedPageId, templates, libraries, activeLibrary, activeLibraryId, recipeCount, disabled, onSelectPage, onSelectLibrary, onChangePage, onMovePage, onReorderPage, onDeletePage }: {
+  plan: PagePlan;
+  selectedPageId: string;
+  templates: TemplateDefinition[];
+  libraries: LayoutLibrary[];
+  activeLibrary?: LayoutLibrary;
+  activeLibraryId: string;
+  recipeCount: number;
+  disabled: boolean;
+  onSelectPage: (id: string) => void;
+  onSelectLibrary: (id: string) => void;
+  onChangePage: (index: number, patch: Partial<PageItem>) => void;
+  onMovePage: (index: number, direction: -1 | 1) => void;
+  onReorderPage: (index: number, target: number) => void;
+  onDeletePage: (index: number) => void;
+}) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const selectedIndex = Math.max(0, plan.items.findIndex((item) => item.id === selectedPageId));
+  const selected = plan.items[selectedIndex] ?? plan.items[0];
+  return <div className="planning-workbench">
+    <aside className="planning-page-rail"><header><strong>内容页</strong><span>{plan.items.length}</span></header>{plan.items.map((item, index) => <div key={item.id} draggable={!disabled} className={`${selected?.id === item.id ? "active" : ""} ${dragIndex === index ? "dragging" : ""}`} onDragStart={() => setDragIndex(index)} onDragEnd={() => setDragIndex(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (dragIndex !== null) onReorderPage(dragIndex, index); setDragIndex(null); }}><button className="planning-page-select" onClick={() => onSelectPage(item.id)}><Icon name="grip"/><span className="page-number">{String(item.order).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{pageTypeLabel(item.page_type)} · H{item.heading_level}</small></span><StatusBadge status={item.status}/></button><span className="keyboard-sort"><button aria-label={`上移${item.title}`} disabled={index === 0 || disabled} onClick={() => onMovePage(index, -1)}>↑</button><button aria-label={`下移${item.title}`} disabled={index === plan.items.length - 1 || disabled} onClick={() => onMovePage(index, 1)}>↓</button></span></div>)}</aside>
+    <div className="planning-page-canvas">{selected && <PageEditor item={selected} templates={templates} onChange={(patch) => onChangePage(selectedIndex, patch)} onMoveUp={() => onMovePage(selectedIndex, -1)} onMoveDown={() => onMovePage(selectedIndex, 1)} onDelete={() => onDeletePage(selectedIndex)} first={selectedIndex === 0} last={selectedIndex === plan.items.length - 1}/>}</div>
+    <aside className="planning-inspector"><section><h4>页面设置</h4><p><span>页码</span><strong>{selectedIndex + 1}/{plan.items.length}</strong></p><p><span>规划版本</span><strong>V{plan.version}</strong></p><p><span>可用配方</span><strong>{recipeCount} 套</strong></p></section><section><h4>版式库</h4><label><span>当前规格</span><select value={activeLibraryId} disabled={disabled} onChange={(event) => onSelectLibrary(event.target.value)}>{libraries.map((library) => <option key={library.id} value={library.id}>{library.name}</option>)}</select></label><small>{activeLibrary?.size} · {activeLibrary?.template_count} 个模板</small></section><section><h4>流程提示</h4><div className={`planning-status ${plan.confirmed ? "success" : "warning"}`}><Icon name={plan.confirmed ? "check" : "info"}/><div><strong>{plan.confirmed ? "规划已确认" : "当前为草稿"}</strong><p>{plan.confirmed ? "可以前往图片生产；再次修改会恢复为草稿。" : "确认后才会开放图片生产。"}</p></div></div></section></aside>
+  </div>;
+}
+
 function PageEditor({ item, templates, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; templates: TemplateDefinition[]; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
   const template = templates.find((row) => row.id === item.template_id) ?? templates[0];
   const compatible = templates.filter((row) => row.page_types.includes(item.page_type));
@@ -466,7 +629,7 @@ function TemplatePreview({ item, template }: { item: PageItem; template?: Templa
   return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><strong>{item.title}</strong></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><span>{item.body}</span></div><div className="product-shape" style={regionStyle(productBox)}><i /><b /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
 }
 
-function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; onRefresh: () => Promise<void> }) {
+function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, mode = "production", onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; mode?: "production" | "review"; onRefresh: () => Promise<void> }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
@@ -493,6 +656,18 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   const referenceUrls = referenceAssets
     .filter((asset) => asset.usage === "product" || asset.usage === "detail")
     .map((asset) => api.assetUrl(asset.id));
+  const [selectedPageId, setSelectedPageId] = useState("");
+  const [selectedCandidateId, setSelectedCandidateId] = useState("");
+  useEffect(() => {
+    if (!pages.length) return;
+    if (!pages.some((row) => row.page.id === selectedPageId)) setSelectedPageId(pages.find((row) => row.candidates.length)?.page.id ?? pages[0].page.id);
+  }, [pages, selectedPageId]);
+  const selectedPage = pages.find((row) => row.page.id === selectedPageId) ?? pages[0];
+  useEffect(() => {
+    if (!selectedPage?.candidates.length) return;
+    if (!selectedPage.candidates.some((candidate) => candidate.id === selectedCandidateId)) setSelectedCandidateId(selectedPage.decision?.candidate_id ?? selectedPage.candidates[0].id);
+  }, [selectedPage, selectedCandidateId]);
+  const selectedCandidate = selectedPage?.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? selectedPage?.candidates[0];
   useEffect(() => {
     if (!publishedRecipes.length || publishedRecipes.some((item) => item.id === recipeId)) return;
     const first = publishedRecipes[0];
@@ -523,7 +698,21 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
   async function recomposed() { setMessage("本页已提交更新；进度会自动刷新，完成后请重新确认该页面。"); await onRefresh(); }
   async function regenerate(pageId: string) { setBusy(`regenerate-${pageId}`); setError(""); setMessage(""); try { await api.regeneratePage(projectId, pageId, recipeId, quality === recipeDefaultQuality ? undefined : quality); setMessage(`单页已按 ${qualityLabel(quality)} 质量重新提交。`); await onRefresh(); } catch (reason) { setError(reason instanceof Error ? reason.message : "单页重生成失败"); } finally { setBusy(""); } }
   async function saveAsRecipe() { setBusy("recipe"); setError(""); try { const recipe = await api.createRecipeCandidate(projectId, `${snapshot?.project.profile.sku ?? "商品"}验证配方`); setMessage(`已生成配方草稿：${recipe.name}，请到固定配置中测试并发布。`); } catch (reason) { setError(reason instanceof Error ? reason.message : "配方沉淀失败"); } finally { setBusy(""); } }
-  return <section className="panel production-panel">
+  if (mode === "review" && snapshot && selectedPage) return <ReviewWorkbench
+    projectId={projectId}
+    pages={pages}
+    selectedPage={selectedPage}
+    selectedCandidate={selectedCandidate}
+    selectedPageId={selectedPageId}
+    selectedCandidateId={selectedCandidateId}
+    referenceUrls={referenceUrls}
+    disabled={!!busy || isProductionActive}
+    onSelectPage={setSelectedPageId}
+    onSelectCandidate={setSelectedCandidateId}
+    onRefresh={onRefresh}
+    onRecomposed={recomposed}
+  />;
+  return <section className="panel production-panel production-workbench-shell">
     <div className="panel-heading planning-heading"><div><h3>图片生产、质检与审核</h3><p>配方提供默认质量；本次生产可以临时覆盖，不会修改原配方。</p></div><div className="production-controls"><div className="production-config"><label><span>生成配方</span><select aria-label="生成配方" value={recipeId} disabled={!!busy || isProductionActive} onChange={(event) => { const nextId = event.target.value; setRecipeId(nextId); setQuality(recipeQuality(publishedRecipes.find((item) => item.id === nextId))); }}>{publishedRecipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.name} V{recipe.version}</option>)}</select></label><label><span>本次质量</span><select aria-label="本次生成质量" value={quality} disabled={!!busy || isProductionActive} onChange={(event) => setQuality(event.target.value)}><option value={recipeDefaultQuality}>按配方默认 · {qualityLabel(recipeDefaultQuality)}</option>{["low", "medium", "high"].filter((item) => item !== recipeDefaultQuality).map((item) => <option key={item} value={item}>{qualityLabel(item)}</option>)}</select></label></div><div className="button-row">{canExport && <button className="ghost-button" disabled={!!busy || isProductionActive} onClick={() => void saveAsRecipe()}>{busy === "recipe" ? "保存中…" : "沉淀为配方"}</button>}{hasResults && !isProductionActive && <button className="secondary" disabled={!!busy} onClick={() => void start(true)}>{busy === "regenerate" ? "重新生产中…" : "整套重新生产"}</button>}<button className="primary" disabled={!!busy || isProductionActive || (hasResults && !canExport && failedJobs === 0)} onClick={() => canExport ? void exportResult() : void start(failedJobs > 0)}>{busy === "start" || busy === "regenerate" ? "正在提交…" : busy === "export" ? "正在打包…" : isProductionActive ? "生产进行中…" : canExport ? "导出正式结果" : failedJobs > 0 ? "重试生产" : hasResults ? "等待确认后导出" : "开始生产"}</button></div></div></div>
     {referenceAssets.length > 0
       ? <div className="notice success reference-binding" role="status"><strong>已绑定 {referenceAssets.length} 张参考图</strong><span>本次生产会输入：{referenceAssets.map((asset) => asset.file_name).join("、")}</span></div>
@@ -534,8 +723,67 @@ function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, onRefr
     {error && <div className="notice error">{error}</div>}
     {message && <div className="notice success">{message}</div>}
     {downloadUrl && <div className="notice success">正式结果已生成：<a href={downloadUrl}>下载 ZIP 交付包</a></div>}
-    {snapshot && hasResults && <StitchComposer projectId={projectId} snapshot={snapshot} disabled={!!busy || isProductionActive} />}
-    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-pages">{snapshot.pages.map((row) => <article className="production-page" key={row.page.id}><div className="production-page-head"><div><span>第 {row.page.order} 页 · {pageTypeLabel(row.page.page_type)}</span><h4>{row.page.title}</h4></div><div>{row.candidates.length > 0 && <button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(row.page.id)}>{busy === `regenerate-${row.page.id}` ? "重生成中…" : "重新生成本页"}</button>}{row.job && <StatusBadge status={row.job.status} />}{row.decision?.decision === "approved" && <StatusBadge status="approved" />}</div></div><PageJobState job={row.job} candidates={row.candidates} />{row.job?.error && <div className="notice error">{row.job.error}</div>}<div className="candidate-grid">{row.candidates.map((candidate) => <CandidateCard key={candidate.id} projectId={projectId} pageId={row.page.id} candidate={candidate} history={row.history ?? row.candidates} referenceUrls={referenceUrls} selected={row.decision?.candidate_id === candidate.id && row.decision.decision === "approved"} disabled={!!busy || isProductionActive} onReviewed={onRefresh} onRecomposed={recomposed} />)}</div></article>)}</div>}
+    {!snapshot || !hasJobs ? <div className="empty-state inline-empty">确认规划后即可开始生产；提交后这里会显示实时进度。</div> : <div className="production-workbench">
+      <aside className="production-page-rail"><header><strong>页面列表</strong><span>{pages.length}</span></header>{pages.map((row) => <button key={row.page.id} className={selectedPage?.page.id === row.page.id ? "active" : ""} onClick={() => setSelectedPageId(row.page.id)}><span className="page-number">{String(row.page.order).padStart(2, "0")}</span><span><strong>{row.page.title}</strong><small>{pageTypeLabel(row.page.page_type)}</small></span>{row.job && <StatusBadge status={row.decision?.decision === "approved" ? "approved" : row.job.status} />}</button>)}</aside>
+      <div className="production-focus">{selectedPage && <><div className="production-page-head"><div><span>第 {selectedPage.page.order} 页 · {pageTypeLabel(selectedPage.page.page_type)}</span><h4>{selectedPage.page.title}</h4></div><div>{selectedPage.candidates.length > 0 && <button className="ghost-button mini" disabled={!!busy || isProductionActive} onClick={() => void regenerate(selectedPage.page.id)}><Icon name="refresh" />{busy === `regenerate-${selectedPage.page.id}` ? "重生成中…" : "重新生成本页"}</button>}{selectedPage.job && <StatusBadge status={selectedPage.job.status} />}</div></div><PageJobState job={selectedPage.job} candidates={selectedPage.candidates} />{selectedPage.job?.error && <div className="notice error">{selectedPage.job.error}</div>}{selectedCandidate ? <div className="production-candidate-view"><div className="production-canvas"><img src={api.resolveUrl(selectedCandidate.composed_url)} alt={`第 ${selectedPage.page.order} 页候选 ${selectedCandidate.candidate_index}`} /></div><div className="candidate-filmstrip">{selectedPage.candidates.map((candidate) => <button key={candidate.id} className={candidate.id === selectedCandidate.id ? "active" : ""} onClick={() => setSelectedCandidateId(candidate.id)}><img src={api.resolveUrl(candidate.composed_url)} alt="" /><span>候选 {candidate.candidate_index}</span></button>)}</div></div> : <div className="production-placeholder"><Icon name="image" size={34}/><strong>{selectedPage.job?.status === "failed" ? "本页生产失败" : "等待候选图"}</strong><p>任务开始后，候选图会在这里逐步出现。</p></div>}</> }</div>
+      <aside className="production-inspector"><h4>生成概览</h4><Info label="生成配方" value={selectedRecipe ? `${selectedRecipe.name} V${selectedRecipe.version}` : "—"}/><Info label="本次质量" value={qualityLabel(quality)}/><Info label="参考素材" value={`${referenceAssets.length} 张`}/>{selectedCandidate && <><div className="inspector-section"><h4>质检状态</h4><StatusBadge status={selectedCandidate.qa?.status ?? "review"}/><strong className="candidate-score">{selectedCandidate.score} 分</strong></div><div className="inspector-section"><h4>质检问题</h4>{selectedCandidate.qa?.issues.length ? selectedCandidate.qa.issues.slice(0, 4).map((issue, index) => <div className={`inspector-issue severity-${issue.severity.toLowerCase()}`} key={`${issue.code}-${index}`}><b>{issue.severity}</b><span>{issue.message}</span></div>) : <p className="muted-copy">未发现阻塞问题</p>}</div></>}</aside>
+    </div>}
+  </section>;
+}
+
+function ReviewWorkbench({ projectId, pages, selectedPage, selectedCandidate, selectedPageId, selectedCandidateId, referenceUrls, disabled, onSelectPage, onSelectCandidate, onRefresh, onRecomposed }: {
+  projectId: string;
+  pages: ProductionSnapshot["pages"];
+  selectedPage: ProductionSnapshot["pages"][number];
+  selectedCandidate?: ProductionSnapshot["pages"][number]["candidates"][number];
+  selectedPageId: string;
+  selectedCandidateId: string;
+  referenceUrls: string[];
+  disabled: boolean;
+  onSelectPage: (id: string) => void;
+  onSelectCandidate: (id: string) => void;
+  onRefresh: () => Promise<void>;
+  onRecomposed: () => Promise<void>;
+}) {
+  const [showOverlay, setShowOverlay] = useState(true);
+  const [zoom, setZoom] = useState(75);
+  const [compareMode, setCompareMode] = useState<"side" | "slider">("side");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [skipQa, setSkipQa] = useState(false);
+  const [error, setError] = useState("");
+  const [showTypography, setShowTypography] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const issues = selectedCandidate?.qa?.issues ?? [];
+  const blocking = issues.some((issue) => ["P0", "P1"].includes(issue.severity));
+  const layout = selectedCandidate?.qa?.evidence?.layout as { canvas?: number[]; safe_area?: number[]; text_bbox?: number[]; subject_bbox?: number[] } | undefined;
+  const overlayStyle = (bbox?: number[]) => {
+    const canvas = layout?.canvas ?? [900, 1200];
+    return bbox?.length === 4 ? { left: `${bbox[0] / canvas[0] * 100}%`, top: `${bbox[1] / canvas[1] * 100}%`, width: `${(bbox[2] - bbox[0]) / canvas[0] * 100}%`, height: `${(bbox[3] - bbox[1]) / canvas[1] * 100}%` } : undefined;
+  };
+  async function review(decision: "approved" | "rejected") {
+    if (!selectedCandidate) return;
+    setBusy(true); setError("");
+    try { await api.reviewCandidate(selectedCandidate.id, decision, reason, skipQa); await onRefresh(); }
+    catch (value) { setError(value instanceof Error ? value.message : "审核失败"); }
+    finally { setBusy(false); }
+  }
+  async function runQa() {
+    if (!selectedCandidate) return;
+    setBusy(true); setError("");
+    try { await api.runCandidateQa(selectedCandidate.id); setSkipQa(false); await onRefresh(); }
+    catch (value) { setError(value instanceof Error ? value.message : "手动质检失败"); }
+    finally { setBusy(false); }
+  }
+  return <section className="review-workbench">
+    <aside className="review-page-rail"><header><strong>页面列表</strong><span>{pages.length}</span></header><div className="review-summary"><span className="success">通过 {pages.filter((row) => row.decision?.decision === "approved").length}</span><span className="warning">待复核 {pages.filter((row) => !row.decision).length}</span><span className="danger">不通过 {pages.filter((row) => row.decision?.decision === "rejected").length}</span></div>{pages.map((row) => { const status = row.decision?.decision === "approved" ? "approved" : row.decision?.decision === "rejected" ? "rejected" : row.candidates[0]?.qa?.status ?? row.job?.status ?? "pending"; return <button key={row.page.id} className={selectedPageId === row.page.id ? "active" : ""} onClick={() => onSelectPage(row.page.id)}><span className="page-number">{String(row.page.order).padStart(2, "0")}</span><span><strong>{row.page.title}</strong><small>{row.candidates.length} 个候选 · {row.candidates[0]?.qa?.issues.length ?? 0} 个问题</small></span><StatusBadge status={status} /></button>; })}</aside>
+    <div className="review-stage-column">
+      <header className="review-toolbar"><div><strong>第 {selectedPage.page.order} 页 · {selectedPage.page.title}</strong></div><div className="segmented" aria-label="对比模式" title={selectedPage.candidates.length < 2 ? "至少需要 2 个候选才能对比" : undefined}><button disabled={selectedPage.candidates.length < 2} className={compareMode === "side" ? "active" : ""} onClick={() => setCompareMode("side")}>并排</button><button disabled={selectedPage.candidates.length < 2} className={compareMode === "slider" ? "active" : ""} onClick={() => setCompareMode("slider")}>滑杆</button></div><div className="zoom-group"><IconButton icon="zoom-out" label="缩小" onClick={() => setZoom((value) => Math.max(10, value - 25))}/><span>{zoom}%</span><IconButton icon="zoom-in" label="放大" onClick={() => setZoom((value) => Math.min(400, value + 25))}/></div><button className={`overlay-control ${showOverlay ? "active" : ""}`} aria-pressed={showOverlay} onClick={() => setShowOverlay((value) => !value)}>标注图层</button><IconButton icon="fit" label="适合视口" onClick={() => setZoom(75)}/></header>
+      <div className="review-stage">{selectedCandidate ? <div className="review-image-frame" style={{ width: `${Math.max(42, zoom / .75)}%` }}><img src={api.resolveUrl(selectedCandidate.composed_url)} alt={`候选 ${selectedCandidate.candidate_index}`} />{showOverlay && <>{layout?.safe_area && <i className="qa-box safe" style={overlayStyle(layout.safe_area)} />}{layout?.subject_bbox && <i className="qa-box subject" style={overlayStyle(layout.subject_bbox)} />}{layout?.text_bbox && <i className="qa-box text selected" style={overlayStyle(layout.text_bbox)} />}</>}</div> : <div className="production-placeholder"><Icon name="review" size={36}/><strong>本页还没有候选图</strong></div>}</div>
+      <div className="review-filmstrip"><div><strong>同页候选</strong><span>{selectedPage.candidates.length}</span></div>{selectedPage.candidates.map((candidate) => <button key={candidate.id} className={selectedCandidateId === candidate.id ? "active" : ""} onClick={() => onSelectCandidate(candidate.id)}><img src={api.resolveUrl(candidate.composed_url)} alt={`候选 ${candidate.candidate_index}`} /><span>候选 {candidate.candidate_index}</span></button>)}</div>
+      {selectedCandidate && !selectedCandidate.qa && <div className="qa-choice"><div className="notice info"><b>尚未执行质检</b><span>可以现在执行自动质检，也可以明确跳过并由人工确认。</span></div><button className="secondary" disabled={busy} onClick={() => void runQa()}>{busy ? "质检中…" : "手动执行质检"}</button><label><input type="checkbox" checked={skipQa} onChange={(event) => setSkipQa(event.target.checked)}/>跳过自动质检，以人工判断确认</label></div>}
+    </div>
+    <aside className="review-inspector"><section><h3>质检概览</h3><div className="qa-overview"><strong>{issues.length}</strong><span>总问题</span><div>{["P0", "P1", "P2", "P3"].map((severity) => <p key={severity}><i className={`severity-dot ${severity.toLowerCase()}`}/>{severity}<b>{issues.filter((issue) => issue.severity === severity).length}</b></p>)}</div></div></section><section><div className="inspector-heading"><h3>问题列表</h3><span>{issues.length}</span></div>{issues.length ? <div className="review-issues">{issues.map((issue, index) => <article key={`${issue.code}-${index}`} className={`severity-${issue.severity.toLowerCase()} ${index === 0 ? "selected" : ""}`}><header><b>{issue.severity}</b><strong>{issue.message}</strong><span>#{index + 1}</span></header><p>{issue.repair || selectedCandidate?.qa?.suggested_fix || "请人工检查并修正后重新提交。"}</p><button>查看标注</button></article>)}</div> : <div className="qa-pass-state"><Icon name="check"/><strong>未发现阻塞问题</strong></div>}</section><section><h3>审核操作</h3>{blocking && <div className="notice warning">存在高风险问题；通过前需要填写覆盖理由。</div>}<textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={blocking ? "填写高风险问题覆盖理由" : "填写审核备注（驳回时必填）"}/>{error && <div className="notice error">{error}</div>}<div className="review-actions"><button className="secondary danger" disabled={busy || disabled || !reason.trim()} onClick={() => void review("rejected")}>驳回</button><button className="primary" disabled={busy || disabled || (blocking && !reason.trim())} onClick={() => void review("approved")}>通过</button></div><div className="review-tools"><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowTypography((value) => !value); setShowEdit(false); }}>文字重排</button><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowEdit((value) => !value); setShowTypography(false); }}>图像调整</button></div>{selectedCandidate && showTypography && <TypographyEditor projectId={projectId} pageId={selectedPage.page.id} candidate={selectedCandidate} onCancel={() => setShowTypography(false)} onComplete={async () => { setShowTypography(false); await onRecomposed(); }}/>} {selectedCandidate && showEdit && <CandidateEditPanel candidate={selectedCandidate} disabled={busy || disabled} onCancel={() => setShowEdit(false)} onSubmitted={async () => { setShowEdit(false); await onRecomposed(); }}/>}</section><section className="audit-section"><h3>审核记录</h3><p><span className="audit-dot"/><strong>{selectedPage.decision ? statusLabel(selectedPage.decision.decision) : "等待审核"}</strong><small>{selectedPage.decision?.override_reason || "当前候选尚未形成最终审核决策。"}</small></p></section></aside>
   </section>;
 }
 
@@ -668,10 +916,13 @@ function CandidateCard({ projectId, pageId, candidate, history, referenceUrls, s
 
 function ProjectTable({ projects, onOpen, onRefresh }: { projects: Project[]; onOpen: (id: string) => void; onRefresh: () => Promise<void> }) {
   const [busy, setBusy] = useState(""); const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
   async function clone(project: Project) { setBusy(project.id); setError(""); try { const copied = await api.cloneProject(project.id); await onRefresh(); onOpen(copied.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "复制失败"); } finally { setBusy(""); } }
   const showcases = projects.filter((project) => project.id.startsWith("showcase-"));
-  const regularProjects = projects.filter((project) => !project.id.startsWith("showcase-") && project.status !== "archived");
+  const regularProjects = projects.filter((project) => !project.id.startsWith("showcase-") && project.status !== "archived").filter((project) => status === "all" || project.status === status).filter((project) => `${project.name} ${project.profile.name} ${project.profile.sku} ${project.profile.model}`.toLowerCase().includes(query.toLowerCase()));
   return <div className="project-catalog">
+    <div className="filter-bar"><label className="search-field"><Icon name="search"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目、商品或 SKU" aria-label="搜索项目"/></label><label className="filter-select"><Icon name="filter"/><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="draft">草稿</option><option value="planned">已规划</option><option value="producing">生产中</option><option value="reviewing">审核中</option><option value="completed">已完成</option></select></label><span className="filter-count">{regularProjects.length} 个项目</span></div>
     {showcases.length > 0 && <section className="panel showcase-panel">
       <div className="panel-heading"><h3>内置示例项目</h3><p>部署后直接可见，无需调用生图模型；可进入查看分层结果，或复制为自己的项目继续调整。</p></div>
       <div className="showcase-grid">{showcases.map((project) => <article key={project.id} className="showcase-card">
@@ -680,7 +931,7 @@ function ProjectTable({ projects, onOpen, onRefresh }: { projects: Project[]; on
         <div className="showcase-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}>{busy === project.id ? "复制中…" : "以此创建项目"}</button><button className="table-action" onClick={() => onOpen(project.id)}>查看完整结果 →</button></div>
       </article>)}</div>
     </section>}
-    <section className="panel"><div className="panel-heading"><h3>最近项目</h3><p>进入项目后上传素材、生成并确认多页内容规划。</p></div>{busy && <OperationFeedback label="正在复制项目" detail="正在复制商品档案与页面规划。" compact />}{error && <div className="notice error">{error}</div>}{regularProjects.length === 0 ? <div className="empty-state">还没有自己的商品项目，可复制上方示例或创建新项目。</div> : <div className="table-wrap"><table><thead><tr><th>项目</th><th>SKU / 型号</th><th>品类</th><th>状态</th><th>创建时间</th><th /></tr></thead><tbody>{regularProjects.map((project) => <tr key={project.id}><td><strong>{project.name}</strong><small>{project.profile.name}</small></td><td>{project.profile.sku}<small>{project.profile.model || "未填写型号"}</small></td><td>{project.profile.category}</td><td><StatusBadge status={project.status} /></td><td>{formatDate(project.created_at)}</td><td><div className="table-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}>{busy === project.id ? "复制中…" : "复制"}</button><button className="table-action" disabled={!!busy} onClick={() => onOpen(project.id)}>进入项目 →</button></div></td></tr>)}</tbody></table></div>}</section>
+    <section className="panel"><div className="panel-heading"><h3>最近项目</h3><p>进入项目后按商品资料、内容规划、图片生产、质检审核和交付导出推进。</p></div>{busy && <OperationFeedback label="正在复制项目" detail="正在复制商品档案与页面规划。" compact />}{error && <div className="notice error">{error}</div>}{regularProjects.length === 0 ? <div className="empty-state"><strong>{query || status !== "all" ? "没有符合条件的项目" : "还没有自己的商品项目"}</strong><p>{query || status !== "all" ? "调整搜索或筛选条件后重试。" : "可以复制示例或创建第一个商品项目。"}</p>{(query || status !== "all") && <button className="secondary" onClick={() => { setQuery(""); setStatus("all"); }}>清除筛选</button>}</div> : <div className="table-wrap"><table><thead><tr><th>项目</th><th>SKU / 型号</th><th>品类</th><th>状态</th><th>创建时间</th><th /></tr></thead><tbody>{regularProjects.map((project) => <tr key={project.id} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && onOpen(project.id)}><td><strong>{project.name}</strong><small>{project.profile.name}</small></td><td>{project.profile.sku}<small>{project.profile.model || "未填写型号"}</small></td><td>{project.profile.category}</td><td><StatusBadge status={project.status} /></td><td>{formatDate(project.created_at)}</td><td><div className="table-actions"><button className="table-action" disabled={!!busy} onClick={() => void clone(project)}><Icon name="copy"/> {busy === project.id ? "复制中…" : "复制"}</button><button className="table-action" disabled={!!busy} onClick={() => onOpen(project.id)}>进入项目</button></div></td></tr>)}</tbody></table></div>}</section>
   </div>;
 }
 
@@ -806,10 +1057,12 @@ function CatalogPanel() {
 
 function ProjectForm({ onClose, onCreated }: { onClose: () => void; onCreated: (projectId?: string) => Promise<void> }) {
   const [projectName, setProjectName] = useState(""); const [profile, setProfile] = useState(emptyProfile()); const [sellingPoints, setSellingPoints] = useState(""); const [parameters, setParameters] = useState("容量=12kg"); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1);
   const [libraries, setLibraries] = useState<LayoutLibrary[]>([]); const [libraryId, setLibraryId] = useState("library-square-2048");
   useEffect(() => { void api.listLayoutLibraries().then((rows) => { setLibraries(rows); if (!rows.some((item) => item.id === libraryId) && rows[0]) setLibraryId(rows[0].id); }).catch(() => undefined); }, []);
   async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(""); try { const parsedParameters = Object.fromEntries(parameters.split(/\n|[;；]/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(/[=：:]/, 2).map((part) => part.trim())).filter(([key, value]) => key && value)); const project = await api.createProject({ project_name: projectName, profile: { ...profile, parameters: parsedParameters, selling_points: sellingPoints.split("\n").map((item) => item.trim()).filter(Boolean) } }); await api.generatePlan(project.id, libraryId); await onCreated(project.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setSaving(false); } }
-  return <Dialog title="新建商品项目" subtitle="先选择成品画布比例，再建立商品档案和对应页面规划。" onClose={onClose}><div className="golden-demo-callout"><div><strong>需要参考？</strong><p>项目首页已内置方形、最大横版和最大竖版三套完整结果，可直接查看或复制。</p></div></div><form onSubmit={submit}><LayoutLibraryPicker libraries={libraries} selectedId={libraryId} onSelect={setLibraryId} disabled={saving} /><Field label="项目名称"><input required value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(e) => setProfile({ ...profile, sku: e.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(e) => setProfile({ ...profile, model: e.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field><Field label="品类"><input required value={profile.category} onChange={(e) => setProfile({ ...profile, category: e.target.value })} /></Field></div><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(e) => setParameters(e.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<FormActions onClose={onClose} saving={saving} label="创建项目并生成规划" /></form></Dialog>;
+  const canContinue = !!(projectName.trim() && profile.sku.trim() && profile.name.trim() && profile.category.trim());
+  return <Dialog title="创建商品项目" subtitle={step === 1 ? "先填写基础信息，再选择内容版式。" : "补充卖点和参数，创建后仍可继续修改。"} onClose={onClose}><div className="form-stepper" aria-label="创建步骤"><span className="active"><b>1</b>基础信息</span><i/><span className={step === 2 ? "active" : ""}><b>2</b>内容设置</span></div><form onSubmit={submit}>{step === 1 ? <><Field label="项目名称"><input required value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="例如：X11 电商详情页" /></Field><div className="form-grid"><Field label="SKU"><input required value={profile.sku} onChange={(event) => setProfile({ ...profile, sku: event.target.value })} /></Field><Field label="型号"><input value={profile.model} onChange={(event) => setProfile({ ...profile, model: event.target.value })} /></Field><Field label="商品名称"><input required value={profile.name} onChange={(event) => { const name = event.target.value; setProfile({ ...profile, name }); if (!projectName) setProjectName(name ? `${name}内容项目` : ""); }} /></Field><Field label="品类"><input required value={profile.category} onChange={(event) => setProfile({ ...profile, category: event.target.value })} /></Field></div><div className="form-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canContinue} onClick={() => setStep(2)}>下一步</button></div></> : <><LayoutLibraryPicker libraries={libraries} selectedId={libraryId} onSelect={setLibraryId} disabled={saving} /><Field label="核心卖点（每行一项）"><textarea rows={3} value={sellingPoints} onChange={(event) => setSellingPoints(event.target.value)} /></Field><Field label="商品参数（每行：名称=值）"><textarea rows={3} value={parameters} onChange={(event) => setParameters(event.target.value)} /></Field>{error && <div className="notice error">{error}</div>}<div className="form-actions"><button type="button" className="secondary" disabled={saving} onClick={() => setStep(1)}>上一步</button><button className="primary" disabled={saving}>{saving ? "正在创建…" : "创建项目"}</button></div>{saving && <OperationFeedback label="正在创建项目" detail="项目创建后会自动进入商品资料。" compact />}</>}</form></Dialog>;
 }
 
 function BatchForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
@@ -820,15 +1073,34 @@ function BatchForm({ onClose, onCreated }: { onClose: () => void; onCreated: () 
 
 function Metric({ label, value, hint, text = false }: { label: string; value: number | string; hint: string; text?: boolean }) { return <article className="metric-card"><p>{label}</p><strong className={text ? "metric-text" : ""}>{value}</strong><span>{hint}</span></article>; }
 function Info({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) { return <div className={wide ? "wide" : ""}><span>{label}</span><strong>{value}</strong></div>; }
-function Dialog({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) { return <div className="dialog-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true"><button className="close" onClick={onClose}>×</button><p className="eyebrow">CREATE</p><h2>{title}</h2><p className="dialog-subtitle">{subtitle}</p>{children}</section></div>; }
+function Dialog({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {
+  const titleId = useId();
+  const dialogRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    dialog?.querySelector<HTMLElement>("input, select, textarea, button")?.focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+      if (event.key !== "Tab" || !dialog) return;
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]'));
+      if (!items.length) return;
+      const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => { document.removeEventListener("keydown", keydown); previous?.focus(); };
+  }, [onClose]);
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}><IconButton className="close" icon="close" label="关闭" onClick={onClose}/><h2 id={titleId}>{title}</h2><p className="dialog-subtitle">{subtitle}</p>{children}</section></div>;
+}
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function FormActions({ onClose, saving, label }: { onClose: () => void; saving: boolean; label: string }) { return <><div className="form-actions"><button type="button" className="secondary" disabled={saving} onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "正在保存…" : label}</button></div>{saving && <OperationFeedback label={`正在${label}`} detail="数据正在提交，请勿关闭窗口。" compact />}</>; }
 function OperationFeedback({ label, detail = "", compact = false }: { label: string; detail?: string; compact?: boolean }) { return <div className={`operation-feedback ${compact ? "compact" : ""}`} role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{label}</strong>{detail && <small>{detail}</small>}</div></div>; }
-function StatusBadge({ status }: { status: string }) { return <span className={`badge badge-${status}`}>{statusLabel(status)}</span>; }
+function StatusBadge({ status }: { status: string }) { return <span className={`badge badge-${status} badge-${statusTone(status)}`}>{statusLabel(status)}</span>; }
 function projectOperationLabel(value: string) { return ({ generate: "正在提交 AI 内容规划", "apply-planning": "正在应用 AI 规划建议", save: "正在保存规划草稿", confirm: "正在确认页面规划" } as Record<string, string>)[value] ?? "正在处理"; }
 function productionActionLabel(value: string) { if (!value) return ""; if (value.startsWith("recompose-")) return "正在重新排版并质检"; if (value.startsWith("regenerate-")) return "正在提交单页重生成"; return ({ start: "正在提交生产任务", regenerate: "正在提交整套重新生产", export: "正在打包正式结果", recipe: "正在沉淀配方" } as Record<string, string>)[value] ?? "正在处理生产操作"; }
 function batchOperationLabel(value: string) { return ({ start: "正在提交批量生产", retry: "正在提交失败项重试", pause: "正在暂停批次", resume: "正在恢复批次", export: "正在打包批量结果" } as Record<string, string>)[value] ?? "正在处理批次操作"; }
-function statusLabel(status: string) { return ({ draft: "草稿", ready: "待执行", queued: "排队中", running: "执行中", planned: "已策划", producing: "生产中", reviewing: "审核中", review: "需确认", pass: "通过", needs_review: "待审核", approved: "已确认", rejected: "不采用", completed: "已完成", partial_failed: "部分失败", paused: "已暂停", failed: "失败", archived: "已归档", published: "已发布", testing: "测试中", deprecated: "已停用", pending: "待处理" } as Record<string, string>)[status] ?? status; }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(value: number) { return value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`; }
 function tabTitle(tab: Tab) { return tab === "projects" ? "商品项目" : tab === "batches" ? "多 SKU 批量任务" : tab === "layouts" ? "版式中心" : "生成配置"; }

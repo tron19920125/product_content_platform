@@ -128,31 +128,30 @@ if ((Test-TrackedProcess $backendPidFile) -or (Test-TrackedProcess $frontendPidF
 
 $backendLog = Join-Path $LogRoot "backend.log"
 $frontendLog = Join-Path $LogRoot "frontend.log"
+$backendErrorLog = Join-Path $LogRoot "backend.error.log"
+$frontendErrorLog = Join-Path $LogRoot "frontend.error.log"
+$backendLauncher = Join-Path $PSScriptRoot "run_backend.cmd"
+$frontendLauncher = Join-Path $PSScriptRoot "run_frontend.cmd"
 $backend = $null
 $frontend = $null
 try {
-    $backend = Start-Process -FilePath $python -ArgumentList @(
-        "-m", "uvicorn", "product_content_platform.api.app:app",
-        "--host", $hostAddress, "--port", "$backendPort"
-    ) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $backendLog -RedirectStandardError (Join-Path $LogRoot "backend.error.log")
+    $backend = Start-Process -FilePath $backendLauncher -ArgumentList @(
+        $python, $hostAddress, "$backendPort", $backendLog, $backendErrorLog
+    ) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
     Set-Content -LiteralPath $backendPidFile -Value $backend.Id -Encoding ASCII
 
-    $frontend = Start-Process -FilePath $node -ArgumentList @(
-        $vite, "--host", $hostAddress, "--port", "$frontendPort"
-    ) -WorkingDirectory (Join-Path $ProjectRoot "frontend") -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $frontendLog -RedirectStandardError (Join-Path $LogRoot "frontend.error.log")
+    $frontend = Start-Process -FilePath $frontendLauncher -ArgumentList @(
+        $node, $vite, $hostAddress, "$frontendPort", $frontendLog, $frontendErrorLog
+    ) -WorkingDirectory (Join-Path $ProjectRoot "frontend") -WindowStyle Hidden -PassThru
     Set-Content -LiteralPath $frontendPidFile -Value $frontend.Id -Encoding ASCII
 
     if (-not (Wait-HttpReady "http://${hostAddress}:${backendPort}/api/health")) {
         throw "Backend health check timed out. See $backendLog."
     }
-    $backendListener = Get-NetTCPConnection -State Listen -LocalPort $backendPort -ErrorAction SilentlyContinue |
-        Where-Object { $_.LocalAddress -in @($hostAddress, "0.0.0.0", "::") } |
-        Select-Object -First 1
-    if ($backendListener) {
-        Set-Content -LiteralPath $backendPidFile -Value $backendListener.OwningProcess -Encoding ASCII
-    }
+    # The tracked process can be a launcher parent on some Python builds. Do
+    # not query Get-NetTCPConnection here: in restricted desktop hosts that
+    # cmdlet can block for minutes even after the health endpoint is ready.
+    # stop_local.ps1 already falls back to the listener when needed.
     if (-not (Wait-HttpReady "http://${hostAddress}:${frontendPort}/")) {
         throw "Frontend health check timed out. See $frontendLog."
     }

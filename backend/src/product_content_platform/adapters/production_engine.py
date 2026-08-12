@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
 from product_content_platform.application.production_ports import BaseImageGenerator, ProducedCandidate
 from product_content_platform.domain import (
@@ -17,6 +17,8 @@ from product_content_platform.domain import (
     Project,
     PromptVersion,
     Recipe,
+    TextDocument,
+    TextLayer,
     validate_image_quality,
     validate_image_size,
 )
@@ -65,12 +67,14 @@ class LocalProductionEngine:
         generator: BaseImageGenerator,
         quality_toolkit: Any | None = None,
         template_resolver: Callable[[str], dict[str, Any]] | None = None,
+        font_resolver: Callable[[str], Path | None] | None = None,
     ) -> None:
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._generator = generator
         self._quality_toolkit = quality_toolkit
         self._template_resolver = template_resolver
+        self._font_resolver = font_resolver
         self._font_paths = self._find_fonts()
         self._font_path = self._font_paths["system_sans"]
 
@@ -401,6 +405,149 @@ class LocalProductionEngine:
             row["score"] = int(ranked["score"]["overall"])
             row["metadata"]["score_breakdown"] = ranked["score"]["breakdown"]
         return ProducedCandidate(**row)
+
+    def suggest_text_document(
+        self,
+        *,
+        candidate: Candidate,
+        page: PageItem,
+        instruction: str = "",
+        current: TextDocument | None = None,
+    ) -> TextDocument:
+        """Create an editable first-pass layout without changing the base image."""
+        template = self._layout_spec(page.template_id)
+        slots = list(template.get("text_slots") or [
+            {"id": "headline", "name": "标题", "role": "headline", "box": template.get("title_box") or template["text_box"]},
+            {"id": "body", "name": "正文", "role": "body", "box": template.get("body_box") or template["text_box"]},
+        ])
+        current_by_role = {layer.role: layer for layer in (current.layers if current else ())}
+        current_by_id = {layer.id: layer for layer in (current.layers if current else ())}
+        art_direction = instruction.strip()
+        expressive = any(term in art_direction.lower() for term in ("艺术", "潮流", "活力", "年轻", "art", "bold"))
+        traditional = any(term in art_direction.lower() for term in ("国风", "书法", "东方", "古典", "chinese"))
+        font_family = "ma-shan-zheng" if traditional else ("smiley-sans" if expressive else "noto-sans-sc")
+        with Image.open(self.resolve(candidate.base_path)) as base:
+            width, height = base.size
+            short_edge = min(width, height)
+        layers: list[TextLayer] = []
+        for index, slot in enumerate(slots):
+            role = str(slot.get("role") or "custom")
+            existing = current_by_id.get(str(slot.get("id"))) or current_by_role.get(role)
+            content = (
+                existing.content if existing else
+                page.title if role == "headline" else
+                page.body if role in {"body", "subheadline"} else ""
+            )
+            if not content and not slot.get("required"):
+                continue
+            box = tuple(float(part) for part in slot["box"])
+            box_height = max(.02, box[3] - box[1])
+            suggested_size = round(min(short_edge * (.072 if role == "headline" else .036), height * box_height * .58))
+            defaults = dict(slot.get("default_style") or {})
+            layer_value = existing.to_dict() if existing else {}
+            layer_value.update({
+                "id": str(slot.get("id") or f"text-{index + 1}"),
+                "role": role if role in {"headline", "body", "badge", "caption", "custom"} else "custom",
+                "name": str(slot.get("name") or "文本框"), "content": content,
+                "box": list(box), "z_index": index, "source": "ai",
+                "font_family": defaults.get("font_family") or (existing.font_family if existing else font_family),
+                "font_weight": defaults.get("font_weight") or (existing.font_weight if existing else (700 if role == "headline" else 400)),
+                "font_size": defaults.get("font_size") or (existing.font_size if existing else max(18, suggested_size)),
+                "line_height": defaults.get("line_height") or (existing.line_height if existing else (1.12 if role == "headline" else 1.45)),
+                "letter_spacing": defaults.get("letter_spacing") if defaults.get("letter_spacing") is not None else (existing.letter_spacing if existing else (2 if role == "headline" else 0)),
+            })
+            layers.append(TextLayer.from_dict(layer_value))
+        slot_ids = {str(slot.get("id")) for slot in slots}
+        slot_roles = {str(slot.get("role")) for slot in slots}
+        for existing in (current.layers if current else ()):
+            if existing.id not in slot_ids:
+                layers.append(TextLayer.from_dict({
+                    **existing.to_dict(), "z_index": len(layers), "source": "ai",
+                }))
+        reasoning = "依据模板预留区、画布比例和文案层级完成初排；图片模型生成的底图未被修改。"
+        if art_direction:
+            reasoning += f" 已结合设计要求：{art_direction}"
+        return TextDocument(
+            candidate_id=candidate.id, version=(current.version + 1 if current else 1),
+            layers=tuple(layers), source="ai", ai_reasoning=reasoning,
+        )
+
+    def recompose_document(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        source_candidate: Candidate,
+        text_document: TextDocument,
+        reference_paths: list[Path],
+        run_qa: bool = False,
+    ) -> ProducedCandidate:
+        candidate_root = self._root / project.id / page.id / str(uuid4()) / "text-edit"
+        text_path = candidate_root / "text_layer.png"
+        composed_path = candidate_root / "composed.png"
+        base_path = self.resolve(source_candidate.base_path)
+        generator_meta = dict(source_candidate.metadata.get("generator") or {})
+        with Image.open(base_path) as base_image:
+            product_bbox = tuple(generator_meta.get("product_bbox") or self._product_anchor_box(page.template_id, *base_image.size))
+        compose_meta = self._compose_text_document(
+            base_path=base_path, text_path=text_path, output_path=composed_path,
+            document=text_document, product_bbox=product_bbox,
+        )
+        review_prompt = self._content_review_prompt(project.profile, page)
+        reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
+        review_plan = self._build_review_plan(project.profile, page, reference_paths, reference_strategy=reference_strategy)
+        qa = self._inspect(
+            project.profile, page, reference_paths, generator_meta, compose_meta,
+            1, base_path, composed_path, review_prompt, review_plan,
+        ) if run_qa else {
+            "status": "pending", "score": source_candidate.score, "issues": [],
+            "evidence": {"qa_execution": "not_run", "reason": "等待用户手动质检或人工确认"},
+            "suggested_fix": "",
+        }
+        return ProducedCandidate(
+            candidate_index=1, base_path=source_candidate.base_path,
+            text_layer_path=self._relative(text_path), composed_path=self._relative(composed_path),
+            prompt=source_candidate.prompt, score=int(qa["score"]), rank=1,
+            qa_status=str(qa["status"]), issues=tuple(qa["issues"]), evidence=dict(qa["evidence"]),
+            suggested_fix=str(qa["suggested_fix"]), repair_applied=False,
+            metadata={
+                **source_candidate.metadata, "generator": generator_meta, "composition": compose_meta,
+                "recomposed_from": source_candidate.id, "text_document_version": text_document.version,
+                "qa_execution": "completed" if run_qa else "not_run",
+                "review_plan": review_plan, "content_review_prompt": review_prompt,
+                "recipe_id": recipe.id, "prompt_version_id": prompt_version.id,
+            },
+        )
+
+    def inspect_candidate(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        candidate: Candidate,
+        reference_paths: list[Path],
+    ) -> ProducedCandidate:
+        generator_meta = dict(candidate.metadata.get("generator") or {})
+        compose_meta = dict(candidate.metadata.get("composition") or {})
+        reference_strategy = str(recipe.model_params.get("reference_strategy") or "model_edit")
+        review_prompt = self._content_review_prompt(project.profile, page)
+        review_plan = self._build_review_plan(project.profile, page, reference_paths, reference_strategy=reference_strategy)
+        qa = self._inspect(
+            project.profile, page, reference_paths, generator_meta, compose_meta, 1,
+            self.resolve(candidate.base_path), self.resolve(candidate.composed_path), review_prompt, review_plan,
+        )
+        return ProducedCandidate(
+            candidate_index=candidate.candidate_index, base_path=candidate.base_path,
+            text_layer_path=candidate.text_layer_path, composed_path=candidate.composed_path,
+            prompt=candidate.prompt, score=int(qa["score"]), rank=candidate.rank,
+            qa_status=str(qa["status"]), issues=tuple(qa["issues"]), evidence=dict(qa["evidence"]),
+            suggested_fix=str(qa["suggested_fix"]), repair_applied=False,
+            metadata=candidate.metadata,
+        )
 
     def edit_candidate(
         self,
@@ -844,6 +991,141 @@ class LocalProductionEngine:
             "repair_applied": title_repaired or body_repaired or title_font.size < requested_title_size or body_font.size < requested_body_size,
         }
 
+    def _compose_text_document(
+        self,
+        *,
+        base_path: Path,
+        text_path: Path,
+        output_path: Path,
+        document: TextDocument,
+        product_bbox: tuple[int, int, int, int],
+    ) -> dict[str, Any]:
+        base = Image.open(base_path).convert("RGBA")
+        width, height = base.size
+        safe_area = self._scaled_box((.055, .045, .945, .955), width, height)
+        layer_canvas = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        rendered: list[dict[str, Any]] = []
+        repaired = False
+        for text_layer in sorted(document.layers, key=lambda item: item.z_index):
+            if not text_layer.visible or not text_layer.content:
+                continue
+            region = self._scaled_box(text_layer.box, width, height)
+            region_width = max(1, region[2] - region[0])
+            region_height = max(1, region[3] - region[1])
+            padding = min(text_layer.padding, region_width // 3, region_height // 3)
+            content_region = (
+                region[0] + padding, region[1] + padding,
+                region[2] - padding, region[3] - padding,
+            )
+            if text_layer.background_color and text_layer.background_opacity > 0:
+                background = self._parse_hex_color(text_layer.background_color) or (255, 255, 255, 255)
+                fill = (*background[:3], round(255 * text_layer.background_opacity * text_layer.opacity))
+                ImageDraw.Draw(layer_canvas).rounded_rectangle(region, radius=max(0, padding), fill=fill)
+            scratch = Image.new("RGBA", (region_width, region_height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(scratch)
+            fit_width = max(8, content_region[2] - content_region[0])
+            fit_height = max(8, content_region[3] - content_region[1])
+            size = text_layer.font_size
+            minimum = max(8, min(size, round(min(width, height) * .012)))
+            while True:
+                font = self._font(size, text_layer.font_family)
+                lines = self._wrap_spaced(draw, text_layer.content, font, fit_width, text_layer.letter_spacing)
+                spacing = max(0, round(size * max(0, text_layer.line_height - 1)))
+                text = "\n".join(lines)
+                bbox = draw.multiline_textbbox(
+                    (0, 0), text, font=font, spacing=spacing, align=text_layer.text_align,
+                    stroke_width=text_layer.stroke_width,
+                )
+                measured_width, measured_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                if text_layer.letter_spacing:
+                    measured_width = max(
+                        (round(self._spaced_text_width(draw, line, font, text_layer.letter_spacing)) for line in lines),
+                        default=0,
+                    )
+                if measured_height <= fit_height and measured_width <= fit_width or size <= minimum:
+                    break
+                size = max(minimum, size - max(1, round(size * .04)))
+                repaired = True
+            if text_layer.text_align == "center":
+                x = (region_width - measured_width) // 2 - bbox[0]
+            elif text_layer.text_align == "right":
+                x = region_width - padding - measured_width - bbox[0]
+            else:
+                x = padding - bbox[0]
+            if text_layer.vertical_align == "center":
+                y = (region_height - measured_height) // 2 - bbox[1]
+            elif text_layer.vertical_align == "bottom":
+                y = region_height - padding - measured_height - bbox[1]
+            else:
+                y = padding - bbox[1]
+            fill = self._parse_hex_color(text_layer.color) or (24, 31, 28, 255)
+            fill = (*fill[:3], round(255 * text_layer.opacity))
+            stroke_fill = self._parse_hex_color(text_layer.stroke_color) or (255, 255, 255, 255)
+            effective_stroke = text_layer.stroke_width + max(0, (text_layer.font_weight - 500) // 200)
+            def draw_copy(target: ImageDraw.ImageDraw, origin_x: int, origin_y: int, color: tuple[int, int, int, int]) -> None:
+                if not text_layer.letter_spacing:
+                    target.multiline_text(
+                        (origin_x, origin_y), text, font=font, spacing=spacing,
+                        align=text_layer.text_align, fill=color,
+                        stroke_width=effective_stroke, stroke_fill=stroke_fill,
+                    )
+                    return
+                cursor_y = origin_y
+                line_height = max(1, font.getbbox("国Ag")[3] - font.getbbox("国Ag")[1])
+                for line in lines:
+                    line_width = self._spaced_text_width(target, line, font, text_layer.letter_spacing)
+                    if text_layer.text_align == "center":
+                        cursor_x = (region_width - line_width) / 2
+                    elif text_layer.text_align == "right":
+                        cursor_x = region_width - padding - line_width
+                    else:
+                        cursor_x = padding
+                    for char in line:
+                        target.text(
+                            (round(cursor_x), cursor_y), char, font=font, fill=color,
+                            stroke_width=effective_stroke, stroke_fill=stroke_fill,
+                        )
+                        cursor_x += target.textlength(char, font=font) + text_layer.letter_spacing
+                    cursor_y += line_height + spacing
+            if text_layer.shadow:
+                shadow_fill = self._parse_hex_color(text_layer.shadow_color) or (0, 0, 0, 255)
+                shadow = Image.new("RGBA", scratch.size, (0, 0, 0, 0))
+                draw_copy(
+                    ImageDraw.Draw(shadow), x + text_layer.shadow_offset_x, y + text_layer.shadow_offset_y,
+                    (*shadow_fill[:3], round(170 * text_layer.opacity)),
+                )
+                if text_layer.shadow_blur:
+                    shadow = shadow.filter(ImageFilter.GaussianBlur(text_layer.shadow_blur))
+                scratch.alpha_composite(shadow)
+            draw_copy(ImageDraw.Draw(scratch), x, y, fill)
+            if text_layer.rotation:
+                scratch = scratch.rotate(-text_layer.rotation, resample=Image.Resampling.BICUBIC, expand=False)
+            layer_canvas.alpha_composite(scratch, (region[0], region[1]))
+            rendered.append({
+                "id": text_layer.id, "role": text_layer.role, "box": list(region),
+                "font_family": text_layer.font_family, "requested_font_size": text_layer.font_size,
+                "font_size": size, "lines": lines, "color": text_layer.color,
+                "text_align": text_layer.text_align, "vertical_align": text_layer.vertical_align,
+                "rotation": text_layer.rotation, "content": text_layer.content,
+            })
+        text_path.parent.mkdir(parents=True, exist_ok=True)
+        layer_canvas.save(text_path, format="PNG")
+        Image.alpha_composite(base, layer_canvas).convert("RGB").save(output_path, format="PNG")
+        boxes = [item["box"] for item in rendered]
+        union_box = [
+            min((box[0] for box in boxes), default=0), min((box[1] for box in boxes), default=0),
+            max((box[2] for box in boxes), default=0), max((box[3] for box in boxes), default=0),
+        ]
+        return {
+            "canvas": [width, height], "safe_area": list(safe_area), "text_box": union_box,
+            "rendered_text_bbox": union_box, "product_bbox": list(product_bbox),
+            "text_layers": rendered, "text_document_version": document.version,
+            "text_layer_stored_separately": True, "base_contains_post_layout_text": False,
+            "font": ", ".join(dict.fromkeys(item["font_family"] for item in rendered)) or "none",
+            "text_color": ", ".join(dict.fromkeys(item["color"] for item in rendered)) or "none",
+            "repair_applied": repaired,
+        }
+
     def _inspect(
         self,
         profile: ProductProfile,
@@ -1206,8 +1488,34 @@ class LocalProductionEngine:
             lines.append(current)
         return lines
 
+    @staticmethod
+    def _spaced_text_width(
+        draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, letter_spacing: float,
+    ) -> float:
+        return sum(draw.textlength(char, font=font) for char in text) + max(0, len(text) - 1) * letter_spacing
+
+    @classmethod
+    def _wrap_spaced(
+        cls, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont,
+        max_width: int, letter_spacing: float,
+    ) -> list[str]:
+        if not letter_spacing:
+            return cls._wrap(draw, text, font, max_width)
+        lines: list[str] = []
+        for paragraph in text.splitlines() or [""]:
+            current = ""
+            for char in paragraph:
+                candidate = current + char
+                if current and cls._spaced_text_width(draw, candidate, font, letter_spacing) > max_width:
+                    lines.append(current)
+                    current = char
+                else:
+                    current = candidate
+            lines.append(current)
+        return lines or [""]
+
     def _font(self, size: int, family: str = "system_sans") -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        path = self._font_paths.get(family) or self._font_path
+        path = (self._font_resolver(family) if self._font_resolver else None) or self._font_paths.get(family) or self._font_path
         return ImageFont.truetype(str(path), size) if path else ImageFont.load_default(size=size)
 
     @staticmethod

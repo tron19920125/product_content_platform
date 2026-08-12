@@ -122,5 +122,6 @@ class ReviewDecision:
     candidate_id: str
     decision: ReviewDecisionType
     override_reason: str = ""
+    qa_disposition: str = "qa_completed"
     reviewer: str = "local-user"
     created_at: datetime = field(default_factory=utc_now)

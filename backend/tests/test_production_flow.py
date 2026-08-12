@@ -241,6 +241,91 @@ class ProductionFlowTest(unittest.TestCase):
         with Image.open(io.BytesIO(composed_response.content)) as composed_image:
             self.assertEqual((1024, 1024), composed_image.size)
 
+    def test_text_document_edit_apply_manual_qa_and_skip_audit(self) -> None:
+        project_id = self._create_planned_project()
+        plan = self.client.get(f"/api/projects/{project_id}/plan").json()
+        one_page = plan["items"][0]
+        one_page["order"] = 1
+        narrowed = self.client.put(
+            f"/api/projects/{project_id}/plan",
+            json={"items": [one_page], "confirmed": True},
+        )
+        self.assertEqual(200, narrowed.status_code, narrowed.text)
+        started = self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        self.assertEqual(202, started.status_code, started.text)
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        source = snapshot["pages"][0]["candidates"][0]
+
+        loaded = self.client.get(f"/api/candidates/{source['id']}/text-document")
+        self.assertEqual(200, loaded.status_code, loaded.text)
+        document = loaded.json()
+        self.assertEqual(1, document["version"])
+        self.assertEqual({"headline", "body"}, {layer["role"] for layer in document["layers"]})
+
+        for layer in document["layers"]:
+            layer["font_family"] = "system_sans"
+        document["layers"].append({
+            **document["layers"][1], "id": "manual-badge", "role": "badge", "name": "人工新增标签",
+            "content": "新品", "box": [.72, .08, .88, .16], "font_size": 56, "color": "#4955C2",
+        })
+        saved = self.client.put(
+            f"/api/candidates/{source['id']}/text-document",
+            json={"base_version": document["version"], "layers": document["layers"]},
+        )
+        self.assertEqual(200, saved.status_code, saved.text)
+        self.assertEqual(2, saved.json()["version"])
+        self.assertEqual(3, len(saved.json()["layers"]))
+
+        ai_layout = self.client.post(
+            f"/api/candidates/{source['id']}/text-document/ai-layout",
+            json={"instruction": "国风标题，正文克制留白"},
+        )
+        self.assertEqual(200, ai_layout.status_code, ai_layout.text)
+        self.assertEqual(3, ai_layout.json()["version"])
+        self.assertIn("国风标题", ai_layout.json()["ai_reasoning"])
+
+        applied = self.client.post(
+            f"/api/candidates/{source['id']}/text-document/apply",
+            json={"version": ai_layout.json()["version"]},
+        )
+        self.assertEqual(200, applied.status_code, applied.text)
+        edited = applied.json()
+        self.assertEqual(self.client.get(source["base_url"]).content, self.client.get(edited["base_url"]).content)
+        active = self.client.get(f"/api/projects/{project_id}/production").json()["pages"][0]["candidates"][0]
+        self.assertEqual(edited["id"], active["id"])
+        self.assertIsNone(active["qa"])
+
+        missing_qa = self.client.post(
+            f"/api/candidates/{edited['id']}/review",
+            json={"decision": "approved", "reviewer": "qa-test", "override_reason": ""},
+        )
+        self.assertEqual(422, missing_qa.status_code)
+        qa = self.client.post(f"/api/candidates/{edited['id']}/qa")
+        self.assertEqual(200, qa.status_code, qa.text)
+        self.assertIn(qa.json()["status"], {"pass", "review", "fail"})
+
+        edited_document = self.client.get(f"/api/candidates/{edited['id']}/text-document").json()
+        reapplied = self.client.post(
+            f"/api/candidates/{edited['id']}/text-document/apply",
+            json={"version": edited_document["version"]},
+        )
+        self.assertEqual(200, reapplied.status_code, reapplied.text)
+        skipped_candidate = reapplied.json()
+        missing_reason = self.client.post(
+            f"/api/candidates/{skipped_candidate['id']}/review",
+            json={"decision": "approved", "reviewer": "qa-test", "override_reason": "", "skip_qa": True},
+        )
+        self.assertEqual(422, missing_reason.status_code)
+        skipped = self.client.post(
+            f"/api/candidates/{skipped_candidate['id']}/review",
+            json={"decision": "approved", "reviewer": "qa-test", "override_reason": "人工已核对文字与商品", "skip_qa": True},
+        )
+        self.assertEqual(200, skipped.status_code, skipped.text)
+        self.assertEqual("skipped_by_human", skipped.json()["qa_disposition"])
+
     def test_app_restart_marks_interrupted_jobs_failed(self) -> None:
         project_id = self._create_planned_project()
         production = self.client.app.state.production

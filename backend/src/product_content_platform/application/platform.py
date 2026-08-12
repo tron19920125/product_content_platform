@@ -141,7 +141,6 @@ class PlatformApplication:
                 asset.storage_path,
                 asset.size_bytes,
                 asset.source,
-                asset.authorization_status,
             )
         source_plan = self._repository.get_plan(project_id)
         if source_plan is not None:
@@ -169,7 +168,6 @@ class PlatformApplication:
         storage_path: str,
         size_bytes: int,
         source: str = "user_upload",
-        authorization_status: str = "unconfirmed",
     ) -> Asset:
         project = self.get_project(project_id)
         asset = Asset(
@@ -181,7 +179,6 @@ class PlatformApplication:
             storage_path=storage_path,
             size_bytes=size_bytes,
             source=source.strip() or "user_upload",
-            authorization_status=authorization_status.strip() or "unconfirmed",
         )
         profile = replace(
             project.profile,

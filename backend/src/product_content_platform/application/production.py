@@ -25,6 +25,8 @@ from product_content_platform.domain import (
     Recipe,
     ReviewDecision,
     ReviewDecisionType,
+    TextDocument,
+    TextLayer,
     validate_image_quality,
 )
 
@@ -526,11 +528,16 @@ class ProductionApplication:
         decision: ReviewDecisionType,
         override_reason: str = "",
         reviewer: str = "local-user",
+        skip_qa: bool = False,
     ) -> ReviewDecision:
         candidate = self._repository.get_candidate(candidate_id)
         if candidate is None:
             raise EntityNotFoundError(f"候选不存在: {candidate_id}")
         qa = self._repository.get_qa_result(candidate_id)
+        if decision is ReviewDecisionType.APPROVED and qa is None and not skip_qa:
+            raise DomainValidationError("该候选尚未执行质检；请先手动质检，或明确选择跳过质检后确认")
+        if decision is ReviewDecisionType.APPROVED and qa is None and skip_qa and not override_reason.strip():
+            raise DomainValidationError("跳过自动质检时必须填写人工确认说明，审计记录不会标记为质检通过")
         if decision is ReviewDecisionType.APPROVED and qa:
             blocking = [issue for issue in qa.issues if issue.get("severity") in {"P0", "P1"}]
             if blocking and not override_reason.strip():
@@ -539,6 +546,7 @@ class ProductionApplication:
             id=str(uuid4()), project_id=candidate.project_id, page_id=candidate.page_id,
             candidate_id=candidate.id, decision=decision,
             override_reason=override_reason.strip(), reviewer=reviewer.strip() or "local-user",
+            qa_disposition="skipped_by_human" if qa is None and skip_qa else "qa_completed",
         )
         self._repository.save_decision(review)
         snapshot = self.get_project_production(candidate.project_id)
@@ -549,6 +557,145 @@ class ProductionApplication:
             self._platform.set_project_status(candidate.project_id, ProjectStatus.REVIEWING)
             self._sync_batch_project(candidate.project_id, BatchItemStatus.NEEDS_REVIEW)
         return review
+
+    def get_text_document(self, candidate_id: str) -> TextDocument:
+        candidate = self._repository.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        existing = self._repository.get_text_document(candidate_id)
+        if existing is not None:
+            return existing
+        page = self._page(candidate.project_id, candidate.page_id)
+        document = self._engine.suggest_text_document(candidate=candidate, page=page)
+        self._repository.save_text_document(document)
+        return document
+
+    def save_text_document(
+        self,
+        candidate_id: str,
+        *,
+        layers: list[dict[str, Any]],
+        base_version: int,
+        source: str = "manual",
+        ai_reasoning: str = "",
+    ) -> TextDocument:
+        candidate = self._repository.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        current = self._repository.get_text_document(candidate_id)
+        current_version = current.version if current else 0
+        if base_version != current_version:
+            raise DomainValidationError(f"文字图层已更新（当前 v{current_version}），请刷新后再保存")
+        document = TextDocument(
+            candidate_id=candidate_id, version=current_version + 1,
+            layers=tuple(TextLayer.from_dict(value) for value in layers),
+            source=source, ai_reasoning=ai_reasoning,
+        )
+        self._repository.save_text_document(document)
+        return document
+
+    def ai_layout_text_document(self, candidate_id: str, instruction: str = "") -> TextDocument:
+        candidate = self._repository.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        current = self._repository.get_text_document(candidate_id)
+        page = self._page(candidate.project_id, candidate.page_id)
+        document = self._engine.suggest_text_document(
+            candidate=candidate, page=page, instruction=instruction, current=current,
+        )
+        self._repository.save_text_document(document)
+        return document
+
+    def apply_text_document(self, candidate_id: str, version: int) -> Candidate:
+        source = self._repository.get_candidate(candidate_id)
+        if source is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        document = self._repository.get_text_document(candidate_id, version)
+        if document is None:
+            raise DomainValidationError("文字图层版本不存在")
+        project = self._platform.get_project(source.project_id)
+        plan = self._platform.get_plan(source.project_id)
+        page = next((item for item in plan.items if item.id == source.page_id), None)
+        if page is None:
+            raise EntityNotFoundError(f"页面不存在: {source.page_id}")
+        source_job = self._repository.get_job(source.job_id)
+        if source_job is None:
+            raise EntityNotFoundError("来源生产任务不存在")
+        recipe = self._get_recipe(source_job.recipe_id, published_required=True)
+        prompt = self._get_prompt(recipe.prompt_version_id)
+        references = [
+            self._resolve_asset(asset.storage_path)
+            for asset in self._platform.list_assets(source.project_id)
+            if asset.mime_type.startswith("image/")
+        ]
+        job = GenerationJob(
+            id=str(uuid4()), project_id=source.project_id, page_id=source.page_id,
+            recipe_id=recipe.id, status=JobStatus.COMPLETED, attempt=1,
+            trace={
+                "generation_kind": "text_document_apply", "stage": "completed", "progress": 100,
+                "stage_label": "文字图层已应用，等待质检或人工确认", "plan_version": plan.version,
+                "source_candidate_id": source.id, "source_text_document_version": document.version,
+                "qa_execution": "not_run", "completed_at": now().isoformat(),
+            },
+        )
+        self._repository.create_jobs([replace(job, status=JobStatus.RUNNING)])
+        result = self._engine.recompose_document(
+            project=project, page=page, recipe=recipe, prompt_version=prompt,
+            source_candidate=source, text_document=document, reference_paths=references, run_qa=False,
+        )
+        candidate = Candidate(
+            id=str(uuid4()), job_id=job.id, project_id=source.project_id, page_id=source.page_id,
+            candidate_index=1, base_path=result.base_path, text_layer_path=result.text_layer_path,
+            composed_path=result.composed_path, prompt=result.prompt, score=result.score, rank=1,
+            status=CandidateStatus.NEEDS_REVIEW, metadata=result.metadata,
+        )
+        self._repository.save_job_results(job, [candidate], [])
+        applied = TextDocument(
+            candidate_id=candidate.id, version=1, layers=document.layers, status="applied",
+            source=document.source, ai_reasoning=document.ai_reasoning,
+        )
+        self._repository.save_text_document(applied)
+        self._invalidate_decisions(source.project_id, "文字图层已重新应用，需要重新确认", page_ids={source.page_id})
+        self._platform.set_project_status(source.project_id, ProjectStatus.REVIEWING)
+        return candidate
+
+    def run_candidate_qa(self, candidate_id: str) -> QAResult:
+        candidate = self._repository.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        project = self._platform.get_project(candidate.project_id)
+        page = self._page(candidate.project_id, candidate.page_id)
+        source_job = self._repository.get_job(candidate.job_id)
+        if source_job is None:
+            raise EntityNotFoundError("候选生产任务不存在")
+        recipe = self._get_recipe(source_job.recipe_id, published_required=True)
+        prompt = self._get_prompt(recipe.prompt_version_id)
+        references = [
+            self._resolve_asset(asset.storage_path)
+            for asset in self._platform.list_assets(candidate.project_id)
+            if asset.mime_type.startswith("image/")
+        ]
+        result = self._engine.inspect_candidate(
+            project=project, page=page, recipe=recipe, prompt_version=prompt,
+            candidate=candidate, reference_paths=references,
+        )
+        qa = QAResult(
+            id=str(uuid4()), candidate_id=candidate.id, status=QAStatus(result.qa_status),
+            score=result.score, issues=result.issues, evidence=result.evidence,
+            suggested_fix=result.suggested_fix, repair_applied=result.repair_applied,
+        )
+        self._repository.save_qa_result(qa)
+        self._repository.update_candidate_status(
+            candidate.id, CandidateStatus.GENERATED if qa.status is QAStatus.PASS else CandidateStatus.NEEDS_REVIEW,
+        )
+        return qa
+
+    def _page(self, project_id: str, page_id: str) -> Any:
+        plan = self._platform.get_plan(project_id)
+        page = next((item for item in plan.items if item.id == page_id), None)
+        if page is None:
+            raise EntityNotFoundError(f"页面不存在: {page_id}")
+        return page
 
     def candidate_file(self, candidate_id: str, kind: str) -> Path:
         candidate = self._repository.get_candidate(candidate_id)

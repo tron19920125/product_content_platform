@@ -179,7 +179,6 @@ def seed_showcase_projects(
                 relative_path,
                 product_reference.stat().st_size,
                 source="bundled_showcase",
-                authorization_status="authorized",
             )
             project = repository.get_project(project_id) or project
 
@@ -380,7 +379,6 @@ def _seed_azure_acceptance_project(
             relative_path,
             product_reference.stat().st_size,
             source="bundled_azure_acceptance",
-            authorization_status="authorized",
         )
         project = repository.get_project(AZURE_ACCEPTANCE_PROJECT_ID) or project
 

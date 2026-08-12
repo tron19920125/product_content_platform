@@ -50,6 +50,15 @@ class ApiTest(unittest.TestCase):
         listed = self.client.get("/api/projects").json()
         self.assertEqual(project_id, listed[0]["id"])
 
+    def test_font_catalog_exposes_preview_and_license_metadata(self) -> None:
+        response = self.client.get("/api/fonts")
+        self.assertEqual(200, response.status_code)
+        fonts = response.json()
+        self.assertGreaterEqual(len(fonts), 8)
+        self.assertTrue({"现代黑体", "宋体衬线", "艺术标题", "书法"} <= {item["category"] for item in fonts})
+        self.assertTrue(all(item["preview"] and item["license"] == "OFL-1.1" for item in fonts))
+        self.assertTrue(all(item["commercial_use"] for item in fonts))
+
     def test_create_laundry_golden_demo_is_ready_for_reference_upload(self) -> None:
         response = self.client.post("/api/demo-projects/laundry")
 
@@ -147,6 +156,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(201, uploaded.status_code)
         asset = uploaded.json()
         self.assertEqual("front.png", asset["file_name"])
+        self.assertNotIn("authorization_status", asset)
         self.assertEqual(buffer.getvalue(), self.client.get(asset["content_url"]).content)
 
         generated = self.client.post(f"/api/projects/{project['id']}/plan")

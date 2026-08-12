@@ -47,7 +47,6 @@ class PlanningApplication:
             asset for asset in self._platform.list_assets(project_id)
             if asset.mime_type.startswith("image/")
             and asset.usage in {AssetUsage.PRODUCT, AssetUsage.DETAIL}
-            and asset.authorization_status != "restricted"
         ]
         input_snapshot = {
             "profile": project.profile.to_dict(),
@@ -55,7 +54,7 @@ class PlanningApplication:
             "assets": [
                 {
                     "id": asset.id, "file_name": asset.file_name, "usage": asset.usage.value,
-                    "authorization_status": asset.authorization_status, "storage_path": asset.storage_path,
+                    "storage_path": asset.storage_path,
                 }
                 for asset in assets
             ],

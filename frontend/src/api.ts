@@ -46,7 +46,6 @@ export type Asset = {
   mime_type: string;
   size_bytes: number;
   source: string;
-  authorization_status: "unconfirmed" | "authorized" | "restricted";
   content_url: string;
   created_at: string;
 };
@@ -95,7 +94,7 @@ export type PlanningRun = {
   input_snapshot: {
     profile?: ProductProfile;
     templates?: Array<Record<string, unknown>>;
-    assets?: Array<{ id: string; file_name: string; usage: string; authorization_status: string }>;
+    assets?: Array<{ id: string; file_name: string; usage: string }>;
   };
   suggestion: {
     pages?: PlanningSuggestionPage[];
@@ -128,6 +127,15 @@ export type TemplateDefinition = {
   size: string;
   title_box: [number, number, number, number];
   body_box: [number, number, number, number];
+  text_slots: Array<{
+    id: string;
+    role: "headline" | "body" | "badge" | "caption" | "custom";
+    name: string;
+    box: [number, number, number, number];
+    required: boolean;
+    max_lines: number;
+    default_style: Record<string, unknown>;
+  }>;
   text_box: [number, number, number, number];
   product_box: [number, number, number, number];
   product_anchor_box: [number, number, number, number];
@@ -241,12 +249,12 @@ export type Candidate = {
   composed_url: string;
   background_url?: string;
   product_layer_url?: string;
-  qa: QAResult;
+  qa: QAResult | null;
   created_at: string;
 };
 
 export type TypographySettings = {
-  font_family: "system_sans" | "system_bold" | "system_serif";
+  font_family: string;
   title_font_size?: number;
   body_font_size?: number;
   title_color?: string;
@@ -258,6 +266,65 @@ export type TypographySettings = {
   title_line_spacing?: number;
   body_line_spacing?: number;
   title_body_gap?: number;
+};
+
+export type FontAsset = {
+  id: string;
+  name: string;
+  display_name: string;
+  category: string;
+  weights: number[];
+  preview: string;
+  license: string;
+  license_url: string;
+  commercial_use: boolean;
+  coverage: string;
+  installed: boolean;
+  content_url: string;
+};
+
+export type TextLayer = {
+  id: string;
+  role: "headline" | "subheadline" | "body" | "badge" | "price" | "parameter" | "caption" | "disclaimer" | "custom";
+  name: string;
+  content: string;
+  box: [number, number, number, number];
+  font_family: string;
+  font_weight: number;
+  font_size: number;
+  color: string;
+  text_align: "left" | "center" | "right";
+  vertical_align: "top" | "center" | "bottom";
+  line_height: number;
+  letter_spacing: number;
+  rotation: number;
+  opacity: number;
+  stroke_width: number;
+  stroke_color: string;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_offset_x: number;
+  shadow_offset_y: number;
+  background_color: string;
+  background_opacity: number;
+  padding: number;
+  visible: boolean;
+  locked: boolean;
+  z_index: number;
+  source: string;
+  copy_block_id: string;
+};
+
+export type TextDocument = {
+  candidate_id: string;
+  version: number;
+  layers: TextLayer[];
+  status: "draft" | "applied";
+  source: string;
+  ai_reasoning: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type StitchSettings = {
@@ -273,6 +340,7 @@ export type ReviewDecision = {
   candidate_id: string;
   decision: "approved" | "rejected";
   override_reason: string;
+  qa_disposition: "qa_completed" | "skipped_by_human";
 };
 
 export type ProductionPage = {
@@ -311,6 +379,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getPreflight: () => request<SystemPreflight>("/preflight"),
+  listFonts: () => request<FontAsset[]>("/fonts"),
   listProjects: () => request<Project[]>("/projects"),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
   createProject: (payload: unknown) =>
@@ -340,8 +409,8 @@ export const api = {
   },
   batchImportTemplateUrl: `${API_BASE}/batches-import-template`,
   listAssets: (projectId: string) => request<Asset[]>(`/projects/${projectId}/assets`),
-  uploadAsset: async (projectId: string, file: File, usage: Asset["usage"], authorizationStatus: Asset["authorization_status"]) => {
-    const query = new URLSearchParams({ file_name: file.name, usage, source: "user_upload", authorization_status: authorizationStatus });
+  uploadAsset: async (projectId: string, file: File, usage: Asset["usage"]) => {
+    const query = new URLSearchParams({ file_name: file.name, usage, source: "user_upload" });
     const response = await fetch(`${API_BASE}/projects/${projectId}/assets?${query}`, {
       method: "POST",
       headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -419,8 +488,16 @@ export const api = {
     }),
   regeneratePage: (projectId: string, pageId: string, recipeId: string, quality?: string) =>
     request<GenerationJob>(`/projects/${projectId}/pages/${pageId}/regenerate`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: true, quality }) }),
-  reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "") =>
-    request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user" }) }),
+  reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "", skipQa = false) =>
+    request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user", skip_qa: skipQa }) }),
+  getTextDocument: (candidateId: string) => request<TextDocument>(`/candidates/${candidateId}/text-document`),
+  saveTextDocument: (candidateId: string, document: Pick<TextDocument, "version" | "layers">) =>
+    request<TextDocument>(`/candidates/${candidateId}/text-document`, { method: "PUT", body: JSON.stringify({ base_version: document.version, layers: document.layers }) }),
+  aiLayoutTextDocument: (candidateId: string, instruction = "") =>
+    request<TextDocument>(`/candidates/${candidateId}/text-document/ai-layout`, { method: "POST", body: JSON.stringify({ instruction }) }),
+  applyTextDocument: (candidateId: string, version: number) =>
+    request<Candidate>(`/candidates/${candidateId}/text-document/apply`, { method: "POST", body: JSON.stringify({ version }) }),
+  runCandidateQa: (candidateId: string) => request<QAResult>(`/candidates/${candidateId}/qa`, { method: "POST" }),
   editCandidate: (candidateId: string, instruction: string, quality?: string) =>
     request<GenerationJob>(`/candidates/${candidateId}/edit`, {
       method: "POST",

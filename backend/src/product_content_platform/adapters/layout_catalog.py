@@ -35,12 +35,64 @@ def _union(first: Box, second: Box) -> Box:
     return [min(first[0], second[0]), min(first[1], second[1]), max(first[2], second[2]), max(first[3], second[3])]
 
 
+def _union_all(boxes: Iterable[Box]) -> Box:
+    rows = list(boxes)
+    if not rows:
+        return [0.08, 0.08, 0.52, 0.38]
+    result = list(rows[0])
+    for box in rows[1:]:
+        result = _union(result, box)
+    return result
+
+
+def _text_slot(value: dict[str, Any], index: int) -> dict[str, Any]:
+    role = str(value.get("role") or "custom").strip().lower()
+    if role not in {"headline", "body", "badge", "caption", "custom"}:
+        raise DomainValidationError(f"text_slots[{index}].role 无效")
+    slot_id = str(value.get("id") or f"text-{index + 1}").strip()
+    if not slot_id:
+        raise DomainValidationError(f"text_slots[{index}].id 不能为空")
+    max_lines = int(value.get("max_lines", 2 if role == "headline" else 4))
+    if not 1 <= max_lines <= 20:
+        raise DomainValidationError(f"text_slots[{index}].max_lines 必须在 1-20 之间")
+    return {
+        "id": slot_id,
+        "role": role,
+        "name": str(value.get("name") or {"headline": "标题", "body": "正文", "badge": "标签", "caption": "说明"}.get(role, "文本框")).strip(),
+        "box": _box(value.get("box") or [0.08, 0.08, 0.52, 0.20], f"text_slots[{index}].box"),
+        "required": bool(value.get("required", role in {"headline", "body"})),
+        "max_lines": max_lines,
+        "default_style": dict(value.get("default_style") or {}),
+    }
+
+
+def _text_slots(values: Iterable[dict[str, Any]] | None, title_box: Box, body_box: Box) -> list[dict[str, Any]]:
+    if values is None:
+        values = (
+            {"id": "headline", "role": "headline", "name": "标题", "box": title_box, "required": True, "max_lines": 2},
+            {"id": "body", "role": "body", "name": "正文", "box": body_box, "required": True, "max_lines": 4},
+        )
+    rows = [_text_slot(dict(value), index) for index, value in enumerate(values)]
+    if not rows:
+        raise DomainValidationError("模板至少需要一个文字预留框")
+    ids = [row["id"] for row in rows]
+    if len(ids) != len(set(ids)):
+        raise DomainValidationError("文字预留框 id 不能重复")
+    return rows
+
+
+def _legacy_text_boxes(slots: list[dict[str, Any]]) -> tuple[Box, Box]:
+    headline = next((slot["box"] for slot in slots if slot["role"] == "headline"), slots[0]["box"])
+    body = next((slot["box"] for slot in slots if slot["role"] == "body"), headline)
+    return list(headline), list(body)
+
+
 def _percent(value: float) -> int:
     return round(value * 100)
 
 
-def _composition_instruction(title_box: Box, body_box: Box, product_box: Box, product_anchor_box: Box) -> str:
-    text_box = _union(title_box, body_box)
+def _composition_instruction(text_slots: list[dict[str, Any]], product_box: Box, product_anchor_box: Box) -> str:
+    text_box = _union_all(slot["box"] for slot in text_slots)
     return (
         f"在画面横向 {_percent(text_box[0])}%-{_percent(text_box[2])}%、纵向 "
         f"{_percent(text_box[1])}%-{_percent(text_box[3])}% 保持干净低细节留白；"
@@ -64,12 +116,15 @@ def _template(
     product_anchor_box: Box,
     safe_area_box: Box,
     scene_prompt_hint: str,
+    text_slots: list[dict[str, Any]] | None = None,
     version: int = 1,
     status: str = "published",
     is_builtin: bool = True,
     base_template_id: str = "",
 ) -> dict[str, Any]:
     timestamp = _now()
+    normalized_slots = _text_slots(text_slots, title_box, body_box)
+    title_box, body_box = _legacy_text_boxes(normalized_slots)
     return {
         "id": template_id,
         "template_key": template_key,
@@ -81,10 +136,11 @@ def _template(
         "safe_area_box": safe_area_box,
         "title_box": title_box,
         "body_box": body_box,
-        "text_box": _union(title_box, body_box),
+        "text_slots": normalized_slots,
+        "text_box": _union_all(slot["box"] for slot in normalized_slots),
         "product_box": product_box,
         "product_anchor_box": product_anchor_box,
-        "composition_instruction": _composition_instruction(title_box, body_box, product_box, product_anchor_box),
+        "composition_instruction": _composition_instruction(normalized_slots, product_box, product_anchor_box),
         "scene_prompt_hint": scene_prompt_hint,
         "typography": {
             "font_family": "system_sans",
@@ -304,6 +360,7 @@ class LayoutContentCatalog:
         base_template_id: str = "",
         title_box: list[float] | None = None,
         body_box: list[float] | None = None,
+        text_slots: list[dict[str, Any]] | None = None,
         product_box: list[float] | None = None,
         product_anchor_box: list[float] | None = None,
         safe_area_box: list[float] | None = None,
@@ -327,6 +384,7 @@ class LayoutContentCatalog:
             name=clean_name, page_types=clean_page_types, layout=str((base or {}).get("layout") or "custom"),
             title_box=_box(title_box or (base or {}).get("title_box") or default_title, "title_box"),
             body_box=_box(body_box or (base or {}).get("body_box") or default_body, "body_box"),
+            text_slots=text_slots if text_slots is not None else (base or {}).get("text_slots"),
             product_box=_box(product_box or (base or {}).get("product_box") or default_product, "product_box"),
             product_anchor_box=_box(product_anchor_box or (base or {}).get("product_anchor_box") or default_anchor, "product_anchor_box"),
             safe_area_box=_box(safe_area_box or (base or {}).get("safe_area_box") or [.055, .045, .945, .955], "safe_area_box"),
@@ -348,6 +406,10 @@ class LayoutContentCatalog:
         for field in ("title_box", "body_box", "product_box", "product_anchor_box", "safe_area_box"):
             if field in changes and changes[field] is not None:
                 item[field] = _box(changes[field], field)
+        if "text_slots" in changes and changes["text_slots"] is not None:
+            item["text_slots"] = _text_slots(changes["text_slots"], item["title_box"], item["body_box"])
+        elif "title_box" in changes or "body_box" in changes:
+            item["text_slots"] = _text_slots(None, item["title_box"], item["body_box"])
         if "name" in changes:
             clean_name = str(changes["name"]).strip()
             if not clean_name:
@@ -357,9 +419,10 @@ class LayoutContentCatalog:
             item["page_types"] = list(dict.fromkeys(str(value).strip() for value in changes["page_types"] if str(value).strip()))
         if "scene_prompt_hint" in changes:
             item["scene_prompt_hint"] = str(changes["scene_prompt_hint"]).strip()
-        item["text_box"] = _union(item["title_box"], item["body_box"])
+        item["title_box"], item["body_box"] = _legacy_text_boxes(item["text_slots"])
+        item["text_box"] = _union_all(slot["box"] for slot in item["text_slots"])
         item["safe_area"] = round(item["safe_area_box"][0], 4)
-        item["composition_instruction"] = _composition_instruction(item["title_box"], item["body_box"], item["product_box"], item["product_anchor_box"])
+        item["composition_instruction"] = _composition_instruction(item["text_slots"], item["product_box"], item["product_anchor_box"])
         item["updated_at"] = _now()
         self._validate_geometry(item)
         self._persist()
@@ -403,7 +466,7 @@ class LayoutContentCatalog:
 
     def _validate_geometry(self, item: dict[str, Any]) -> None:
         safe = item["safe_area_box"]
-        if not _contains(safe, item["title_box"]) or not _contains(safe, item["body_box"]):
+        if not all(_contains(safe, slot["box"]) for slot in item["text_slots"]):
             raise DomainValidationError("标题框和正文框必须位于安全区域内")
         if not _contains(item["product_box"], item["product_anchor_box"]):
             raise DomainValidationError("商品核心区必须位于商品允许区域内")
@@ -461,16 +524,18 @@ class LayoutContentCatalog:
         safe = _box(source.get("safe_area_box") or [.055, .045, .945, .955], "safe_area_box")
         product = _box(source.get("product_box") or [.45, .18, .94, .94], "product_box")
         anchor = _box(source.get("product_anchor_box") or product, "product_anchor_box")
+        slots = _text_slots(source.get("text_slots"), title, body)
+        title, body = _legacy_text_boxes(slots)
         timestamp = str(source.get("created_at") or _now())
         return {
             **source,
             "template_key": str(source.get("template_key") or source["id"]),
             "library_id": library["id"],
             "width": library["width"], "height": library["height"], "size": library["size"],
-            "title_box": title, "body_box": body, "text_box": _union(title, body),
+            "title_box": title, "body_box": body, "text_slots": slots, "text_box": _union_all(slot["box"] for slot in slots),
             "safe_area_box": safe, "safe_area": round(safe[0], 4),
             "product_box": product, "product_anchor_box": anchor,
-            "composition_instruction": str(source.get("composition_instruction") or _composition_instruction(title, body, product, anchor)),
+            "composition_instruction": str(source.get("composition_instruction") or _composition_instruction(slots, product, anchor)),
             "scene_prompt_hint": str(source.get("scene_prompt_hint") or "生成具有真实空间层次、自然光和克制陈设的高端商品场景"),
             "typography": dict(source.get("typography") or {}),
             "version": int(source.get("version", 1)), "status": str(source.get("status") or "published"),
@@ -492,6 +557,7 @@ class LayoutContentCatalog:
             "width": library["width"], "height": library["height"], "size": library["size"],
             "page_types": list(item["page_types"]),
             "title_box": list(item["title_box"]), "body_box": list(item["body_box"]), "text_box": list(item["text_box"]),
+            "text_slots": deepcopy(item["text_slots"]),
             "safe_area_box": list(item["safe_area_box"]), "product_box": list(item["product_box"]), "product_anchor_box": list(item["product_anchor_box"]),
         }
 

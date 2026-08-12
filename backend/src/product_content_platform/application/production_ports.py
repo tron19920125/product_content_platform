@@ -14,6 +14,7 @@ from product_content_platform.domain import (
     QAResult,
     Recipe,
     ReviewDecision,
+    TextDocument,
 )
 
 
@@ -87,6 +88,39 @@ class PageProductionEngine(Protocol):
         typography: dict[str, Any] | None = None,
     ) -> ProducedCandidate: ...
 
+    def suggest_text_document(
+        self,
+        *,
+        candidate: Candidate,
+        page: PageItem,
+        instruction: str = "",
+        current: TextDocument | None = None,
+    ) -> TextDocument: ...
+
+    def recompose_document(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        source_candidate: Candidate,
+        text_document: TextDocument,
+        reference_paths: list[Path],
+        run_qa: bool = False,
+    ) -> ProducedCandidate: ...
+
+    def inspect_candidate(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        candidate: Candidate,
+        reference_paths: list[Path],
+    ) -> ProducedCandidate: ...
+
     def edit_candidate(
         self,
         *,
@@ -143,5 +177,10 @@ class ProductionRepository(Protocol):
     def get_candidate(self, candidate_id: str) -> Candidate | None: ...
     def list_candidates(self, project_id: str, page_id: str | None = None) -> list[Candidate]: ...
     def get_qa_result(self, candidate_id: str) -> QAResult | None: ...
+    def save_qa_result(self, result: QAResult) -> None: ...
+    def update_candidate_status(self, candidate_id: str, status: Any) -> None: ...
+    def save_text_document(self, document: TextDocument) -> None: ...
+    def get_text_document(self, candidate_id: str, version: int | None = None) -> TextDocument | None: ...
+    def list_text_documents(self, candidate_id: str) -> list[TextDocument]: ...
     def save_decision(self, decision: ReviewDecision) -> None: ...
     def list_decisions(self, project_id: str) -> list[ReviewDecision]: ...

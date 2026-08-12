@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from product_content_platform.adapters import (
     FixedContentCatalog,
+    FontCatalog,
     AzureImageGenerator,
     ProductQualityToolkit,
     LocalArchiveExporter,
@@ -193,6 +194,7 @@ class TemplateDraftCreatePayload(BaseModel):
     base_template_id: str = ""
     title_box: list[float] | None = None
     body_box: list[float] | None = None
+    text_slots: list[dict[str, Any]] | None = None
     product_box: list[float] | None = None
     product_anchor_box: list[float] | None = None
     safe_area_box: list[float] | None = None
@@ -206,6 +208,7 @@ class TemplateDraftUpdatePayload(BaseModel):
     page_types: list[str] | None = None
     title_box: list[float] | None = None
     body_box: list[float] | None = None
+    text_slots: list[dict[str, Any]] | None = None
     product_box: list[float] | None = None
     product_anchor_box: list[float] | None = None
     safe_area_box: list[float] | None = None
@@ -267,6 +270,26 @@ class ReviewPayload(BaseModel):
     decision: ReviewDecisionType
     override_reason: str = ""
     reviewer: str = "local-user"
+    skip_qa: bool = False
+
+
+class TextDocumentSavePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int = Field(ge=0)
+    layers: list[dict[str, Any]] = Field(max_length=40)
+
+
+class TextDocumentAiLayoutPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(default="", max_length=1000)
+
+
+class TextDocumentApplyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
 
 
 class RecipeCandidatePayload(BaseModel):
@@ -289,6 +312,7 @@ def create_app(
     effective_asset_root = asset_root or (effective_database.parent / "assets" if database_path else settings.asset_root)
     effective_production_root = production_root or (effective_database.parent / "production" if database_path else settings.production_root)
     effective_export_root = export_root or (effective_database.parent / "exports" if database_path else settings.export_root)
+    font_catalog = FontCatalog(effective_database.parent / "fonts")
     assets = LocalAssetStore(effective_asset_root)
     imports = SkuImportParser()
     catalog = FixedContentCatalog(effective_database.parent / "templates.json")
@@ -303,6 +327,7 @@ def create_app(
         generator,
         ProductQualityToolkit(mode=settings.qa_mode),
         template_resolver=catalog.template,
+        font_resolver=lambda font_id: font_catalog.path(font_id),
     )
     exporter = LocalArchiveExporter(effective_export_root)
     production = ProductionApplication(
@@ -332,6 +357,7 @@ def create_app(
     app.state.assets = assets
     app.state.production = production
     app.state.planning = planning
+    app.state.fonts = font_catalog
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -347,6 +373,21 @@ def create_app(
     @app.get("/api/preflight")
     def preflight() -> dict[str, Any]:
         return run_preflight(settings)
+
+    @app.get("/api/fonts")
+    def list_fonts() -> list[dict[str, Any]]:
+        return font_catalog.list()
+
+    @app.get("/api/fonts/{font_id}/content")
+    def font_content(font_id: str) -> FileResponse:
+        try:
+            font = font_catalog.get(font_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="字体不存在") from exc
+        path = font_catalog.path(font_id)
+        if path is None:
+            raise HTTPException(status_code=503, detail=f"{font['display_name']} 暂未安装，请检查网络后重试")
+        return FileResponse(path, media_type="font/ttf", filename=path.name)
 
     @app.post("/api/projects", status_code=201)
     def create_project(payload: ProjectCreatePayload) -> dict[str, Any]:
@@ -403,7 +444,6 @@ def create_app(
         file_name: str = Query(min_length=1),
         usage: AssetUsage = AssetUsage.PRODUCT,
         source: str = Query(default="user_upload", min_length=1, max_length=80),
-        authorization_status: str = Query(default="unconfirmed", pattern="^(unconfirmed|authorized|restricted)$"),
     ) -> dict[str, Any]:
         content = await request.body()
         try:
@@ -417,7 +457,6 @@ def create_app(
                 storage_path,
                 len(content),
                 source,
-                authorization_status,
             )
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -755,9 +794,54 @@ def create_app(
     def review_candidate(candidate_id: str, payload: ReviewPayload) -> dict[str, Any]:
         try:
             decision = production.review_candidate(
-                candidate_id, payload.decision, payload.override_reason, payload.reviewer
+                candidate_id, payload.decision, payload.override_reason, payload.reviewer, payload.skip_qa
             )
             return decision_to_dict(decision)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/candidates/{candidate_id}/text-document")
+    def get_text_document(candidate_id: str) -> dict[str, Any]:
+        try:
+            return production.get_text_document(candidate_id).to_dict()
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/candidates/{candidate_id}/text-document")
+    def save_text_document(candidate_id: str, payload: TextDocumentSavePayload) -> dict[str, Any]:
+        try:
+            return production.save_text_document(
+                candidate_id, layers=payload.layers, base_version=payload.base_version,
+            ).to_dict()
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/text-document/ai-layout")
+    def ai_layout_text_document(candidate_id: str, payload: TextDocumentAiLayoutPayload) -> dict[str, Any]:
+        try:
+            return production.ai_layout_text_document(candidate_id, payload.instruction).to_dict()
+        except (DomainValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/text-document/apply")
+    def apply_text_document(candidate_id: str, payload: TextDocumentApplyPayload) -> dict[str, Any]:
+        try:
+            return candidate_to_dict(production.apply_text_document(candidate_id, payload.version))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/qa")
+    def run_candidate_qa(candidate_id: str) -> dict[str, Any]:
+        try:
+            return qa_to_dict(production.run_candidate_qa(candidate_id)) or {}
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -1010,7 +1094,6 @@ def asset_to_dict(asset: Asset) -> dict[str, Any]:
         "mime_type": asset.mime_type,
         "size_bytes": asset.size_bytes,
         "source": asset.source,
-        "authorization_status": asset.authorization_status,
         "content_url": f"/api/assets/{asset.id}/content",
         "created_at": asset.created_at.isoformat(),
     }
@@ -1192,6 +1275,7 @@ def decision_to_dict(decision: ReviewDecision | None) -> dict[str, Any] | None:
         "candidate_id": decision.candidate_id,
         "decision": decision.decision.value,
         "override_reason": decision.override_reason,
+        "qa_disposition": decision.qa_disposition,
         "reviewer": decision.reviewer,
         "created_at": decision.created_at.isoformat(),
     }

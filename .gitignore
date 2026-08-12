@@ -13,3 +13,4 @@ frontend/vite.config.d.ts
 .run/
 data/
 .env
+.codex/
