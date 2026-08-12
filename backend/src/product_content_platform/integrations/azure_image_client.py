@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,6 +39,7 @@ TRANSIENT_IMAGE_ERRORS = (
     urllib.error.URLError,
 )
 _IMAGE_REQUEST_LOCK = threading.Lock()
+_INPUT_FIDELITY_UNSUPPORTED_TARGETS: set[str] = set()
 TokenProvider = Callable[[], str]
 
 
@@ -53,6 +54,7 @@ class GeneratedImage:
     elapsed_seconds: float
     usage: dict[str, Any]
     response: dict[str, Any]
+    request: dict[str, Any] = field(default_factory=dict)
 
 
 def default_generation_endpoint(
@@ -201,6 +203,7 @@ def generate_image(
         elapsed_seconds=elapsed_seconds,
         usage=response_payload.get("usage", {}),
         response=response_payload,
+        request=request_payload,
     )
 
 
@@ -234,9 +237,6 @@ def edit_image(
         "n": 1,
         "output_format": output_format,
     }
-    if input_fidelity:
-        request_payload["input_fidelity"] = input_fidelity
-
     raw_url = (
         endpoint
         or os.environ.get("AZURE_OPENAI_IMAGE_EDIT_ENDPOINT")
@@ -244,19 +244,43 @@ def edit_image(
         or default_edit_endpoint()
     )
     url = normalize_image_endpoint(to_edit_endpoint(raw_url))
+    deployment = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "").strip()
+    fidelity_target = f"{url}|{deployment}".casefold()
+    if (
+        input_fidelity
+        and _deployment_supports_input_fidelity(deployment)
+        and fidelity_target not in _INPUT_FIDELITY_UNSUPPORTED_TARGETS
+    ):
+        request_payload["input_fidelity"] = input_fidelity
     if "/openai/v1/images/" in url:
         request_payload["model"] = _image_deployment()
     content_type, body = build_multipart_body(request_payload, reference_image_paths)
     started = time.perf_counter()
-    response_payload = _post_multipart_with_retry(
-        url,
-        body,
-        content_type,
-        resolved_token,
-        resolved_key,
-        token_provider,
-        timeout,
-    )
+    try:
+        response_payload = _post_multipart_with_retry(
+            url,
+            body,
+            content_type,
+            resolved_token,
+            resolved_key,
+            token_provider,
+            timeout,
+        )
+    except AzureImageGenerationError as exc:
+        if "input_fidelity" not in request_payload or not _is_input_fidelity_unsupported_error(exc):
+            raise
+        _INPUT_FIDELITY_UNSUPPORTED_TARGETS.add(fidelity_target)
+        request_payload.pop("input_fidelity", None)
+        content_type, body = build_multipart_body(request_payload, reference_image_paths)
+        response_payload = _post_multipart_with_retry(
+            url,
+            body,
+            content_type,
+            resolved_token,
+            resolved_key,
+            token_provider,
+            timeout,
+        )
 
     elapsed_seconds = round(time.perf_counter() - started, 3)
     result = save_generated_image(response_payload, output_dir, f"edited_{time.strftime('%Y%m%d_%H%M%S')}")
@@ -285,6 +309,24 @@ def edit_image(
         elapsed_seconds=elapsed_seconds,
         usage=response_payload.get("usage", {}),
         response=response_payload,
+        request=request_payload,
+    )
+
+
+def _deployment_supports_input_fidelity(deployment: str) -> bool:
+    """GPT-Image-2 rejects the edit-only input_fidelity form field."""
+    normalized = deployment.strip().casefold().replace("_", "-")
+    if not normalized:
+        return True
+    return "gpt-image-2" not in normalized and "gpt-image-1-mini" not in normalized
+
+
+def _is_input_fidelity_unsupported_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return "input_fidelity" in message and (
+        "invalid_input_fidelity_model" in message
+        or "does not support" in message
+        or "not supported" in message
     )
 
 

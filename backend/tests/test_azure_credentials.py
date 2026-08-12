@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -276,6 +277,75 @@ class AzureCredentialTest(unittest.TestCase):
 
         self.assertEqual(2, urlopen.call_count)
         self.assertEqual(b"image-bytes", result_bytes)
+
+    def test_gpt_image_2_edit_omits_unsupported_input_fidelity(self) -> None:
+        response = _HttpResponse(
+            {"data": [{"b64_json": base64.b64encode(b"edited-image").decode("ascii")}]}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.png"
+            reference.write_bytes(b"png-bytes")
+            with patch.dict(
+                os.environ,
+                {"AZURE_OPENAI_IMAGE_DEPLOYMENT": "gpt-image-2"},
+                clear=False,
+            ):
+                with patch("urllib.request.urlopen", return_value=response) as urlopen:
+                    result = edit_image(
+                        prompt="edit",
+                        reference_image_path=reference,
+                        output_dir=root,
+                        api_key="test-key",
+                        endpoint="https://example.services.ai.azure.com/openai/v1/images/edits",
+                        input_fidelity="high",
+                    )
+
+        request = urlopen.call_args.args[0]
+        self.assertNotIn(b'name="input_fidelity"', request.data)
+        self.assertIn(b'name="size"\r\n\r\n2048x2048', request.data)
+        self.assertIn(b'name="quality"\r\n\r\nhigh', request.data)
+        self.assertNotIn("input_fidelity", result.request)
+        self.assertEqual("gpt-image-2", result.request["model"])
+
+    def test_unknown_deployment_retries_once_without_input_fidelity_when_rejected(self) -> None:
+        response = _HttpResponse(
+            {"data": [{"b64_json": base64.b64encode(b"edited-image").decode("ascii")}]}
+        )
+        error_payload = json.dumps({
+            "error": {
+                "message": "The model does not support the input_fidelity parameter.",
+                "code": "invalid_input_fidelity_model",
+            }
+        }).encode("utf-8")
+        unsupported = urllib.error.HTTPError(
+            "https://example.test/images/edits", 400, "Bad Request", {}, BytesIO(error_payload)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.png"
+            reference.write_bytes(b"png-bytes")
+            with patch.dict(
+                os.environ,
+                {"AZURE_OPENAI_IMAGE_DEPLOYMENT": "custom-image-alias"},
+                clear=False,
+            ):
+                with patch(
+                    "urllib.request.urlopen", side_effect=[unsupported, response]
+                ) as urlopen:
+                    result = edit_image(
+                        prompt="edit",
+                        reference_image_path=reference,
+                        output_dir=root,
+                        api_key="test-key",
+                        endpoint="https://example.test/images/edits",
+                        input_fidelity="high",
+                    )
+
+        self.assertEqual(2, urlopen.call_count)
+        self.assertIn(b'name="input_fidelity"', urlopen.call_args_list[0].args[0].data)
+        self.assertNotIn(b'name="input_fidelity"', urlopen.call_args_list[1].args[0].data)
+        self.assertNotIn("input_fidelity", result.request)
 
 
 if __name__ == "__main__":
