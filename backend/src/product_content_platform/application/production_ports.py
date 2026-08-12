@@ -49,6 +49,19 @@ class BaseImageGenerator(Protocol):
         reference_strategy: str,
     ) -> dict[str, Any]: ...
 
+    def edit(
+        self,
+        *,
+        prompt: str,
+        profile: ProductProfile,
+        source_base_path: Path,
+        reference_paths: list[Path],
+        output_path: Path,
+        size: str,
+        quality: str,
+        layout: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
 
 class PageProductionEngine(Protocol):
     def execute(
@@ -72,6 +85,20 @@ class PageProductionEngine(Protocol):
         source_candidate: Candidate,
         reference_paths: list[Path],
         typography: dict[str, Any] | None = None,
+    ) -> ProducedCandidate: ...
+
+    def edit_candidate(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        source_candidate: Candidate,
+        instruction: str,
+        quality: str,
+        reference_paths: list[Path],
+        progress: Callable[[str, int, dict[str, Any]], None] | None = None,
     ) -> ProducedCandidate: ...
 
     def resolve(self, relative_path: str) -> Path: ...

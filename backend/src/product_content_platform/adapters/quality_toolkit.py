@@ -74,6 +74,31 @@ class ProductQualityToolkit:
                 return fallback
         return self._fallback_review_plan(prompt, mode="generate").to_dict()
 
+    def edit_review_plan(
+        self,
+        prompt: str,
+        *,
+        source_image_path: Path,
+        product_reference_path: Path | None = None,
+    ) -> dict[str, Any]:
+        if self.mode == "azure":
+            try:
+                return self._create_review_plan(
+                    prompt,
+                    mode="edit",
+                    source_image_path=str(source_image_path),
+                    product_reference_image_path=str(product_reference_path or ""),
+                    timeout=self._positive_int_env("PCP_LLM_REVIEW_TIMEOUT", 120),
+                    max_attempts=self._positive_int_env("PCP_LLM_REVIEW_MAX_ATTEMPTS", 3),
+                    token_provider=self._openai_token_provider,
+                ).to_dict()
+            except Exception as exc:
+                fallback = self._fallback_review_plan(prompt, mode="edit").to_dict()
+                fallback["degraded"] = True
+                fallback["error"] = str(exc)
+                return fallback
+        return self._fallback_review_plan(prompt, mode="edit").to_dict()
+
     def visual_evidence(
         self,
         reference_path: Path,
@@ -154,6 +179,8 @@ class ProductQualityToolkit:
         number_allowlist: list[str],
         progress: Callable[[str], None] | None = None,
         reference_paths: list[Path] | None = None,
+        mode: str = "generate",
+        source_image_path: Path | None = None,
     ) -> dict[str, Any]:
         """Return real OCR and multimodal evidence in Azure mode, deterministic evidence locally."""
         if self.mode != "azure":
@@ -220,9 +247,10 @@ class ProductQualityToolkit:
         try:
             llm_review = self._review_image_with_llm(
                 self._review_evidence(
-                    mode="generate",
+                    mode=mode,
                     user_prompt=prompt,
                     generated_image_path=str(output_path),
+                    reference_image_path=str(source_image_path or ""),
                     product_reference_image_path=str(reference_path or ""),
                     product_reference_image_paths=[str(path) for path in all_reference_paths],
                     generated_ocr_lines=generated_ocr,

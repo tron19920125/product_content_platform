@@ -59,6 +59,14 @@ class PageStatus(StrEnum):
     READY = "ready"
 
 
+class PlanningRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DISMISSED = "dismissed"
+
+
 @dataclass(frozen=True, slots=True)
 class ProductProfile:
     sku: str
@@ -172,6 +180,23 @@ class PagePlan:
         orders = [item.order for item in self.items]
         if len(orders) != len(set(orders)):
             raise DomainValidationError("页面规划中的顺序不能重复")
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningRun:
+    id: str
+    project_id: str
+    status: PlanningRunStatus
+    layout_library_id: str
+    base_plan_version: int = 0
+    input_snapshot: dict[str, Any] = field(default_factory=dict)
+    suggestion: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+    degraded: bool = False
+    applied_fields: dict[str, list[str]] = field(default_factory=dict)
+    applied_plan_version: int = 0
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True, slots=True)

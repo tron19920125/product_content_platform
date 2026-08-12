@@ -74,6 +74,46 @@ export type PagePlan = {
   updated_at: string;
 };
 
+export type PlanningSuggestionPage = {
+  key: string;
+  page_type: PageItem["page_type"];
+  template_id: string;
+  title: string;
+  body: string;
+  visual_goal: string;
+  fact_refs: string[];
+  reasoning: string;
+  field_sources: Record<"title" | "body" | "visual_goal", "llm" | "deterministic">;
+};
+
+export type PlanningRun = {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "dismissed";
+  layout_library_id: string;
+  base_plan_version: number;
+  input_snapshot: {
+    profile?: ProductProfile;
+    templates?: Array<Record<string, unknown>>;
+    assets?: Array<{ id: string; file_name: string; usage: string; authorization_status: string }>;
+  };
+  suggestion: {
+    pages?: PlanningSuggestionPage[];
+    set_strategy?: string;
+    facts?: Array<{ id: string; label: string; value: string }>;
+    warnings?: string[];
+    source?: string;
+    degraded?: boolean;
+    error?: string;
+  };
+  error: string;
+  degraded: boolean;
+  applied_fields: Record<string, string[]>;
+  applied_plan_version: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type TemplateDefinition = {
   id: string;
   template_key: string;
@@ -202,6 +242,7 @@ export type Candidate = {
   background_url?: string;
   product_layer_url?: string;
   qa: QAResult;
+  created_at: string;
 };
 
 export type TypographySettings = {
@@ -238,6 +279,7 @@ export type ProductionPage = {
   page: PageItem;
   job: GenerationJob | null;
   candidates: Candidate[];
+  history: Candidate[];
   decision: ReviewDecision | null;
 };
 
@@ -320,6 +362,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ layout_library_id: layoutLibraryId }),
     }),
+  startPlanningRun: (projectId: string, layoutLibraryId: string) =>
+    request<PlanningRun>(`/projects/${projectId}/planning-runs`, {
+      method: "POST",
+      body: JSON.stringify({ layout_library_id: layoutLibraryId }),
+    }),
+  getPlanningRun: (projectId: string, runId: string) =>
+    request<PlanningRun>(`/projects/${projectId}/planning-runs/${runId}`),
+  listPlanningRuns: (projectId: string) =>
+    request<PlanningRun[]>(`/projects/${projectId}/planning-runs`),
+  applyPlanningRun: (projectId: string, runId: string, selectedFields?: Record<string, string[]>) =>
+    request<PagePlan>(`/projects/${projectId}/planning-runs/${runId}/apply`, {
+      method: "POST",
+      body: JSON.stringify({ selected_fields: selectedFields }),
+    }),
+  dismissPlanningRun: (projectId: string, runId: string) =>
+    request<PlanningRun>(`/projects/${projectId}/planning-runs/${runId}/dismiss`, { method: "POST" }),
   savePlan: (projectId: string, plan: Pick<PagePlan, "items" | "confirmed" | "layout_library_id">) =>
     request<PagePlan>(`/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(plan) }),
   listLayoutLibraries: () => request<LayoutLibrary[]>("/layout-libraries"),
@@ -363,6 +421,11 @@ export const api = {
     request<GenerationJob>(`/projects/${projectId}/pages/${pageId}/regenerate`, { method: "POST", body: JSON.stringify({ recipe_id: recipeId, force: true, quality }) }),
   reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "") =>
     request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user" }) }),
+  editCandidate: (candidateId: string, instruction: string, quality?: string) =>
+    request<GenerationJob>(`/candidates/${candidateId}/edit`, {
+      method: "POST",
+      body: JSON.stringify({ instruction, quality }),
+    }),
   exportProject: (projectId: string) => request<{ file_name: string; download_url: string }>(`/projects/${projectId}/export`, { method: "POST" }),
   stitchProject: (projectId: string, settings: StitchSettings) =>
     request<{ file_name: string; download_url: string }>(`/projects/${projectId}/stitch`, { method: "POST", body: JSON.stringify(settings) }),

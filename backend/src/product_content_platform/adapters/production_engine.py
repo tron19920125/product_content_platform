@@ -402,6 +402,144 @@ class LocalProductionEngine:
             row["metadata"]["score_breakdown"] = ranked["score"]["breakdown"]
         return ProducedCandidate(**row)
 
+    def edit_candidate(
+        self,
+        *,
+        project: Project,
+        page: PageItem,
+        recipe: Recipe,
+        prompt_version: PromptVersion,
+        source_candidate: Candidate,
+        instruction: str,
+        quality: str,
+        reference_paths: list[Path],
+        progress: Callable[[str, int, dict[str, Any]], None] | None = None,
+    ) -> ProducedCandidate:
+        def report(stage: str, percent: int, **details: Any) -> None:
+            if progress:
+                progress(stage, max(0, min(100, percent)), details)
+
+        source_base = self.resolve(source_candidate.base_path)
+        template = self._layout_spec(page.template_id)
+        source_generator = dict(source_candidate.metadata.get("generator") or {})
+        source_effective = dict(source_candidate.metadata.get("effective_generation") or {})
+        with Image.open(source_base) as image:
+            actual_size = f"{image.width}x{image.height}"
+            source_product_bbox = tuple(
+                source_generator.get("product_bbox")
+                or self._product_anchor_box(page.template_id, image.width, image.height)
+            )
+        generation_size = str(source_effective.get("size") or source_generator.get("actual_size") or actual_size)
+        generation_quality = validate_image_quality(
+            quality or str(source_effective.get("quality") or recipe.model_params.get("quality") or "high")
+        )
+        validate_image_size(generation_size)
+        edit_prompt = self._bind_candidate_edit_prompt(
+            source_candidate.prompt, instruction, page, template
+        )
+        report("understanding_edit", 8, label="理解单图修改要求并建立验收计划")
+        if self._quality_toolkit and hasattr(self._quality_toolkit, "edit_review_plan"):
+            edit_plan = self._quality_toolkit.edit_review_plan(
+                instruction,
+                source_image_path=source_base,
+                product_reference_path=reference_paths[0] if reference_paths else None,
+            )
+        else:
+            edit_plan = {
+                "mode": "edit", "source": "production-structured", "summary": instruction,
+                "edit_target": instruction,
+                "must_preserve": ["未要求修改的商品主体、构图、背景、品牌标识和非目标区域"],
+                "review_checks": ["修改要求符合度", "商品一致性", "非目标区域稳定", "视觉质量"],
+            }
+        run_root = self._root / project.id / page.id / str(uuid4()) / "candidate_edit"
+        base_path = run_root / "base.png"
+        text_path = run_root / "text_layer.png"
+        composed_path = run_root / "composed.png"
+        report("editing_candidate", 20, label="Azure 正在以所选无字底图为输入执行定向修改")
+        generator_meta = self._generator.edit(
+            prompt=edit_prompt,
+            profile=project.profile,
+            source_base_path=source_base,
+            reference_paths=reference_paths,
+            output_path=base_path,
+            size=generation_size,
+            quality=generation_quality,
+            layout=template,
+        )
+        with Image.open(base_path) as generated_image:
+            canvas_size = generated_image.size
+            product_bbox = tuple(generator_meta.get("product_bbox") or source_product_bbox)
+            generator_meta["layout"] = {
+                "template_id": page.template_id,
+                "template_key": template.get("template_key") or page.template_id,
+                "template_version": int(template.get("version", 1)),
+                "library_id": template.get("library_id") or "",
+                "canvas_size": template.get("size") or generation_size,
+                "reserved_text_box": list(self._text_box(page.template_id, *canvas_size)),
+                "reserved_title_box": list(self._scaled_box(template.get("title_box") or template["text_box"], *canvas_size)),
+                "reserved_body_box": list(self._scaled_box(template.get("body_box") or template["text_box"], *canvas_size)),
+                "product_anchor_box": list(self._product_anchor_box(page.template_id, *canvas_size)),
+                "allowed_product_extent_box": list(self._product_box(page.template_id, *canvas_size)),
+            }
+            generator_meta["product_bbox"] = list(product_bbox)
+        report("compositing_text", 68, label="重新应用独立文字层")
+        compose_meta = self._compose(
+            base_path=base_path, text_path=text_path, output_path=composed_path,
+            page=page, product_bbox=product_bbox,
+        )
+        report("checking_edit", 76, label="对比修改前后并执行局部质检")
+        qa = self._inspect(
+            project.profile, page, reference_paths, generator_meta, compose_meta,
+            1, base_path, composed_path, edit_prompt, edit_plan,
+            progress=lambda stage, details: report(
+                stage,
+                {"checking_base_text": 78, "checking_reference": 82, "ocr_output": 86,
+                 "ocr_reference": 89, "llm_review": 92}.get(stage, 80),
+                **details,
+            ),
+            review_mode="edit",
+            source_image_path=source_base,
+        )
+        row: dict[str, Any] = {
+            "candidate_index": 1,
+            "base_path": self._relative(base_path),
+            "text_layer_path": self._relative(text_path),
+            "composed_path": self._relative(composed_path),
+            "prompt": edit_prompt,
+            "score": qa["score"],
+            "rank": 1,
+            "qa_status": qa["status"],
+            "issues": tuple(qa["issues"]),
+            "evidence": qa["evidence"],
+            "suggested_fix": qa["suggested_fix"],
+            "repair_applied": bool(compose_meta["repair_applied"]),
+            "metadata": {
+                "generator": generator_meta,
+                "composition": compose_meta,
+                "recipe_id": recipe.id,
+                "prompt_version_id": prompt_version.id,
+                "model": recipe.model,
+                "model_params": recipe.model_params,
+                "effective_generation": {
+                    "size": generation_size, "quality": generation_quality,
+                    "template_id": page.template_id, "reference_strategy": "candidate_edit",
+                    "max_auto_regenerations": 0,
+                },
+                "generation_kind": "candidate_edit",
+                "source_candidate_id": source_candidate.id,
+                "user_instruction": instruction,
+                "review_plan": edit_plan,
+                "content_review_prompt": edit_prompt,
+                "repair_prompt": "",
+            },
+        }
+        if self._quality_toolkit:
+            ranked = self._quality_toolkit.rank([row])[1]
+            row["score"] = int(ranked["score"]["overall"])
+            row["metadata"]["score_breakdown"] = ranked["score"]["breakdown"]
+        report("finalizing", 98, label="保存修改版本、文字层与质检结果")
+        return ProducedCandidate(**row)
+
     def resolve(self, relative_path: str) -> Path:
         target = (self._root / relative_path).resolve()
         if self._root not in target.parents:
@@ -719,6 +857,8 @@ class LocalProductionEngine:
         prompt: str,
         review_plan: dict[str, Any],
         progress: Callable[[str, dict[str, Any]], None] | None = None,
+        review_mode: str = "generate",
+        source_image_path: Path | None = None,
     ) -> dict[str, Any]:
         def report(stage: str, **details: Any) -> None:
             if progress:
@@ -808,7 +948,13 @@ class LocalProductionEngine:
                     product_box[0] / canvas_width, product_box[1] / canvas_height,
                     product_box[2] / canvas_width, product_box[3] / canvas_height,
                 )
-                visual_review = self._quality_toolkit.visual_evidence(reference_paths[0], output_path, target_region)
+                visual_reference = source_image_path or reference_paths[0]
+                visual_review = self._quality_toolkit.visual_evidence(visual_reference, output_path, target_region)
+            elif source_image_path:
+                report("checking_reference", label="对比修改前后与非目标区域")
+                visual_review = self._quality_toolkit.visual_evidence(
+                    source_image_path, output_path, (0.0, 0.0, 1.0, 1.0)
+                )
 
             if hasattr(self._quality_toolkit, "review_candidate"):
                 composition_provenance = {
@@ -845,6 +991,8 @@ class LocalProductionEngine:
                             "llm_review": "LLM 审查视觉质量与参考一致性",
                         }.get(stage, "执行质量审查"),
                     ),
+                    mode=review_mode,
+                    source_image_path=source_image_path,
                 )
                 text_review = combined_review.get("text_review", {})
                 llm_review = combined_review.get("llm_review", {})
@@ -1267,6 +1415,26 @@ class LocalProductionEngine:
             "JSON 字符串结束后的句号只是说明文字的分隔符，不属于文案；不得推断、补充或删除标点。"
             f"视觉目标：{page.visual_goal}。模板：{page.template_id}。构图要求：{layout_instruction}。"
             "底图不得自带文字；标题和正文必须只由后期文字层放入预留区域。"
+        )
+
+    def _bind_candidate_edit_prompt(
+        self,
+        original_prompt: str,
+        instruction: str,
+        page: PageItem,
+        template: dict[str, Any],
+    ) -> str:
+        layout_instruction = str(template.get("instruction") or "")
+        return (
+            "任务类型：基于输入候选底图的局部编辑。输入的第一张图是当前候选的无营销文字 base.png，"
+            "它定义现有商品、角度、构图、背景、光影与空间关系；其余图片是同一商品的外观和细节参考。\n"
+            f"用户新增要求：{instruction.strip()}\n"
+            f"原始生成意图（仅作上下文，不覆盖新增要求）：{original_prompt.strip()}\n"
+            f"模板构图约束：{layout_instruction}。页面视觉目标：{page.visual_goal}。\n"
+            "只修改用户明确要求的视觉内容；未点名的商品身份、数量、轮廓、比例、品牌标识、主要结构、"
+            "镜头、透视、背景、光向、材质、构图和非目标区域必须尽量保持。不要复制粘贴商品图层，"
+            "应由图像编辑模型在原底图中完成自然一致的修改。输出仍是纯视觉底图：不得生成营销标题、"
+            "正文、标语、数字标签、水印、文本框、占位符或伪文字；最终标题与正文由系统后期文字层重新排版。"
         )
 
     def _relative(self, path: Path) -> str:

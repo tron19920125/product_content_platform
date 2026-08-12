@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from product_content_platform.domain import Asset, Batch, BatchItemStatus, PagePlan, Project
+from product_content_platform.domain import Asset, Batch, BatchItemStatus, PagePlan, PlanningRun, Project
 
 
 class PlatformRepository(Protocol):
@@ -25,6 +25,12 @@ class PlatformRepository(Protocol):
     def save_plan(self, plan: PagePlan, project: Project) -> None: ...
 
     def get_plan(self, project_id: str) -> PagePlan | None: ...
+
+    def save_planning_run(self, run: PlanningRun) -> None: ...
+
+    def get_planning_run(self, run_id: str) -> PlanningRun | None: ...
+
+    def list_planning_runs(self, project_id: str) -> list[PlanningRun]: ...
 
     def save_batch(self, batch: Batch, projects: list[Project]) -> None: ...
 

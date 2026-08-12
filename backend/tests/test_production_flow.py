@@ -430,6 +430,76 @@ class ProductionFlowTest(unittest.TestCase):
             self.client.get(candidate["composed_url"]).content,
         )
 
+    def test_candidate_edit_uses_base_keeps_lineage_and_invalidates_only_after_success(self) -> None:
+        project_id = self._create_planned_project()
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        before = self.client.get(f"/api/projects/{project_id}/production").json()
+        first_row = before["pages"][0]
+        source = first_row["candidates"][0]
+        source_base = self.client.get(source["base_url"]).content
+        approved = self.client.post(
+            f"/api/candidates/{source['id']}/review",
+            json={"decision": "approved", "override_reason": "", "reviewer": "edit-test"},
+        )
+        self.assertEqual(200, approved.status_code, approved.text)
+
+        rejected_text_only = self.client.post(
+            f"/api/candidates/{source['id']}/edit",
+            json={"instruction": "把标题字号调大并改成红色"},
+        )
+        self.assertEqual(422, rejected_text_only.status_code)
+        self.assertIn("调整文字排版", rejected_text_only.json()["detail"])
+
+        edited = self.client.post(
+            f"/api/candidates/{source['id']}/edit",
+            json={"instruction": "保持商品和构图不变，把背景光线调整得更温暖柔和", "quality": "low"},
+        )
+        self.assertEqual(202, edited.status_code, edited.text)
+        self.assertEqual("candidate_edit", edited.json()["trace"]["generation_kind"])
+
+        after = self.client.get(f"/api/projects/{project_id}/production").json()
+        first_after = after["pages"][0]
+        child = first_after["candidates"][0]
+        self.assertEqual("completed", first_after["job"]["status"])
+        self.assertEqual(source["id"], child["metadata"]["source_candidate_id"])
+        self.assertEqual("candidate_edit", child["metadata"]["generation_kind"])
+        self.assertEqual("low", child["metadata"]["effective_generation"]["quality"])
+        self.assertEqual(source_base, self.client.get(source["base_url"]).content)
+        self.assertNotEqual(source["id"], child["id"])
+        self.assertEqual({source["id"], child["id"]}, {item["id"] for item in first_after["history"] if item["id"] in {source["id"], child["id"]}})
+        self.assertEqual("rejected", first_after["decision"]["decision"])
+        self.assertTrue(all(row["decision"] is None for row in after["pages"][1:]))
+
+    def test_approvals_from_an_old_plan_version_do_not_unlock_export(self) -> None:
+        project_id = self._create_planned_project()
+        self.client.post(
+            f"/api/projects/{project_id}/production/start",
+            json={"recipe_id": "commerce-detail-v1", "force": False},
+        )
+        snapshot = self.client.get(f"/api/projects/{project_id}/production").json()
+        for row in snapshot["pages"]:
+            reviewed = self.client.post(
+                f"/api/candidates/{row['candidates'][0]['id']}/review",
+                json={"decision": "approved", "override_reason": "", "reviewer": "version-test"},
+            )
+            self.assertEqual(200, reviewed.status_code, reviewed.text)
+        self.assertTrue(self.client.get(f"/api/projects/{project_id}/production").json()["ready_for_export"])
+
+        current_plan = self.client.get(f"/api/projects/{project_id}/plan").json()
+        revised = self.client.put(
+            f"/api/projects/{project_id}/plan",
+            json={
+                "items": current_plan["items"],
+                "layout_library_id": current_plan["layout_library_id"],
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(200, revised.status_code, revised.text)
+        self.assertFalse(self.client.get(f"/api/projects/{project_id}/production").json()["ready_for_export"])
+
     def test_stitch_selected_candidates_exports_full_resolution_png(self) -> None:
         project_id = self._create_planned_project()
         self.client.post(

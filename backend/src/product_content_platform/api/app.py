@@ -25,6 +25,7 @@ from product_content_platform.adapters import (
 from product_content_platform.application import (
     BatchSkuInput,
     PlatformApplication,
+    PlanningApplication,
     ProductionApplication,
     ProjectInput,
 )
@@ -50,6 +51,7 @@ from product_content_platform.domain import (
     ReviewDecisionType,
 )
 from product_content_platform.settings import Settings
+from product_content_platform.planning import ContentPlanner
 from product_content_platform.integrations.azure_preflight import run_preflight
 
 
@@ -135,6 +137,12 @@ class PagePlanGeneratePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     layout_library_id: str = "library-square-2048"
+
+
+class PlanningApplyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected_fields: dict[str, list[str]] | None = None
 
 
 class PromptCreatePayload(BaseModel):
@@ -236,6 +244,13 @@ class RecomposePayload(BaseModel):
     typography: TypographyPayload = Field(default_factory=TypographyPayload)
 
 
+class CandidateEditPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(min_length=3, max_length=1000)
+    quality: str | None = Field(default=None, pattern=r"^(low|medium|high)$")
+
+
 class StitchPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -293,6 +308,9 @@ def create_app(
     production = ProductionApplication(
         platform, production_repository, engine, exporter, assets.resolve
     )
+    planning = PlanningApplication(
+        platform, repository, ContentPlanner(settings.planning_mode), assets.resolve
+    )
     production.seed_defaults("azure-gpt-image" if settings.generation_mode == "azure" else "local-preview")
     if database_path is None:
         seed_showcase_projects(
@@ -313,6 +331,7 @@ def create_app(
     app.state.platform = platform
     app.state.assets = assets
     app.state.production = production
+    app.state.planning = planning
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -440,6 +459,58 @@ def create_app(
             if not template_ids:
                 raise DomainValidationError("版式库中没有已发布模板")
             return plan_to_dict(platform.generate_plan(project_id, library_id, template_ids))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/planning-runs", status_code=202)
+    def start_planning_run(
+        project_id: str,
+        payload: PagePlanGeneratePayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            catalog.library(payload.layout_library_id)
+            templates = catalog.templates(library_id=payload.layout_library_id)
+            run = planning.start(project_id, payload.layout_library_id, templates)
+            background_tasks.add_task(planning.process, run.id)
+            return planning_run_to_dict(run)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/planning-runs")
+    def list_planning_runs(project_id: str) -> list[dict[str, Any]]:
+        try:
+            return [planning_run_to_dict(item) for item in planning.list(project_id)]
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/planning-runs/{run_id}")
+    def get_planning_run(project_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            run = planning.get(run_id)
+            if run.project_id != project_id:
+                raise EntityNotFoundError(f"内容规划运行不存在: {run_id}")
+            return planning_run_to_dict(run)
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/planning-runs/{run_id}/apply")
+    def apply_planning_run(project_id: str, run_id: str, payload: PlanningApplyPayload) -> dict[str, Any]:
+        try:
+            return plan_to_dict(planning.apply(project_id, run_id, payload.selected_fields))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/planning-runs/{run_id}/dismiss")
+    def dismiss_planning_run(project_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return planning_run_to_dict(planning.dismiss(project_id, run_id))
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -687,6 +758,23 @@ def create_app(
                 candidate_id, payload.decision, payload.override_reason, payload.reviewer
             )
             return decision_to_dict(decision)
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/edit", status_code=202)
+    def edit_candidate(
+        candidate_id: str,
+        payload: CandidateEditPayload,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        try:
+            job = production.request_candidate_edit(
+                candidate_id, payload.instruction, quality=payload.quality
+            )
+            background_tasks.add_task(production.process_project, job.project_id)
+            return job_to_dict(job) or {}
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -954,6 +1042,29 @@ def plan_to_dict(plan: PagePlan) -> dict[str, Any]:
     }
 
 
+def planning_run_to_dict(run: Any) -> dict[str, Any]:
+    input_snapshot = dict(run.input_snapshot)
+    input_snapshot["assets"] = [
+        {key: value for key, value in asset.items() if key != "storage_path"}
+        for asset in input_snapshot.get("assets", [])
+    ]
+    return {
+        "id": run.id,
+        "project_id": run.project_id,
+        "status": run.status.value,
+        "layout_library_id": run.layout_library_id,
+        "base_plan_version": run.base_plan_version,
+        "input_snapshot": input_snapshot,
+        "suggestion": run.suggestion,
+        "error": run.error,
+        "degraded": run.degraded,
+        "applied_fields": run.applied_fields,
+        "applied_plan_version": run.applied_plan_version,
+        "created_at": run.created_at.isoformat(),
+        "updated_at": run.updated_at.isoformat(),
+    }
+
+
 def batch_to_dict(batch: Batch) -> dict[str, Any]:
     return {
         "id": batch.id,
@@ -1108,6 +1219,10 @@ def production_snapshot_to_dict(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "candidates": [
                     {**candidate_to_dict(candidate), "qa": qa_to_dict(row["qa_results"].get(candidate.id))}
                     for candidate in row["candidates"]
+                ],
+                "history": [
+                    {**candidate_to_dict(candidate), "qa": qa_to_dict(row["history_qa_results"].get(candidate.id))}
+                    for candidate in row["history"]
                 ],
                 "decision": decision_to_dict(row["decision"]),
             }

@@ -16,6 +16,8 @@ from product_content_platform.domain import (
     BatchStatus,
     PageItem,
     PagePlan,
+    PlanningRun,
+    PlanningRunStatus,
     PageStatus,
     PageType,
     ProductProfile,
@@ -157,6 +159,44 @@ class SQLitePlatformRepository:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    def save_planning_run(self, run: PlanningRun) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO planning_runs
+                    (id, project_id, status, layout_library_id, base_plan_version,
+                     input_snapshot, suggestion, error, degraded, applied_fields,
+                     applied_plan_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status, suggestion=excluded.suggestion,
+                    error=excluded.error, degraded=excluded.degraded,
+                    applied_fields=excluded.applied_fields,
+                    applied_plan_version=excluded.applied_plan_version,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    run.id, run.project_id, run.status.value, run.layout_library_id,
+                    run.base_plan_version, json.dumps(run.input_snapshot, ensure_ascii=False),
+                    json.dumps(run.suggestion, ensure_ascii=False), run.error, int(run.degraded),
+                    json.dumps(run.applied_fields, ensure_ascii=False), run.applied_plan_version,
+                    run.created_at.isoformat(), run.updated_at.isoformat(),
+                ),
+            )
+
+    def get_planning_run(self, run_id: str) -> PlanningRun | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM planning_runs WHERE id = ?", (run_id,)).fetchone()
+        return self._planning_run_from_row(row) if row else None
+
+    def list_planning_runs(self, project_id: str) -> list[PlanningRun]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM planning_runs WHERE project_id = ? ORDER BY created_at DESC",
+                (project_id,),
+            ).fetchall()
+        return [self._planning_run_from_row(row) for row in rows]
 
     def save_batch(self, batch: Batch, projects: list[Project]) -> None:
         with self._connect() as connection:
@@ -330,6 +370,24 @@ class SQLitePlatformRepository:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS planning_runs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL,
+                    layout_library_id TEXT NOT NULL,
+                    base_plan_version INTEGER NOT NULL DEFAULT 0,
+                    input_snapshot TEXT NOT NULL,
+                    suggestion TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '',
+                    degraded INTEGER NOT NULL DEFAULT 0,
+                    applied_fields TEXT NOT NULL DEFAULT '{}',
+                    applied_plan_version INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_planning_runs_project ON planning_runs(project_id, created_at DESC);
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -388,6 +446,19 @@ class SQLitePlatformRepository:
             source=row["source"],
             authorization_status=row["authorization_status"],
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    @staticmethod
+    def _planning_run_from_row(row: sqlite3.Row) -> PlanningRun:
+        return PlanningRun(
+            id=row["id"], project_id=row["project_id"], status=PlanningRunStatus(row["status"]),
+            layout_library_id=row["layout_library_id"], base_plan_version=int(row["base_plan_version"]),
+            input_snapshot=json.loads(row["input_snapshot"]), suggestion=json.loads(row["suggestion"]),
+            error=row["error"], degraded=bool(row["degraded"]),
+            applied_fields=json.loads(row["applied_fields"]),
+            applied_plan_version=int(row["applied_plan_version"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
     @staticmethod

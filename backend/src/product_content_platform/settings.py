@@ -14,6 +14,7 @@ class Settings:
     export_root: Path
     generation_mode: str
     qa_mode: str
+    planning_mode: str = "local"
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -21,10 +22,13 @@ class Settings:
         data_root = Path(os.environ.get("PCP_DATA_ROOT", default_root)).expanduser().resolve()
         generation_mode = os.environ.get("PCP_GENERATION_MODE", "local").strip().lower()
         qa_mode = os.environ.get("PCP_QA_MODE", "local").strip().lower()
+        planning_mode = os.environ.get("PCP_PLANNING_MODE", qa_mode).strip().lower()
         if generation_mode not in {"local", "azure"}:
             raise ValueError("PCP_GENERATION_MODE 必须是 local 或 azure")
         if qa_mode not in {"local", "azure"}:
             raise ValueError("PCP_QA_MODE 必须是 local 或 azure")
+        if planning_mode not in {"local", "azure"}:
+            raise ValueError("PCP_PLANNING_MODE 必须是 local 或 azure")
         return cls(
             data_root=data_root,
             database_path=data_root / "platform.db",
@@ -33,4 +37,5 @@ class Settings:
             export_root=data_root / "exports",
             generation_mode=generation_mode,
             qa_mode=qa_mode,
+            planning_mode=planning_mode,
         )

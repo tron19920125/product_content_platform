@@ -337,6 +337,52 @@ class ProductionApplication:
         self._platform.set_project_status(project_id, ProjectStatus.PRODUCING)
         return job
 
+    def request_candidate_edit(
+        self,
+        candidate_id: str,
+        instruction: str,
+        *,
+        quality: str | None = None,
+    ) -> GenerationJob:
+        source = self._repository.get_candidate(candidate_id)
+        if source is None:
+            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
+        normalized_instruction = " ".join(instruction.split()).strip()
+        if len(normalized_instruction) < 3:
+            raise DomainValidationError("请至少填写 3 个字的单图修改要求")
+        if len(normalized_instruction) > 1000:
+            raise DomainValidationError("单图修改要求不能超过 1000 字")
+        if self._is_typography_only(normalized_instruction):
+            raise DomainValidationError("这是一项文字或排版修改，请使用“调整文字排版”或修改内容规划，无需再次调用生图模型")
+        source_job = self._repository.get_job(source.job_id)
+        if source_job is None:
+            raise EntityNotFoundError(f"候选来源任务不存在: {source.job_id}")
+        project = self._platform.get_project(source.project_id)
+        plan = self._platform.get_plan(source.project_id)
+        if not plan.confirmed:
+            raise DomainValidationError("页面规划确认后才能针对候选图继续修改")
+        if not any(page.id == source.page_id for page in plan.items):
+            raise EntityNotFoundError(f"页面不存在: {source.page_id}")
+        recipe = self._get_recipe(source_job.recipe_id, published_required=True)
+        effective_quality = validate_image_quality(
+            quality
+            or str((source.metadata.get("effective_generation") or {}).get("quality") or "")
+            or str(recipe.model_params.get("quality") or "high")
+        )
+        job = GenerationJob(
+            id=str(uuid4()), project_id=project.id, page_id=source.page_id,
+            recipe_id=recipe.id, status=JobStatus.QUEUED, max_attempts=1,
+            trace={
+                "stage": "queued", "stage_label": "等待执行单图定向修改", "progress": 0,
+                "plan_version": plan.version, "generation_kind": "candidate_edit",
+                "source_candidate_id": source.id, "source_job_id": source.job_id,
+                "instruction": normalized_instruction, "quality": effective_quality,
+            },
+        )
+        self._repository.create_jobs([job])
+        self._platform.set_project_status(project.id, ProjectStatus.PRODUCING)
+        return job
+
     def recover_pending(self) -> list[str]:
         project_ids = sorted({job.project_id for job in self._repository.list_jobs() if job.status is JobStatus.QUEUED})
         for project_id in project_ids:
@@ -402,19 +448,27 @@ class ProductionApplication:
                 omitted_reference_count=omitted_reference_count,
             )
         latest = self._latest_jobs(project_id)
-        if latest and all(job.status is JobStatus.FAILED for job in latest.values()):
+        snapshot = self.get_project_production(project_id)
+        if snapshot["ready_for_export"]:
+            self._platform.set_project_status(project_id, ProjectStatus.COMPLETED)
+            snapshot = self.get_project_production(project_id)
+        elif latest and (
+            all(job.status is JobStatus.FAILED for job in latest.values())
+            or any(job.status is JobStatus.COMPLETED for job in latest.values())
+        ):
             self._platform.set_project_status(project_id, ProjectStatus.REVIEWING)
-        elif any(job.status is JobStatus.COMPLETED for job in latest.values()):
-            self._platform.set_project_status(project_id, ProjectStatus.REVIEWING)
-        return self.get_project_production(project_id)
+            snapshot = self.get_project_production(project_id)
+        return snapshot
 
     def get_project_production(self, project_id: str) -> dict[str, Any]:
         project = self._platform.get_project(project_id)
         plan = self._platform.get_plan(project_id)
+        all_jobs = self._repository.list_jobs(project_id)
+        job_by_id = {job.id: job for job in all_jobs}
         jobs = self._latest_jobs(project_id)
-        candidates = self._repository.list_candidates(project_id)
+        all_candidates = self._repository.list_candidates(project_id)
         active_job_ids = {job.id for job in jobs.values()}
-        candidates = [item for item in candidates if item.job_id in active_job_ids]
+        candidates = [item for item in all_candidates if item.job_id in active_job_ids]
         qa_results = {
             item.id: qa for item in candidates if (qa := self._repository.get_qa_result(item.id)) is not None
         }
@@ -425,12 +479,27 @@ class ProductionApplication:
             page_candidates = sorted(
                 [item for item in candidates if item.page_id == page.id], key=lambda item: item.rank
             )
+            page_history = [item for item in all_candidates if item.page_id == page.id]
+            if not page_candidates and job and job.trace.get("generation_kind") == "candidate_edit":
+                source_id = str(job.trace.get("source_candidate_id") or "")
+                source = next((item for item in page_history if item.id == source_id), None)
+                if source:
+                    page_candidates = sorted(
+                        [item for item in page_history if item.job_id == source.job_id],
+                        key=lambda item: item.rank,
+                    )
+            history_qa = {
+                item.id: qa for item in page_history
+                if (qa := self._repository.get_qa_result(item.id)) is not None
+            }
             pages.append(
                 {
                     "page": page,
                     "job": job,
                     "candidates": page_candidates,
-                    "qa_results": {item.id: qa_results.get(item.id) for item in page_candidates},
+                    "qa_results": {item.id: history_qa.get(item.id) for item in page_candidates},
+                    "history": page_history,
+                    "history_qa_results": history_qa,
                     "decision": decisions.get(page.id),
                 }
             )
@@ -439,13 +508,13 @@ class ProductionApplication:
             "plan": plan,
             "pages": pages,
             "ready_for_export": bool(pages) and all(
-                row["job"] is not None
-                and row["job"].trace.get("plan_version") == plan.version
-                and row["decision"] is not None
+                row["decision"] is not None
                 and row["decision"].decision is ReviewDecisionType.APPROVED
                 and any(
                     candidate.id == row["decision"].candidate_id
-                    for candidate in row["candidates"]
+                    and (source_job := job_by_id.get(candidate.job_id)) is not None
+                    and int(source_job.trace.get("plan_version") or 0) == plan.version
+                    for candidate in row["history"]
                 )
                 for row in pages
             ),
@@ -835,11 +904,25 @@ class ProductionApplication:
                 self._repository.update_job(current)
 
             try:
-                produced = self._engine.execute(
-                    project=project, page=page, recipe=recipe, prompt_version=prompt,
-                    reference_paths=reference_paths,
-                    progress=report_progress,
-                )
+                if current.trace.get("generation_kind") == "candidate_edit":
+                    source_id = str(current.trace.get("source_candidate_id") or "")
+                    source_candidate = self._repository.get_candidate(source_id)
+                    if source_candidate is None or source_candidate.project_id != project.id or source_candidate.page_id != page.id:
+                        raise DomainValidationError("单图修改的来源候选不存在或不属于当前页面")
+                    produced = [self._engine.edit_candidate(
+                        project=project, page=page, recipe=recipe, prompt_version=prompt,
+                        source_candidate=source_candidate,
+                        instruction=str(current.trace.get("instruction") or ""),
+                        quality=str(current.trace.get("quality") or "high"),
+                        reference_paths=reference_paths,
+                        progress=report_progress,
+                    )]
+                else:
+                    produced = self._engine.execute(
+                        project=project, page=page, recipe=recipe, prompt_version=prompt,
+                        reference_paths=reference_paths,
+                        progress=report_progress,
+                    )
                 candidates: list[Candidate] = []
                 qa_results: list[QAResult] = []
                 for result in produced:
@@ -872,7 +955,11 @@ class ProductionApplication:
                     trace={
                         **current.trace,
                         "stage": "completed",
-                        "stage_label": "生成与质检已完成",
+                        "stage_label": (
+                            "单图定向修改与质检已完成"
+                            if current.trace.get("generation_kind") == "candidate_edit"
+                            else "生成与质检已完成"
+                        ),
                         "progress": 100,
                         "candidate_count": len(candidates),
                         "completed_at": now().isoformat(),
@@ -880,6 +967,10 @@ class ProductionApplication:
                     updated_at=now(),
                 )
                 self._repository.save_job_results(completed, candidates, qa_results)
+                if current.trace.get("generation_kind") == "candidate_edit":
+                    self._invalidate_decisions(
+                        project.id, "候选图完成定向修改后需要重新确认", page_ids={page.id}
+                    )
                 return
             except Exception as exc:
                 current = replace(
@@ -902,6 +993,20 @@ class ProductionApplication:
         except ValueError:
             configured = 6
         return max(1, min(16, configured))
+
+    @staticmethod
+    def _is_typography_only(instruction: str) -> bool:
+        typography_terms = {
+            "文字", "文案", "标题", "正文", "字体", "字号", "颜色", "行距", "字距",
+            "排版", "对齐", "加粗", "标点", "句号", "逗号", "文本", "换行",
+        }
+        visual_terms = {
+            "背景", "场景", "商品", "产品", "角度", "光线", "光影", "材质", "颜色氛围",
+            "构图", "镜头", "透视", "道具", "家具", "环境", "阴影", "反射", "门", "效果",
+        }
+        return any(term in instruction for term in typography_terms) and not any(
+            term in instruction for term in visual_terms
+        )
 
     def _delivery_files(self, snapshot: dict[str, Any], prefix: str) -> tuple[dict[str, Path], dict[str, Any], list[dict[str, Any]]]:
         files: dict[str, Path] = {}

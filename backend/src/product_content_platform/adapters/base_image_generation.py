@@ -112,6 +112,44 @@ class LocalBaseImageGenerator:
             "local_reference_emulation": bool(reference_paths),
         }
 
+    def edit(
+        self,
+        *,
+        prompt: str,
+        profile: ProductProfile,
+        source_base_path: Path,
+        reference_paths: list[Path],
+        output_path: Path,
+        size: str,
+        quality: str,
+        layout: dict[str, Any],
+    ) -> dict[str, Any]:
+        _ = profile, layout
+        width, height = validate_image_size(size)
+        quality = validate_image_quality(quality)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(source_base_path) as source:
+            edited = source.convert("RGB")
+            if edited.size != (width, height):
+                edited = ImageOps.fit(edited, (width, height), method=Image.Resampling.LANCZOS)
+            # A tiny deterministic color treatment makes offline before/after evidence visible
+            # without synthesizing or pasting a replacement product.
+            edited = ImageEnhance.Color(edited).enhance(1.03)
+            edited.save(output_path, format="PNG")
+        return {
+            "provider": "local-preview-edit",
+            "source_base_path": str(source_base_path),
+            "source_references": [str(path) for path in reference_paths],
+            "reference_count": len(reference_paths),
+            "prompt_chars": len(prompt),
+            "requested_size": size,
+            "actual_size": f"{width}x{height}",
+            "quality": quality,
+            "reference_strategy": "candidate_edit",
+            "product_generated_by_model": True,
+            "product_bbox_source": "preserved_from_source",
+        }
+
 
 class AzureImageGenerator:
     """Azure image-generation adapter owned by the platform."""
@@ -238,6 +276,75 @@ class AzureImageGenerator:
         if product_bbox is not None:
             metadata["product_bbox"] = product_bbox
         return metadata
+
+    def edit(
+        self,
+        *,
+        prompt: str,
+        profile: ProductProfile,
+        source_base_path: Path,
+        reference_paths: list[Path],
+        output_path: Path,
+        size: str,
+        quality: str,
+        layout: dict[str, Any],
+    ) -> dict[str, Any]:
+        _ = profile, layout
+        from product_content_platform.integrations.azure_image_client import default_edit_endpoint, edit_image, to_edit_endpoint
+        from product_content_platform.integrations.azure_credentials import token_provider_from_env
+
+        width, height = validate_image_size(size)
+        quality = validate_image_quality(quality)
+        valid_references = [
+            path for path in reference_paths
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ]
+        reference_limit = _reference_limit()
+        selected = valid_references[:max(0, reference_limit - 1)]
+        configured_generation = os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT", "")
+        endpoint = (
+            os.environ.get("AZURE_OPENAI_IMAGE_EDIT_ENDPOINT", "")
+            or (to_edit_endpoint(configured_generation) if configured_generation else "")
+            or default_edit_endpoint()
+        )
+        token_provider = token_provider_from_env(endpoint=endpoint)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = edit_image(
+            prompt=prompt,
+            reference_image_path=source_base_path,
+            additional_reference_paths=selected,
+            output_dir=output_path.parent,
+            bearer_token=os.environ.get("AZURE_OPENAI_BEARER_TOKEN", ""),
+            api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
+            token_provider=token_provider,
+            endpoint=endpoint,
+            quality=quality,
+            size=size,
+            input_fidelity="high",
+        )
+        shutil.copyfile(result.image_path, output_path)
+        with Image.open(output_path) as image:
+            actual = image.size
+        if actual != (width, height):
+            raise RuntimeError(f"Azure 返回尺寸与模板不一致：请求 {width}x{height}，实际 {actual[0]}x{actual[1]}")
+        return {
+            "provider": "azure-gpt-image-edit",
+            "source_base_path": str(source_base_path),
+            "source_reference": str(source_base_path),
+            "source_references": [str(path) for path in selected],
+            "reference_count": len(selected) + 1,
+            "reference_limit": reference_limit,
+            "omitted_reference_count": max(0, len(valid_references) - len(selected)),
+            "input_fidelity": "high",
+            "elapsed_seconds": result.elapsed_seconds,
+            "usage": result.usage,
+            "requested_size": size,
+            "actual_size": f"{actual[0]}x{actual[1]}",
+            "quality": quality,
+            "reference_strategy": "candidate_edit",
+            "product_generated_by_model": True,
+            "product_bbox_source": "preserved_from_source",
+        }
 
 
 def _reference_limit() -> int:
