@@ -264,8 +264,10 @@ class ProductionFlowTest(unittest.TestCase):
         document = loaded.json()
         self.assertEqual(1, document["version"])
         self.assertEqual({"headline", "body"}, {layer["role"] for layer in document["layers"]})
-        self.assertEqual("candidate", document["source"])
+        self.assertEqual("ai", document["source"])
         composition = source["metadata"]["composition"]
+        self.assertEqual("ai", composition["text_document_source"])
+        self.assertIn("排版方案", document["ai_reasoning"])
         headline = next(layer for layer in document["layers"] if layer["role"] == "headline")
         body = next(layer for layer in document["layers"] if layer["role"] == "body")
         self.assertEqual(composition["font_family"], headline["font_family"])
@@ -306,6 +308,11 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertEqual(200, ai_layout.status_code, ai_layout.text)
         self.assertEqual(3, ai_layout.json()["version"])
         self.assertIn("国风标题", ai_layout.json()["ai_reasoning"])
+        ai_headline = next(layer for layer in ai_layout.json()["layers"] if layer["role"] == "headline")
+        self.assertEqual("ma-shan-zheng", ai_headline["font_family"])
+        self.assertEqual("normal", ai_headline["font_style"])
+        self.assertFalse(ai_headline["underline"])
+        self.assertFalse(ai_headline["strikethrough"])
 
         applied = self.client.post(
             f"/api/candidates/{source['id']}/text-document/apply",
@@ -319,12 +326,12 @@ class ProductionFlowTest(unittest.TestCase):
             if layer["role"] == "headline"
         )
         self.assertEqual("ma-shan-zheng", title_composition["font_family"])
-        self.assertEqual(700, title_composition["font_weight"])
-        self.assertEqual("italic", title_composition["font_style"])
-        self.assertTrue(title_composition["underline"])
-        self.assertTrue(title_composition["strikethrough"])
-        self.assertEqual(12, title_composition["stroke_width"])
-        self.assertEqual("#FFFFFF", title_composition["stroke_color"])
+        self.assertEqual(500, title_composition["font_weight"])
+        self.assertEqual("normal", title_composition["font_style"])
+        self.assertFalse(title_composition["underline"])
+        self.assertFalse(title_composition["strikethrough"])
+        self.assertEqual(0, title_composition["stroke_width"])
+        self.assertEqual("#181F1C", title_composition["stroke_color"])
         active = self.client.get(f"/api/projects/{project_id}/production").json()["pages"][0]["candidates"][0]
         self.assertEqual(edited["id"], active["id"])
         self.assertIsNone(active["qa"])

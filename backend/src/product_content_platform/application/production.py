@@ -1079,6 +1079,7 @@ class ProductionApplication:
                     )
                 candidates: list[Candidate] = []
                 qa_results: list[QAResult] = []
+                initial_text_documents: list[TextDocument] = []
                 for result in produced:
                     generator_metadata = result.metadata.get("generator") or {}
                     generator_metadata["available_reference_count"] = (
@@ -1086,17 +1087,20 @@ class ProductionApplication:
                     )
                     generator_metadata["omitted_reference_count"] = omitted_reference_count
                     candidate_id = str(uuid4())
-                    candidates.append(
-                        Candidate(
-                            id=candidate_id, job_id=current.id, project_id=current.project_id,
-                            page_id=current.page_id, candidate_index=result.candidate_index,
-                            base_path=result.base_path, text_layer_path=result.text_layer_path,
-                            composed_path=result.composed_path, prompt=result.prompt, score=result.score,
-                            rank=result.rank,
-                            status=CandidateStatus.GENERATED if result.qa_status == "pass" else CandidateStatus.NEEDS_REVIEW,
-                            metadata=result.metadata,
-                        )
+                    candidate = Candidate(
+                        id=candidate_id, job_id=current.id, project_id=current.project_id,
+                        page_id=current.page_id, candidate_index=result.candidate_index,
+                        base_path=result.base_path, text_layer_path=result.text_layer_path,
+                        composed_path=result.composed_path, prompt=result.prompt, score=result.score,
+                        rank=result.rank,
+                        status=CandidateStatus.GENERATED if result.qa_status == "pass" else CandidateStatus.NEEDS_REVIEW,
+                        metadata=result.metadata,
                     )
+                    candidates.append(candidate)
+                    if (result.metadata.get("composition") or {}).get("text_layers"):
+                        initial_text_documents.append(
+                            self._engine.suggest_text_document(candidate=candidate, page=page)
+                        )
                     qa_results.append(
                         QAResult(
                             id=str(uuid4()), candidate_id=candidate_id, status=QAStatus(result.qa_status),
@@ -1121,6 +1125,8 @@ class ProductionApplication:
                     updated_at=now(),
                 )
                 self._repository.save_job_results(completed, candidates, qa_results)
+                for document in initial_text_documents:
+                    self._repository.save_text_document(document)
                 if current.trace.get("generation_kind") == "candidate_edit":
                     self._invalidate_decisions(
                         project.id, "候选图完成定向修改后需要重新确认", page_ids={page.id}

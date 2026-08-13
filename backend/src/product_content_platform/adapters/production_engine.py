@@ -172,12 +172,13 @@ class LocalProductionEngine:
                 label="执行确定性文字排版",
                 candidate_index=index, candidate_count=total_candidates,
             )
-            compose_meta = self._compose(
-                base_path=base_path,
-                text_path=text_path,
-                output_path=composed_path,
-                page=page,
-                product_bbox=product_bbox,
+            initial_text_document = self._build_text_document(
+                candidate_id=f"generation-{uuid4()}", base_path=base_path,
+                page=page, instruction=page.visual_goal,
+            )
+            compose_meta = self._compose_text_document(
+                base_path=base_path, text_path=text_path, output_path=composed_path,
+                document=initial_text_document, product_bbox=product_bbox,
             )
             qa = self._inspect(
                 project.profile, page, reference_paths, generator_meta, compose_meta,
@@ -251,12 +252,13 @@ class LocalProductionEngine:
                     "product_anchor_box": list(product_anchor_bbox),
                     "allowed_product_extent_box": list(allowed_product_bbox),
                 }
-                compose_meta = self._compose(
-                    base_path=base_path,
-                    text_path=text_path,
-                    output_path=composed_path,
-                    page=page,
-                    product_bbox=product_bbox,
+                initial_text_document = self._build_text_document(
+                    candidate_id=f"generation-{uuid4()}", base_path=base_path,
+                    page=page, instruction=page.visual_goal,
+                )
+                compose_meta = self._compose_text_document(
+                    base_path=base_path, text_path=text_path, output_path=composed_path,
+                    document=initial_text_document, product_bbox=product_bbox,
                 )
                 qa = self._inspect(
                     project.profile, page, reference_paths, generator_meta, compose_meta,
@@ -419,6 +421,24 @@ class LocalProductionEngine:
             restored = self._restore_candidate_text_document(candidate=candidate, page=page)
             if restored is not None:
                 return restored
+        return self._build_text_document(
+            candidate_id=candidate.id,
+            base_path=self.resolve(candidate.base_path),
+            page=page,
+            instruction=instruction,
+            current=current,
+        )
+
+    def _build_text_document(
+        self,
+        *,
+        candidate_id: str,
+        base_path: Path,
+        page: PageItem,
+        instruction: str = "",
+        current: TextDocument | None = None,
+    ) -> TextDocument:
+        """Plan a visible, editable typography proposal inside template reservations."""
         template = self._layout_spec(page.template_id)
         slots = list(template.get("text_slots") or [
             {"id": "headline", "name": "标题", "role": "headline", "box": template.get("title_box") or template["text_box"]},
@@ -427,54 +447,191 @@ class LocalProductionEngine:
         current_by_role = {layer.role: layer for layer in (current.layers if current else ())}
         current_by_id = {layer.id: layer for layer in (current.layers if current else ())}
         art_direction = instruction.strip()
-        expressive = any(term in art_direction.lower() for term in ("艺术", "潮流", "活力", "年轻", "art", "bold"))
-        traditional = any(term in art_direction.lower() for term in ("国风", "书法", "东方", "古典", "chinese"))
-        font_family = "ma-shan-zheng" if traditional else ("smiley-sans" if expressive else "noto-sans-sc")
-        with Image.open(self.resolve(candidate.base_path)) as base:
+        lowered = art_direction.lower()
+        if any(term in lowered for term in ("国风", "书法", "东方", "古典", "chinese", "传统")):
+            profile = "traditional"
+        elif any(term in lowered for term in ("艺术", "潮流", "活力", "年轻", "art", "bold", "冲击", "醒目")):
+            profile = "expressive"
+        elif any(term in lowered for term in ("杂志", "编辑", "高级", "高端", "质感", "editorial", "serif", "宋体")):
+            profile = "editorial"
+        elif any(term in lowered for term in ("极简", "简洁", "克制", "留白", "minimal", "clean")):
+            profile = "minimal"
+        elif current is not None:
+            # An empty “AI 帮我初排” means “give me another proposal”. Cycling
+            # through restrained presets guarantees a real visual alternative
+            # instead of silently returning the current styles unchanged.
+            profile = ("minimal", "editorial", "expressive")[current.version % 3]
+        else:
+            profile = "minimal"
+
+        profile_styles: dict[str, dict[str, Any]] = {
+            "minimal": {
+                "headline_font": "noto-sans-sc", "body_font": "noto-sans-sc",
+                "headline_weight": 700, "body_weight": 400,
+                "headline_scale": 1.0, "body_scale": 1.0,
+                "headline_spacing": 2, "body_spacing": 0,
+            },
+            "editorial": {
+                "headline_font": "noto-serif-sc", "body_font": "lxgw-wenkai",
+                "headline_weight": 700, "body_weight": 400,
+                "headline_scale": .94, "body_scale": .96,
+                "headline_spacing": 1, "body_spacing": 1,
+            },
+            "expressive": {
+                "headline_font": "smiley-sans", "body_font": "noto-sans-sc",
+                "headline_weight": 800, "body_weight": 500,
+                "headline_scale": 1.08, "body_scale": .96,
+                "headline_spacing": 3, "body_spacing": 1,
+            },
+            "traditional": {
+                "headline_font": "ma-shan-zheng", "body_font": "lxgw-wenkai",
+                "headline_weight": 500, "body_weight": 400,
+                "headline_scale": 1.06, "body_scale": .94,
+                "headline_spacing": 4, "body_spacing": 1,
+            },
+        }
+        profile_style = profile_styles[profile]
+        requested_align = (
+            "center" if any(term in lowered for term in ("居中", "中置", "center")) else
+            "right" if any(term in lowered for term in ("右对齐", "靠右", "right")) else
+            "left" if any(term in lowered for term in ("左对齐", "靠左", "left")) else
+            None
+        )
+        with Image.open(base_path) as base:
+            base = base.convert("RGBA")
             width, height = base.size
             short_edge = min(width, height)
-        layers: list[TextLayer] = []
-        for index, slot in enumerate(slots):
-            role = str(slot.get("role") or "custom")
-            existing = current_by_id.get(str(slot.get("id"))) or current_by_role.get(role)
-            content = (
-                existing.content if existing else
-                page.title if role == "headline" else
-                page.body if role in {"body", "subheadline"} else ""
-            )
-            if not content and not slot.get("required"):
-                continue
-            box = tuple(float(part) for part in slot["box"])
-            box_height = max(.02, box[3] - box[1])
-            suggested_size = round(min(short_edge * (.072 if role == "headline" else .036), height * box_height * .58))
-            defaults = dict(slot.get("default_style") or {})
-            layer_value = existing.to_dict() if existing else {}
-            layer_value.update({
-                "id": str(slot.get("id") or f"text-{index + 1}"),
-                "role": role if role in {"headline", "body", "badge", "caption", "custom"} else "custom",
-                "name": str(slot.get("name") or "文本框"), "content": content,
-                "box": list(box), "z_index": index, "source": "ai",
-                "font_family": defaults.get("font_family") or (existing.font_family if existing else font_family),
-                "font_weight": defaults.get("font_weight") or (existing.font_weight if existing else (700 if role == "headline" else 400)),
-                "font_size": defaults.get("font_size") or (existing.font_size if existing else max(18, suggested_size)),
-                "line_height": defaults.get("line_height") or (existing.line_height if existing else (1.12 if role == "headline" else 1.45)),
-                "letter_spacing": defaults.get("letter_spacing") if defaults.get("letter_spacing") is not None else (existing.letter_spacing if existing else (2 if role == "headline" else 0)),
-            })
-            layers.append(TextLayer.from_dict(layer_value))
+            layers: list[TextLayer] = []
+            for index, slot in enumerate(slots):
+                role = str(slot.get("role") or "custom")
+                existing = current_by_id.get(str(slot.get("id"))) or current_by_role.get(role)
+                if existing and existing.locked:
+                    layers.append(TextLayer.from_dict({**existing.to_dict(), "z_index": index}))
+                    continue
+                content = (
+                    existing.content if existing else
+                    page.title if role == "headline" else
+                    page.body if role in {"body", "subheadline"} else ""
+                )
+                if not content and not slot.get("required"):
+                    continue
+                box = tuple(float(part) for part in slot["box"])
+                box_height = max(.02, box[3] - box[1])
+                is_headline = role == "headline"
+                suggested_size = round(min(
+                    short_edge * (.072 if is_headline else .036),
+                    height * box_height * (.58 if is_headline else .34),
+                ))
+                suggested_size = round(suggested_size * float(
+                    profile_style["headline_scale" if is_headline else "body_scale"]
+                ))
+                defaults = dict(slot.get("default_style") or {}) if current is None and not art_direction else {}
+                sample_box = self._scaled_box(box, width, height)
+                title_color, body_color, _ = self._text_colors(base, sample_box)
+                auto_color = self._rgba_to_hex(title_color if is_headline else body_color)
+                family_key = "headline_font" if is_headline else "body_font"
+                weight_key = "headline_weight" if is_headline else "body_weight"
+                spacing_key = "headline_spacing" if is_headline else "body_spacing"
+                planned_family = str(defaults.get("font_family") or profile_style[family_key])
+                planned_line_height = float(defaults.get("line_height") or (1.08 if is_headline else 1.42))
+                planned_spacing = float(
+                    defaults.get("letter_spacing")
+                    if defaults.get("letter_spacing") is not None
+                    else profile_style[spacing_key]
+                )
+                planned_size = int(defaults.get("font_size") or max(18, suggested_size))
+                planned_max_lines = int(slot.get("max_lines") or (2 if is_headline else 4))
+                if is_headline and len(re.sub(r"\s+", "", content)) <= 12 and box[2] - box[0] >= .30:
+                    planned_max_lines = 1
+                planned_size = self._fit_document_font_size(
+                    content=content, region=sample_box, family=planned_family,
+                    requested_size=planned_size, line_height=planned_line_height,
+                    letter_spacing=planned_spacing, max_lines=planned_max_lines,
+                )
+                layer_value = existing.to_dict() if existing else {}
+                layer_value.update({
+                    "id": str(slot.get("id") or f"text-{index + 1}"),
+                    "role": role if role in {"headline", "body", "badge", "caption", "custom"} else "custom",
+                    "name": str(slot.get("name") or "文本框"), "content": content,
+                    "box": list(box), "z_index": index, "source": "ai",
+                    "font_family": planned_family,
+                    "font_weight": defaults.get("font_weight") or profile_style[weight_key],
+                    "font_size": planned_size,
+                    "font_style": "normal", "underline": False, "strikethrough": False,
+                    "color": defaults.get("color") or auto_color,
+                    "text_align": requested_align or defaults.get("text_align") or ("center" if profile == "editorial" and width > height * 1.25 else "left"),
+                    "vertical_align": defaults.get("vertical_align") or "center",
+                    "line_height": planned_line_height,
+                    "letter_spacing": planned_spacing,
+                    "stroke_width": 2 if profile == "expressive" and is_headline else 0,
+                    "stroke_color": "#FFFFFF" if auto_color != "#FAFDFB" else "#181F1C",
+                    "shadow": profile == "expressive" and is_headline,
+                    "shadow_blur": 8 if profile == "expressive" and is_headline else 0,
+                    "shadow_offset_x": 4 if profile == "expressive" and is_headline else 0,
+                    "shadow_offset_y": 6 if profile == "expressive" and is_headline else 0,
+                    "rotation": -1.5 if profile == "expressive" and is_headline else 0,
+                })
+                layers.append(TextLayer.from_dict(layer_value))
         slot_ids = {str(slot.get("id")) for slot in slots}
-        slot_roles = {str(slot.get("role")) for slot in slots}
         for existing in (current.layers if current else ()):
             if existing.id not in slot_ids:
-                layers.append(TextLayer.from_dict({
-                    **existing.to_dict(), "z_index": len(layers), "source": "ai",
-                }))
-        reasoning = "依据模板预留区、画布比例和文案层级完成初排；图片模型生成的底图未被修改。"
+                custom_value = existing.to_dict()
+                if not existing.locked:
+                    custom_value.update({
+                        "font_family": profile_style["body_font"],
+                        "font_weight": profile_style["body_weight"],
+                        "letter_spacing": profile_style["body_spacing"],
+                        "source": "ai",
+                    })
+                custom_value["z_index"] = len(layers)
+                layers.append(TextLayer.from_dict(custom_value))
+        profile_names = {"minimal": "极简清晰", "editorial": "杂志质感", "expressive": "醒目艺术", "traditional": "东方书写"}
+        reasoning = f"AI 已生成“{profile_names[profile]}”排版方案：遵守模板预留区，并依据画布比例、文字层级和底图明暗设置字体、字号、对齐与效果；底图未被修改。"
         if art_direction:
             reasoning += f" 已结合设计要求：{art_direction}"
         return TextDocument(
-            candidate_id=candidate.id, version=(current.version + 1 if current else 1),
+            candidate_id=candidate_id, version=(current.version + 1 if current else 1),
             layers=tuple(layers), source="ai", ai_reasoning=reasoning,
         )
+
+    def _fit_document_font_size(
+        self,
+        *,
+        content: str,
+        region: tuple[int, int, int, int],
+        family: str,
+        requested_size: int,
+        line_height: float,
+        letter_spacing: float,
+        max_lines: int,
+    ) -> int:
+        """Store a font size that already fits, so the editor matches final rendering."""
+        fit_width = max(8, region[2] - region[0])
+        fit_height = max(8, region[3] - region[1])
+        minimum = max(8, min(requested_size, round(min(fit_width, fit_height) * .10)))
+        draw = ImageDraw.Draw(Image.new("RGB", (1, 1), "white"))
+        size = requested_size
+        if max_lines == 1:
+            compact = re.sub(r"\s+", "", content)
+            visual_units = sum(1 if ord(char) > 127 else .55 for char in compact)
+            spacing_width = max(0, len(compact) - 1) * letter_spacing
+            conservative_limit = round(max(8, fit_width - spacing_width) / max(1, visual_units) * .88)
+            size = max(minimum, min(size, conservative_limit))
+        while True:
+            font = self._font(size, family)
+            lines = self._wrap_spaced(draw, content, font, fit_width, letter_spacing)
+            spacing = max(0, round(size * max(0, line_height - 1)))
+            bbox = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=spacing)
+            measured_height = bbox[3] - bbox[1]
+            measured_width = max(
+                (self._spaced_text_width(draw, line, font, letter_spacing) for line in lines),
+                default=0,
+            )
+            if len(lines) <= max_lines and measured_width <= fit_width and measured_height <= fit_height:
+                return size
+            if size <= minimum:
+                return minimum
+            size = max(minimum, size - max(1, round(size * .05)))
 
     def _restore_candidate_text_document(
         self,
@@ -555,8 +712,11 @@ class LocalProductionEngine:
             candidate_id=candidate.id,
             version=1,
             layers=tuple(layers),
-            source="candidate",
-            ai_reasoning="已从当前候选图的实际合成记录恢复字体、字号、颜色、位置和对齐方式。",
+            source=str(composition.get("text_document_source") or "candidate"),
+            ai_reasoning=str(
+                composition.get("text_document_reasoning")
+                or "已从当前候选图的实际合成记录恢复字体、字号、颜色、位置和对齐方式。"
+            ),
         )
 
     def recompose_document(
@@ -716,10 +876,14 @@ class LocalProductionEngine:
                 "allowed_product_extent_box": list(self._product_box(page.template_id, *canvas_size)),
             }
             generator_meta["product_bbox"] = list(product_bbox)
-        report("compositing_text", 68, label="重新应用独立文字层")
-        compose_meta = self._compose(
+        report("compositing_text", 68, label="AI 重新规划并应用独立文字层")
+        edited_text_document = self._build_text_document(
+            candidate_id=f"candidate-edit-{uuid4()}", base_path=base_path,
+            page=page, instruction=page.visual_goal,
+        )
+        compose_meta = self._compose_text_document(
             base_path=base_path, text_path=text_path, output_path=composed_path,
-            page=page, product_bbox=product_bbox,
+            document=edited_text_document, product_bbox=product_bbox,
         )
         report("checking_edit", 76, label="对比修改前后并执行局部质检")
         qa = self._inspect(
@@ -1203,9 +1367,16 @@ class LocalProductionEngine:
             if text_layer.rotation:
                 scratch = scratch.rotate(-text_layer.rotation, resample=Image.Resampling.BICUBIC, expand=False)
             layer_canvas.alpha_composite(scratch, (region[0], region[1]))
+            rendered_bbox = [
+                max(region[0], region[0] + x + bbox[0] - effective_stroke),
+                max(region[1], region[1] + y + bbox[1] - effective_stroke),
+                min(region[2], region[0] + x + bbox[0] + measured_width + effective_stroke),
+                min(region[3], region[1] + y + bbox[1] + measured_height + effective_stroke),
+            ]
             rendered.append({
                 **text_layer.to_dict(),
                 "id": text_layer.id, "role": text_layer.role, "box": list(region),
+                "rendered_bbox": rendered_bbox,
                 "font_family": text_layer.font_family, "requested_font_size": text_layer.font_size,
                 "font_weight": text_layer.font_weight, "font_style": text_layer.font_style,
                 "underline": text_layer.underline, "strikethrough": text_layer.strikethrough,
@@ -1219,18 +1390,40 @@ class LocalProductionEngine:
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer_canvas.save(text_path, format="PNG")
         Image.alpha_composite(base, layer_canvas).convert("RGB").save(output_path, format="PNG")
-        boxes = [item["box"] for item in rendered]
+        boxes = [item["rendered_bbox"] for item in rendered]
         union_box = [
             min((box[0] for box in boxes), default=0), min((box[1] for box in boxes), default=0),
             max((box[2] for box in boxes), default=0), max((box[3] for box in boxes), default=0),
         ]
+        headline = next((item for item in rendered if item["role"] == "headline"), None)
+        body = next((item for item in rendered if item["role"] in {"body", "subheadline"}), None)
+        primary = headline or body or (rendered[0] if rendered else None)
+        sample_box = tuple(union_box) if union_box[2] > union_box[0] and union_box[3] > union_box[1] else (0, 0, width, height)
         return {
             "canvas": [width, height], "safe_area": list(safe_area), "text_box": union_box,
             "rendered_text_bbox": union_box, "product_bbox": list(product_bbox),
             "text_layers": rendered, "text_document_version": document.version,
+            "text_document_source": document.source, "text_document_reasoning": document.ai_reasoning,
             "text_layer_stored_separately": True, "base_contains_post_layout_text": False,
             "font": ", ".join(dict.fromkeys(item["font_family"] for item in rendered)) or "none",
+            "font_family": str((headline or primary or {}).get("font_family") or "system_sans"),
             "text_color": ", ".join(dict.fromkeys(item["color"] for item in rendered)) or "none",
+            "title_box": list((headline or {}).get("box") or union_box),
+            "body_box": list((body or {}).get("box") or union_box),
+            "title_font_size": int((headline or {}).get("requested_font_size") or (headline or {}).get("font_size") or 0),
+            "body_font_size": int((body or {}).get("requested_font_size") or (body or {}).get("font_size") or 0),
+            "title_lines": list((headline or {}).get("lines") or []),
+            "body_lines": list((body or {}).get("lines") or []),
+            "title_color": str((headline or primary or {}).get("color") or "#181F1C"),
+            "body_color": str((body or primary or {}).get("color") or "#37413C"),
+            "text_align": str((primary or {}).get("text_align") or "left"),
+            "vertical_align": str((primary or {}).get("vertical_align") or "top"),
+            "title_line_spacing": round(float((headline or {}).get("line_height") or 1.2) * int((headline or {}).get("font_size") or 0)),
+            "body_line_spacing": round(float((body or {}).get("line_height") or 1.2) * int((body or {}).get("font_size") or 0)),
+            "offset_x": 0, "offset_y": 0, "title_body_gap": 0,
+            "typography_overrides": {},
+            "background_luminance": round(self._region_luminance(base, sample_box), 2),
+            "color_sample_box": list(sample_box),
             "repair_applied": repaired,
         }
 

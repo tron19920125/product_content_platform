@@ -10,6 +10,8 @@ from PIL import Image, ImageDraw
 from product_content_platform.adapters.base_image_generation import _composite_reference_product
 from product_content_platform.adapters.production_engine import LocalProductionEngine
 from product_content_platform.domain import (
+    Candidate,
+    CandidateStatus,
     PageItem,
     PageStatus,
     PageType,
@@ -136,6 +138,46 @@ class ProductionEngineTest(unittest.TestCase):
             self.assertIn("左侧 7%-43%", generator.prompts[0])
             self.assertIn("预留文字区域内严禁出现标题", generator.prompts[0])
             self.assertIn(page.title, result.metadata["content_review_prompt"])
+            self.assertEqual("ai", result.metadata["composition"]["text_document_source"])
+            self.assertEqual(
+                {"headline", "body"},
+                {layer["role"] for layer in result.metadata["composition"]["text_layers"]},
+            )
+
+    def test_ai_layout_returns_a_visible_alternative_and_honors_instruction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base.png"
+            Image.new("RGB", (1200, 800), "white").save(base)
+            engine = LocalProductionEngine(root / "production", RepairingGenerator(), QualityStub())
+            page = PageItem(
+                id="ai-layout", order=1, page_type=PageType.HERO,
+                title="向上生长", body="让专业护理融入理想生活", visual_goal="高端生活场景",
+                template_id="hero-center", status=PageStatus.READY,
+            )
+            candidate = Candidate(
+                id="candidate-layout", job_id="job-layout", project_id="project-layout",
+                page_id=page.id, candidate_index=1, base_path="base.png",
+                text_layer_path="text.png", composed_path="composed.png", prompt="",
+                score=0, rank=1, status=CandidateStatus.GENERATED,
+            )
+            engine._root = root.resolve()
+
+            initial = engine.suggest_text_document(candidate=candidate, page=page)
+            alternative = engine.suggest_text_document(candidate=candidate, page=page, current=initial)
+            traditional = engine.suggest_text_document(
+                candidate=candidate, page=page, current=alternative,
+                instruction="国风书法标题，正文居中克制",
+            )
+
+            self.assertNotEqual(
+                [(layer.font_family, layer.font_size, layer.text_align) for layer in initial.layers],
+                [(layer.font_family, layer.font_size, layer.text_align) for layer in alternative.layers],
+            )
+            headline = next(layer for layer in traditional.layers if layer.role == "headline")
+            self.assertEqual("ma-shan-zheng", headline.font_family)
+            self.assertEqual("center", headline.text_align)
+            self.assertIn("东方书写", traditional.ai_reasoning)
 
     def test_2048_composition_scales_copy_and_uses_dark_text_on_light_whitespace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

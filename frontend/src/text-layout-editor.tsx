@@ -75,14 +75,20 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
   const [sourceSize, setSourceSize] = useState<[number, number] | null>(null);
+  const [stageSize, setStageSize] = useState<[number, number]>([0, 0]);
   const fontLoadStarted = useRef(new Set<string>());
+  const stageRef = useRef<HTMLDivElement>(null);
   const composition = candidate.metadata?.composition as Record<string, unknown> | undefined;
   const generated = candidate.metadata?.generator as Record<string, unknown> | undefined;
   const requestedSize = String(generated?.actual_size ?? generated?.size ?? generated?.requested_size ?? "");
   const requestedCanvas = requestedSize.match(/^(\d+)x(\d+)$/i);
   const metadataCanvas = Array.isArray(composition?.canvas) ? composition.canvas as number[] : requestedCanvas ? [Number(requestedCanvas[1]), Number(requestedCanvas[2])] : [2048, 2048];
   const canvas = sourceSize ?? metadataCanvas;
+  const stageScale = stageSize[0] && stageSize[1]
+    ? Math.min(stageSize[0] / Math.max(canvas[0], 1), stageSize[1] / Math.max(canvas[1], 1))
+    : Math.min(620 / Math.max(canvas[0], 1), 580 / Math.max(canvas[1], 1));
   const selected = textDocument?.layers.find((layer) => layer.id === selectedId);
   const selectedFont = fonts.find((font) => font.id === selected?.font_family);
 
@@ -129,6 +135,19 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
 
   useEffect(() => { if (selectedFont) loadFont(selectedFont); }, [loadFont, selectedFont]);
   useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const update = () => {
+      const bounds = stage.getBoundingClientRect();
+      const next: [number, number] = [bounds.width, bounds.height];
+      setStageSize((current) => current[0] === next[0] && current[1] === next[1] ? current : next);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [canvas[0], canvas[1]]);
+  useEffect(() => {
     const closeFontLibrary = (event: KeyboardEvent) => { if (event.key === "Escape" && inspectorView === "fonts") setInspectorView("properties"); };
     window.addEventListener("keydown", closeFontLibrary);
     return () => window.removeEventListener("keydown", closeFontLibrary);
@@ -172,10 +191,18 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   }
 
   async function perform(action: "save" | "ai" | "apply") {
-    setBusy(action); setError("");
+    setBusy(action); setError(""); setFeedback("");
     try {
-      if (action === "save") await saveDocument();
-      if (action === "ai") { if (dirty) await saveDocument(); const planned = await api.aiLayoutTextDocument(candidate.id, instruction); setTextDocument({ ...planned, layers: planned.layers.map(styleDefaults) }); setSelectedId(planned.layers[0]?.id ?? ""); setInspectorView("properties"); setDirty(false); }
+      if (action === "save") { const saved = await saveDocument(); setFeedback(`文字文档 v${saved.version} 已保存。`); }
+      if (action === "ai") {
+        if (dirty) await saveDocument();
+        const planned = await api.aiLayoutTextDocument(candidate.id, instruction);
+        setTextDocument({ ...planned, layers: planned.layers.map(styleDefaults) });
+        setSelectedId(planned.layers[0]?.id ?? "");
+        setInspectorView("properties");
+        setDirty(false);
+        setFeedback(`AI 已生成新的排版方案 v${planned.version}；画布已更新，确认后请点击“应用排版”。`);
+      }
       if (action === "apply") { const ready = dirty ? await saveDocument() : textDocument; if (!ready) throw new Error("文字图层尚未加载"); await api.applyTextDocument(candidate.id, ready.version); await onComplete(); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "文字排版操作失败"); } finally { setBusy(""); }
   }
@@ -183,10 +210,10 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   if (!textDocument) return <div className="typography-editor"><div className="inline-working"><span className="spinner" />正在加载文字图层…</div>{error && <div className="notice error">{error}</div>}</div>;
   return <section className="typography-editor text-layout-editor">
     <div className="tool-heading"><div><strong>文字图层工作台</strong><small>像 PPT 一样增删、拖拽和缩放文本框；应用时只重做透明文字层，不调用生图模型。</small></div><button type="button" className="icon-button" aria-label="关闭文字图层工作台" onClick={onCancel}>×</button></div>
-    <div className="ai-layout-bar"><input value={instruction} maxLength={1000} onChange={(event) => setInstruction(event.target.value)} placeholder="可选：描述排版方向，例如“国风书法标题、正文克制留白”"/><button type="button" className="secondary" disabled={!!busy} onClick={() => void perform("ai")}>{busy === "ai" ? "AI 初排中…" : "AI 帮我初排"}</button></div>
+    <div className="ai-layout-bar"><input value={instruction} maxLength={1000} onChange={(event) => setInstruction(event.target.value)} placeholder="可选：描述排版方向，例如“国风书法标题、正文克制留白”；留空则生成另一版方案"/><button type="button" className="secondary" disabled={!!busy} onClick={() => void perform("ai")}>{busy === "ai" ? "AI 排版中…" : "AI 帮我重新排"}</button></div>
     <div className="text-layout-workspace">
       <aside className="text-layer-list"><header><strong>图层</strong><button type="button" onClick={() => { const layer = createLayer(textDocument.layers.length); setTextDocument({ ...textDocument, layers: [...textDocument.layers, layer] }); setSelectedId(layer.id); setInspectorView("properties"); setDirty(true); }}>＋ 文本框</button></header>{textDocument.layers.map((layer) => <button type="button" key={layer.id} className={layer.id === selectedId ? "active" : ""} onClick={() => { setSelectedId(layer.id); setInspectorView("properties"); }}><Icon name="grip"/><span><strong>{layer.name}</strong><small>{layer.content || "空文本"}</small></span><i>{layer.visible ? "●" : "○"}</i></button>)}</aside>
-      <div className="text-layout-canvas-wrap"><div className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => { setSelectedId(""); setInspectorView("properties"); }}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false} onLoad={(event) => { const image = event.currentTarget; setSourceSize([image.naturalWidth || 1, image.naturalHeight || 1]); }}/>{textDocument.layers.map((layer) => { const stageScale = Math.min(620 / Math.max(canvas[0], 1), 580 / Math.max(canvas[1], 1)); const stroke = layer.stroke_width ? Math.max(.5, layer.stroke_width * stageScale) : 0; const shadow = layer.shadow ? `${layer.shadow_offset_x * stageScale}px ${layer.shadow_offset_y * stageScale}px ${Math.max(1, layer.shadow_blur * stageScale)}px ${layer.shadow_color}` : "none"; const decoration = [layer.underline ? "underline" : "", layer.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") || "none"; return <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontFamily: fontFamilies[layer.font_family], fontWeight: layer.font_weight, fontStyle: layer.font_style, textDecorationLine: decoration, fontSize: `${Math.max(4, layer.font_size * stageScale)}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing * stageScale}px`, WebkitTextStroke: `${stroke}px ${layer.stroke_color}`, paintOrder: "stroke fill", textShadow: shadow, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked ? <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/> : null}</div>; })}</div><small>{sourceSize ? `${sourceSize[0]} × ${sourceSize[1]} · ` : ""}底图按原始比例缩放 · 字体、字形和效果实时显示；坐标按比例保存。</small></div>
+      <div className="text-layout-canvas-wrap"><div ref={stageRef} className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => { setSelectedId(""); setInspectorView("properties"); }}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false} onLoad={(event) => { const image = event.currentTarget; setSourceSize([image.naturalWidth || 1, image.naturalHeight || 1]); }}/>{textDocument.layers.map((layer) => { const stroke = layer.stroke_width ? Math.max(.5, layer.stroke_width * stageScale) : 0; const shadow = layer.shadow ? `${layer.shadow_offset_x * stageScale}px ${layer.shadow_offset_y * stageScale}px ${Math.max(1, layer.shadow_blur * stageScale)}px ${layer.shadow_color}` : "none"; const decoration = [layer.underline ? "underline" : "", layer.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") || "none"; return <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontFamily: fontFamilies[layer.font_family], fontWeight: layer.font_weight, fontStyle: layer.font_style, textDecorationLine: decoration, fontSize: `${Math.max(4, layer.font_size * stageScale)}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing * stageScale}px`, WebkitTextStroke: `${stroke}px ${layer.stroke_color}`, paintOrder: "stroke fill", textShadow: shadow, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked ? <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/> : null}</div>; })}</div><small>{sourceSize ? `${sourceSize[0]} × ${sourceSize[1]} · ` : ""}底图按原始比例缩放 · 字体、字形和效果实时显示；坐标按比例保存。</small></div>
       <aside className={`text-property-panel ${inspectorView === "fonts" ? "font-library-view" : ""}`}>
         {selected && inspectorView === "fonts" ? <>
           <header className="font-library-header"><button type="button" className="font-library-back" onClick={() => setInspectorView("properties")}>‹ 文本属性</button><strong>选择字体</strong></header>
@@ -214,6 +241,7 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     </div>
     {textDocument.ai_reasoning && <p className="tool-note"><strong>AI 初排说明：</strong>{textDocument.ai_reasoning}</p>}
     {busy && <div className="inline-working" role="status"><span className="spinner" />{{ loading: "加载中", save: "保存版本中", ai: "AI 正在初排", apply: "正在确定性渲染文字层" }[busy]}…</div>}
+    {feedback && <div className="notice success" role="status">{feedback}</div>}
     {error && <div className="notice error">{error}</div>}
     <div className="tool-actions"><span>文字文档 v{textDocument.version}{dirty ? " · 有未保存修改" : " · 已保存"}</span><button type="button" className="ghost-button" disabled={!!busy || !dirty} onClick={() => void perform("save")}>保存草稿</button><button type="button" className="primary" disabled={!!busy} onClick={() => void perform("apply")}>{busy === "apply" ? "应用中…" : "应用排版"}</button></div>
   </section>;
