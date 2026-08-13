@@ -1,22 +1,18 @@
-import { PointerEvent as ReactPointerEvent, useEffect, useState } from "react";
+import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useState } from "react";
 
 import { api, Candidate, FontAsset, TextDocument, TextLayer } from "./api";
 import { Icon } from "./ui";
 
 type Props = { candidate: Candidate; onComplete: () => Promise<void>; onCancel: () => void };
 
-function FontPreview({ font, active, onSelect }: { font: FontAsset; active: boolean; onSelect: () => void }) {
-  const family = `pcp-${font.id}`;
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let disposed = false;
-    const face = new FontFace(family, `url(${api.resolveUrl(font.content_url)})`);
-    void face.load().then((ready) => { if (!disposed) { document.fonts.add(ready); setLoaded(true); } }).catch(() => undefined);
-    return () => { disposed = true; };
-  }, [family, font.content_url]);
-  return <button type="button" className={`font-preview-card ${active ? "active" : ""}`} onClick={onSelect}>
-    <strong style={{ fontFamily: loaded ? family : "sans-serif" }}>{font.preview}</strong>
+type FontLoadState = "loading" | "loaded" | "error" | "unavailable";
+
+function FontPreview({ font, active, state, family, onSelect }: { font: FontAsset; active: boolean; state: FontLoadState; family: string; onSelect: () => void }) {
+  const disabled = state === "error" || state === "unavailable";
+  return <button type="button" disabled={disabled} className={`font-preview-card ${active ? "active" : ""} ${state}`} onClick={onSelect}>
+    <strong style={{ fontFamily: state === "loaded" ? family : "sans-serif" }}>{font.preview}</strong>
     <span>{font.display_name}<small>{font.category} · {font.license}</small></span>
+    <em>{state === "loaded" ? "预览已加载" : state === "loading" ? "字体加载中…" : state === "unavailable" ? "字体文件未安装" : "字体加载失败"}</em>
   </button>;
 }
 
@@ -27,6 +23,7 @@ function createLayer(index: number): TextLayer {
 export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   const [textDocument, setTextDocument] = useState<TextDocument | null>(null);
   const [fonts, setFonts] = useState<FontAsset[]>([]);
+  const [fontStates, setFontStates] = useState<Record<string, FontLoadState>>({});
   const [selectedId, setSelectedId] = useState("");
   const [instruction, setInstruction] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -45,6 +42,28 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     }).catch((reason) => { if (active) { setError(reason instanceof Error ? reason.message : "文字图层加载失败"); setBusy(""); } });
     return () => { active = false; };
   }, [candidate.id]);
+
+  useEffect(() => {
+    let active = true;
+    const initial = Object.fromEntries(fonts.map((font) => [font.id, font.preview_available ? "loading" : "unavailable"])) as Record<string, FontLoadState>;
+    setFontStates(initial);
+    for (const font of fonts) {
+      if (!font.preview_available) continue;
+      const family = `pcp-${font.id}`;
+      const face = new FontFace(family, `url("${api.resolveUrl(font.content_url)}") format("truetype")`, { weight: "100 900" });
+      void face.load().then((ready) => {
+        if (!active) return;
+        document.fonts.add(ready);
+        setFontStates((current) => ({ ...current, [font.id]: "loaded" }));
+      }).catch(() => {
+        if (active) setFontStates((current) => ({ ...current, [font.id]: "error" }));
+      });
+    }
+    return () => { active = false; };
+  }, [fonts]);
+
+  const fontFamilies = useMemo(() => Object.fromEntries(fonts.map((font) => [font.id, `"pcp-${font.id}", sans-serif`])), [fonts]);
+  const displayFonts = useMemo(() => [...fonts].sort((left, right) => Number(right.preview_available) - Number(left.preview_available)), [fonts]);
 
   function updateLayer(id: string, changes: Partial<TextLayer>) {
     setTextDocument((current) => current ? ({ ...current, layers: current.layers.map((layer) => layer.id === id ? { ...layer, ...changes, source: "manual" } : layer) }) : current);
@@ -87,10 +106,10 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     <div className="ai-layout-bar"><input value={instruction} maxLength={1000} onChange={(event) => setInstruction(event.target.value)} placeholder="可选：描述排版方向，例如“国风书法标题、正文克制留白”"/><button type="button" className="secondary" disabled={!!busy} onClick={() => void perform("ai")}>{busy === "ai" ? "AI 初排中…" : "AI 帮我初排"}</button></div>
     <div className="text-layout-workspace">
       <aside className="text-layer-list"><header><strong>图层</strong><button type="button" onClick={() => { const layer = createLayer(textDocument.layers.length); setTextDocument({ ...textDocument, layers: [...textDocument.layers, layer] }); setSelectedId(layer.id); setDirty(true); }}>＋ 文本框</button></header>{textDocument.layers.map((layer) => <button type="button" key={layer.id} className={layer.id === selectedId ? "active" : ""} onClick={() => setSelectedId(layer.id)}><Icon name="grip"/><span><strong>{layer.name}</strong><small>{layer.content || "空文本"}</small></span><i>{layer.visible ? "●" : "○"}</i></button>)}</aside>
-      <div className="text-layout-canvas-wrap"><div className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => setSelectedId("")}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false}/>{textDocument.layers.map((layer) => <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontWeight: layer.font_weight, fontSize: `${Math.max(10, layer.font_size / Math.max(canvas[0] / 620, 1))}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing}px`, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked && <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/>}</div>)}</div><small>底图预览 · 坐标按比例保存，可适配横版、竖版和正方形。</small></div>
-      <aside className="text-property-panel">{selected ? <><header><strong>文本属性</strong><button type="button" className="danger-link" onClick={() => { setTextDocument({ ...textDocument, layers: textDocument.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId(""); setDirty(true); }}>删除</button></header><label><span>图层名称</span><input value={selected.name} onChange={(event) => updateLayer(selected.id, { name: event.target.value })}/></label><label><span>文字内容</span><textarea rows={4} value={selected.content} onChange={(event) => updateLayer(selected.id, { content: event.target.value })}/></label><div className="property-row"><label><span>字号 px</span><input type="number" min="8" max="1024" value={selected.font_size} onChange={(event) => updateLayer(selected.id, { font_size: Number(event.target.value) })}/></label><label><span>粗细</span><select value={selected.font_weight} onChange={(event) => updateLayer(selected.id, { font_weight: Number(event.target.value) })}>{[300,400,500,600,700,800,900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label></div><div className="property-row"><label><span>颜色</span><input type="color" value={selected.color} onChange={(event) => updateLayer(selected.id, { color: event.target.value.toUpperCase() })}/></label><label><span>旋转</span><input type="number" min="-180" max="180" value={selected.rotation} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>对齐</span><select value={selected.text_align} onChange={(event) => updateLayer(selected.id, { text_align: event.target.value as TextLayer["text_align"] })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label><span>行高</span><input type="number" step="0.05" min="0.6" max="3" value={selected.line_height} onChange={(event) => updateLayer(selected.id, { line_height: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>字距</span><input type="number" min="-20" max="100" value={selected.letter_spacing} onChange={(event) => updateLayer(selected.id, { letter_spacing: Number(event.target.value) })}/></label><label><span>描边</span><input type="number" min="0" max="32" value={selected.stroke_width} onChange={(event) => updateLayer(selected.id, { stroke_width: Number(event.target.value) })}/></label></div><label className="check-control"><input type="checkbox" checked={selected.shadow} onChange={(event) => updateLayer(selected.id, { shadow: event.target.checked })}/>启用阴影</label><label className="check-control"><input type="checkbox" checked={selected.locked} onChange={(event) => updateLayer(selected.id, { locked: event.target.checked })}/>锁定图层</label></> : <div className="empty-property"><Icon name="type"/><strong>选择一个文本框</strong><p>可以编辑文字、字体、大小、颜色、对齐、旋转、描边和阴影。</p></div>}</aside>
+      <div className="text-layout-canvas-wrap"><div className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => setSelectedId("")}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false}/>{textDocument.layers.map((layer) => { const scale = Math.max(canvas[0] / 620, 1); const stroke = layer.stroke_width ? Math.max(1, layer.stroke_width / scale) : 0; const shadow = layer.shadow ? `${layer.shadow_offset_x / scale}px ${layer.shadow_offset_y / scale}px ${Math.max(1, layer.shadow_blur / scale)}px ${layer.shadow_color}` : "none"; return <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontFamily: fontStates[layer.font_family] === "loaded" ? fontFamilies[layer.font_family] : undefined, fontWeight: layer.font_weight, fontSize: `${Math.max(10, layer.font_size / scale)}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing / scale}px`, WebkitTextStroke: `${stroke}px ${layer.stroke_color}`, paintOrder: "stroke fill", textShadow: shadow, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked && <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/>}</div>; })}</div><small>底图预览 · 字体、描边和阴影会实时显示；坐标按比例保存。</small></div>
+      <aside className="text-property-panel">{selected ? <><header><strong>文本属性</strong><button type="button" className="danger-link" onClick={() => { setTextDocument({ ...textDocument, layers: textDocument.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId(""); setDirty(true); }}>删除</button></header><label><span>图层名称</span><input value={selected.name} onChange={(event) => updateLayer(selected.id, { name: event.target.value })}/></label><label><span>文字内容</span><textarea rows={4} value={selected.content} onChange={(event) => updateLayer(selected.id, { content: event.target.value })}/></label><div className="property-row"><label><span>字号 px</span><input type="number" min="8" max="1024" value={selected.font_size} onChange={(event) => updateLayer(selected.id, { font_size: Number(event.target.value) })}/></label><label><span>粗细</span><select value={selected.font_weight} onChange={(event) => updateLayer(selected.id, { font_weight: Number(event.target.value) })}>{[300,400,500,600,700,800,900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label></div><div className="property-row"><label><span>颜色</span><input type="color" value={selected.color} onChange={(event) => updateLayer(selected.id, { color: event.target.value.toUpperCase() })}/></label><label><span>旋转</span><input type="number" min="-180" max="180" value={selected.rotation} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>对齐</span><select value={selected.text_align} onChange={(event) => updateLayer(selected.id, { text_align: event.target.value as TextLayer["text_align"] })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label><span>行高</span><input type="number" step="0.05" min="0.6" max="3" value={selected.line_height} onChange={(event) => updateLayer(selected.id, { line_height: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>字距</span><input type="number" min="-20" max="100" value={selected.letter_spacing} onChange={(event) => updateLayer(selected.id, { letter_spacing: Number(event.target.value) })}/></label><label><span>描边宽度 px</span><input type="number" min="0" max="32" value={selected.stroke_width} onChange={(event) => updateLayer(selected.id, { stroke_width: Number(event.target.value) })}/></label></div><label><span>描边颜色</span><input type="color" value={selected.stroke_color} onChange={(event) => updateLayer(selected.id, { stroke_color: event.target.value.toUpperCase() })}/></label><label className="check-control"><input type="checkbox" checked={selected.shadow} onChange={(event) => updateLayer(selected.id, { shadow: event.target.checked })}/>启用阴影</label><label className="check-control"><input type="checkbox" checked={selected.locked} onChange={(event) => updateLayer(selected.id, { locked: event.target.checked })}/>锁定图层</label></> : <div className="empty-property"><Icon name="type"/><strong>选择一个文本框</strong><p>可以编辑文字、字体、大小、颜色、对齐、旋转、描边和阴影。</p></div>}</aside>
     </div>
-    {selected && <div className="font-picker"><div><strong>字体库</strong><span>字体名称本身使用对应字体预览；仅展示允许商用并记录许可证的字体。</span></div><div className="font-preview-grid">{fonts.map((font) => <FontPreview key={font.id} font={font} active={selected.font_family === font.id} onSelect={() => updateLayer(selected.id, { font_family: font.id })}/>)}</div></div>}
+    {selected && <div className="font-picker"><div><strong>字体库</strong><span>示例文案使用字体本身实时预览；灰色字体表示本机尚未安装。</span></div><div className="font-preview-grid">{displayFonts.map((font) => <FontPreview key={font.id} font={font} active={selected.font_family === font.id} state={fontStates[font.id] ?? "loading"} family={fontFamilies[font.id]} onSelect={() => updateLayer(selected.id, { font_family: font.id })}/>)}</div></div>}
     {textDocument.ai_reasoning && <p className="tool-note"><strong>AI 初排说明：</strong>{textDocument.ai_reasoning}</p>}
     {busy && <div className="inline-working" role="status"><span className="spinner" />{{ loading: "加载中", save: "保存版本中", ai: "AI 正在初排", apply: "正在确定性渲染文字层" }[busy]}…</div>}
     {error && <div className="notice error">{error}</div>}

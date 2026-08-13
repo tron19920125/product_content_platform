@@ -1107,6 +1107,8 @@ class LocalProductionEngine:
                 "font_size": size, "lines": lines, "color": text_layer.color,
                 "text_align": text_layer.text_align, "vertical_align": text_layer.vertical_align,
                 "rotation": text_layer.rotation, "content": text_layer.content,
+                "stroke_width": text_layer.stroke_width, "effective_stroke_width": effective_stroke,
+                "stroke_color": text_layer.stroke_color, "shadow": text_layer.shadow,
             })
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer_canvas.save(text_path, format="PNG")

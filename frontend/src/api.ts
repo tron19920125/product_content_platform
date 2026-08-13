@@ -280,6 +280,7 @@ export type FontAsset = {
   commercial_use: boolean;
   coverage: string;
   installed: boolean;
+  preview_available: boolean;
   content_url: string;
 };
 

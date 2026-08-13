@@ -267,6 +267,9 @@ class ProductionFlowTest(unittest.TestCase):
 
         for layer in document["layers"]:
             layer["font_family"] = "system_sans"
+        document["layers"][0]["font_family"] = "ma-shan-zheng"
+        document["layers"][0]["stroke_width"] = 12
+        document["layers"][0]["stroke_color"] = "#FFFFFF"
         document["layers"].append({
             **document["layers"][1], "id": "manual-badge", "role": "badge", "name": "人工新增标签",
             "content": "新品", "box": [.72, .08, .88, .16], "font_size": 56, "color": "#4955C2",
@@ -294,6 +297,13 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertEqual(200, applied.status_code, applied.text)
         edited = applied.json()
         self.assertEqual(self.client.get(source["base_url"]).content, self.client.get(edited["base_url"]).content)
+        title_composition = next(
+            layer for layer in edited["metadata"]["composition"]["text_layers"]
+            if layer["role"] == "headline"
+        )
+        self.assertEqual("ma-shan-zheng", title_composition["font_family"])
+        self.assertEqual(12, title_composition["stroke_width"])
+        self.assertEqual("#FFFFFF", title_composition["stroke_color"])
         active = self.client.get(f"/api/projects/{project_id}/production").json()["pages"][0]["candidates"][0]
         self.assertEqual(edited["id"], active["id"])
         self.assertIsNone(active["qa"])

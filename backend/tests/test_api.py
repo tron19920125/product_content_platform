@@ -58,6 +58,11 @@ class ApiTest(unittest.TestCase):
         self.assertTrue({"现代黑体", "宋体衬线", "艺术标题", "书法"} <= {item["category"] for item in fonts})
         self.assertTrue(all(item["preview"] and item["license"] == "OFL-1.1" for item in fonts))
         self.assertTrue(all(item["commercial_use"] for item in fonts))
+        available = [item for item in fonts if item["preview_available"]]
+        self.assertGreaterEqual(len(available), 7)
+        preview = self.client.get(available[0]["content_url"])
+        self.assertEqual(200, preview.status_code)
+        self.assertGreater(len(preview.content), 16_000)
 
     def test_create_laundry_golden_demo_is_ready_for_reference_upload(self) -> None:
         response = self.client.post("/api/demo-projects/laundry")

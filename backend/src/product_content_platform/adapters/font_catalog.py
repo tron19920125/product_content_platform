@@ -92,12 +92,19 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+_BUNDLED_FONT_IDS = {
+    "ma-shan-zheng", "long-cang", "liu-jian-mao-cao", "zhi-mang-xing",
+    "smiley-sans", "zcool-kuaile", "zcool-qingke-huangyou", "zcool-xiaowei",
+}
+
+
 class FontCatalog:
     """Curated commercial-use font registry shared by web previews and server rendering."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, bundled_root: Path | None = None) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.bundled_root = bundled_root.resolve() if bundled_root else None
         self._definitions = {item["id"]: dict(item) for item in _FONT_DEFINITIONS}
 
     def list(self) -> list[dict[str, Any]]:
@@ -114,6 +121,9 @@ class FontCatalog:
         item = self._definitions.get(font_id)
         if item is None:
             return self.system_fallback(font_id)
+        bundled = self._bundled_path(item)
+        if bundled is not None:
+            return bundled
         path = self.root / item["file_name"]
         if path.exists() and 16_000 <= path.stat().st_size <= 40_000_000:
             return path
@@ -162,8 +172,17 @@ class FontCatalog:
 
     def _public(self, item: dict[str, Any]) -> dict[str, Any]:
         path = self.root / item["file_name"]
+        bundled = self._bundled_path(item)
+        available = bundled is not None or (path.exists() and path.stat().st_size >= 16_000)
         return {
             **{key: value for key, value in item.items() if key not in {"source_url", "archive_member"}},
-            "installed": path.exists() and path.stat().st_size >= 16_000,
+            "installed": available,
+            "preview_available": available,
             "content_url": f"/api/fonts/{item['id']}/content",
         }
+
+    def _bundled_path(self, item: dict[str, Any]) -> Path | None:
+        if self.bundled_root is None or item["id"] not in _BUNDLED_FONT_IDS:
+            return None
+        path = self.bundled_root / item["file_name"]
+        return path if path.exists() and 16_000 <= path.stat().st_size <= 40_000_000 else None

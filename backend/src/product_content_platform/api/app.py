@@ -312,7 +312,8 @@ def create_app(
     effective_asset_root = asset_root or (effective_database.parent / "assets" if database_path else settings.asset_root)
     effective_production_root = production_root or (effective_database.parent / "production" if database_path else settings.production_root)
     effective_export_root = export_root or (effective_database.parent / "exports" if database_path else settings.export_root)
-    font_catalog = FontCatalog(effective_database.parent / "fonts")
+    bundled_fonts = Path(__file__).resolve().parents[4] / "frontend" / "public" / "fonts"
+    font_catalog = FontCatalog(effective_database.parent / "fonts", bundled_fonts)
     assets = LocalAssetStore(effective_asset_root)
     imports = SkuImportParser()
     catalog = FixedContentCatalog(effective_database.parent / "templates.json")
