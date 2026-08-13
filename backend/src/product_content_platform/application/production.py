@@ -564,6 +564,13 @@ class ProductionApplication:
             raise EntityNotFoundError(f"候选不存在: {candidate_id}")
         existing = self._repository.get_text_document(candidate_id)
         if existing is not None:
+            if existing.version == 1 and existing.source == "ai":
+                page = self._page(candidate.project_id, candidate.page_id)
+                restored = self._engine.suggest_text_document(candidate=candidate, page=page)
+                if restored.source == "candidate" and restored.layers != existing.layers:
+                    restored = replace(restored, version=2)
+                    self._repository.save_text_document(restored)
+                    return restored
             return existing
         page = self._page(candidate.project_id, candidate.page_id)
         document = self._engine.suggest_text_document(candidate=candidate, page=page)

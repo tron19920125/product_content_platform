@@ -415,6 +415,10 @@ class LocalProductionEngine:
         current: TextDocument | None = None,
     ) -> TextDocument:
         """Create an editable first-pass layout without changing the base image."""
+        if current is None:
+            restored = self._restore_candidate_text_document(candidate=candidate, page=page)
+            if restored is not None:
+                return restored
         template = self._layout_spec(page.template_id)
         slots = list(template.get("text_slots") or [
             {"id": "headline", "name": "标题", "role": "headline", "box": template.get("title_box") or template["text_box"]},
@@ -470,6 +474,89 @@ class LocalProductionEngine:
         return TextDocument(
             candidate_id=candidate.id, version=(current.version + 1 if current else 1),
             layers=tuple(layers), source="ai", ai_reasoning=reasoning,
+        )
+
+    def _restore_candidate_text_document(
+        self,
+        *,
+        candidate: Candidate,
+        page: PageItem,
+    ) -> TextDocument | None:
+        """Restore the editable document from the text that is already baked into composed.png."""
+        composition = dict(candidate.metadata.get("composition") or candidate.metadata.get("compose") or {})
+        rendered_layers = composition.get("text_layers")
+        is_showcase = bool(composition.get("showcase_seed"))
+        has_legacy_render = bool(composition.get("canvas") and composition.get("title_font_size"))
+        if not isinstance(rendered_layers, list) and not is_showcase and not has_legacy_render:
+            return None
+
+        with Image.open(self.resolve(candidate.base_path)) as base:
+            width, height = base.size
+
+        def normalized_box(value: Any, fallback: Any) -> list[float]:
+            parts = list(value or fallback)
+            if len(parts) != 4:
+                parts = list(fallback)
+            if max(float(part) for part in parts) > 1:
+                parts = [parts[0] / width, parts[1] / height, parts[2] / width, parts[3] / height]
+            return [min(1, max(0, round(float(part), 6))) for part in parts]
+
+        layers: list[TextLayer] = []
+        if isinstance(rendered_layers, list):
+            for index, raw in enumerate(rendered_layers):
+                if not isinstance(raw, dict):
+                    continue
+                role = str(raw.get("role") or "custom")
+                lines = raw.get("lines")
+                content = str(raw.get("content") or ("\n".join(str(line) for line in lines) if isinstance(lines, list) else ""))
+                layers.append(TextLayer.from_dict({
+                    **raw,
+                    "id": str(raw.get("id") or f"text-{index + 1}"),
+                    "role": role,
+                    "name": str(raw.get("name") or {"headline": "标题", "body": "正文"}.get(role, "文本框")),
+                    "content": content,
+                    "box": normalized_box(raw.get("box"), [.08, .08, .92, .20]),
+                    "font_family": str(raw.get("font_family") or "system_sans"),
+                    "font_size": int(raw.get("requested_font_size") or raw.get("font_size") or 64),
+                    "z_index": index,
+                    "source": "candidate",
+                }))
+        else:
+            template = self._layout_spec(page.template_id)
+            short_edge = min(width, height)
+            title_size = int(composition.get("title_font_size") or round(short_edge * {
+                1: .065, 2: .058, 3: .052, 4: .047, 5: .042,
+            }.get(page.heading_level, .058)))
+            body_size = int(composition.get("body_font_size") or round(short_edge * .029))
+            title_spacing = int(composition.get("title_line_spacing") or max(8, round(short_edge * .006)))
+            body_spacing = int(composition.get("body_line_spacing") or max(6, round(short_edge * .0045)))
+            font_family = str(composition.get("font_family") or "system_sans")
+            align = str(composition.get("text_align") or "left")
+            vertical = str(composition.get("vertical_align") or "top")
+            title_color = str(composition.get("title_color") or ("#1F3027" if is_showcase else "#181F1C"))
+            body_color = str(composition.get("body_color") or ("#42564A" if is_showcase else title_color))
+            for index, (role, name, content, box, size, color, spacing) in enumerate((
+                ("headline", "标题", page.title, composition.get("title_box") or template.get("title_box") or template["text_box"], title_size, title_color, title_spacing),
+                ("body", "正文", page.body, composition.get("body_box") or template.get("body_box") or template["text_box"], body_size, body_color, body_spacing),
+            )):
+                if not content:
+                    continue
+                layers.append(TextLayer.from_dict({
+                    "id": role, "role": role, "name": name, "content": content,
+                    "box": normalized_box(box, [.08, .08, .92, .20]),
+                    "font_family": font_family, "font_weight": 400, "font_size": size,
+                    "color": color, "text_align": align, "vertical_align": vertical,
+                    "line_height": round(1 + spacing / max(size, 1), 3),
+                    "letter_spacing": 0, "z_index": index, "source": "candidate",
+                }))
+        if not layers:
+            return None
+        return TextDocument(
+            candidate_id=candidate.id,
+            version=1,
+            layers=tuple(layers),
+            source="candidate",
+            ai_reasoning="已从当前候选图的实际合成记录恢复字体、字号、颜色、位置和对齐方式。",
         )
 
     def recompose_document(
@@ -1117,6 +1204,7 @@ class LocalProductionEngine:
                 scratch = scratch.rotate(-text_layer.rotation, resample=Image.Resampling.BICUBIC, expand=False)
             layer_canvas.alpha_composite(scratch, (region[0], region[1]))
             rendered.append({
+                **text_layer.to_dict(),
                 "id": text_layer.id, "role": text_layer.role, "box": list(region),
                 "font_family": text_layer.font_family, "requested_font_size": text_layer.font_size,
                 "font_weight": text_layer.font_weight, "font_style": text_layer.font_style,

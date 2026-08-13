@@ -208,8 +208,9 @@ tbody tr:focus, tbody tr:hover { background: var(--color-bg-subtle); }
 .production-focus { min-width: 0; padding: 15px; background: var(--color-bg-subtle); }
 .production-page-head { padding: 0 0 12px; border: 0; }
 .production-page-head h4 { color: var(--color-text); }
-.production-canvas { display: grid; height: 470px; padding: 14px; place-items: center; overflow: hidden; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-canvas); }
-.production-canvas img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 8px 24px rgb(20 24 32 / 12%); }
+.production-canvas { display: flex; height: 470px; padding: 14px; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-canvas); }
+.production-image-frame { display: contents; }
+.production-canvas img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 8px 24px rgb(20 24 32 / 12%); }
 .candidate-filmstrip { display: flex; gap: 8px; padding-top: 12px; overflow-x: auto; }
 .candidate-filmstrip button { display: grid; flex: 0 0 82px; gap: 4px; padding: 4px; border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text-tertiary); background: var(--color-surface); font-size: 10px; }
 .candidate-filmstrip button.active { border-color: var(--color-primary-600); box-shadow: 0 0 0 1px var(--color-primary-600); color: var(--color-primary-700); }

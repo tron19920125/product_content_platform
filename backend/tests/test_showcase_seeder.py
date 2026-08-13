@@ -77,6 +77,14 @@ class ShowcaseSeederTest(unittest.TestCase):
                     self.assertEqual(200, image.status_code)
                     self.assertGreater(len(image.content), 1_000_000)
 
+                portrait = client.get("/api/candidates/showcase-portrait-3840-candidate-1/text-document")
+                self.assertEqual(200, portrait.status_code, portrait.text)
+                portrait_document = portrait.json()
+                self.assertEqual("candidate", portrait_document["source"])
+                self.assertEqual("system_sans", portrait_document["layers"][0]["font_family"])
+                self.assertEqual(400, portrait_document["layers"][0]["font_weight"])
+                self.assertEqual("#1F3027", portrait_document["layers"][0]["color"])
+
                 jobs = client.get(
                     "/api/jobs", params={"project_id": AZURE_ACCEPTANCE_PROJECT_ID}
                 ).json()

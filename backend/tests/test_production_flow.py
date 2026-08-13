@@ -264,6 +264,19 @@ class ProductionFlowTest(unittest.TestCase):
         document = loaded.json()
         self.assertEqual(1, document["version"])
         self.assertEqual({"headline", "body"}, {layer["role"] for layer in document["layers"]})
+        self.assertEqual("candidate", document["source"])
+        composition = source["metadata"]["composition"]
+        headline = next(layer for layer in document["layers"] if layer["role"] == "headline")
+        body = next(layer for layer in document["layers"] if layer["role"] == "body")
+        self.assertEqual(composition["font_family"], headline["font_family"])
+        self.assertEqual(composition["title_font_size"], headline["font_size"])
+        self.assertEqual(composition["body_font_size"], body["font_size"])
+        self.assertEqual(composition["title_color"], headline["color"])
+        self.assertEqual(composition["body_color"], body["color"])
+        self.assertEqual(
+            [round(value / composition["canvas"][index % 2], 6) for index, value in enumerate(composition["title_box"])],
+            headline["box"],
+        )
 
         for layer in document["layers"]:
             layer["font_family"] = "system_sans"
