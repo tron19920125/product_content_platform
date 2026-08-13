@@ -533,6 +533,7 @@ class LocalProductionEngine:
                 weight_key = "headline_weight" if is_headline else "body_weight"
                 spacing_key = "headline_spacing" if is_headline else "body_spacing"
                 planned_family = str(defaults.get("font_family") or profile_style[family_key])
+                planned_weight = int(defaults.get("font_weight") or profile_style[weight_key])
                 planned_line_height = float(defaults.get("line_height") or (1.08 if is_headline else 1.42))
                 planned_spacing = float(
                     defaults.get("letter_spacing")
@@ -545,6 +546,7 @@ class LocalProductionEngine:
                     planned_max_lines = 1
                 planned_size = self._fit_document_font_size(
                     content=content, region=sample_box, family=planned_family,
+                    weight=planned_weight,
                     requested_size=planned_size, line_height=planned_line_height,
                     letter_spacing=planned_spacing, max_lines=planned_max_lines,
                 )
@@ -555,7 +557,7 @@ class LocalProductionEngine:
                     "name": str(slot.get("name") or "文本框"), "content": content,
                     "box": list(box), "z_index": index, "source": "ai",
                     "font_family": planned_family,
-                    "font_weight": defaults.get("font_weight") or profile_style[weight_key],
+                    "font_weight": planned_weight,
                     "font_size": planned_size,
                     "font_style": "normal", "underline": False, "strikethrough": False,
                     "color": defaults.get("color") or auto_color,
@@ -600,6 +602,7 @@ class LocalProductionEngine:
         content: str,
         region: tuple[int, int, int, int],
         family: str,
+        weight: int,
         requested_size: int,
         line_height: float,
         letter_spacing: float,
@@ -618,7 +621,7 @@ class LocalProductionEngine:
             conservative_limit = round(max(8, fit_width - spacing_width) / max(1, visual_units) * .88)
             size = max(minimum, min(size, conservative_limit))
         while True:
-            font = self._font(size, family)
+            font = self._font(size, family, weight)
             lines = self._wrap_spaced(draw, content, font, fit_width, letter_spacing)
             spacing = max(0, round(size * max(0, line_height - 1)))
             bbox = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=spacing)
@@ -1279,7 +1282,7 @@ class LocalProductionEngine:
             size = text_layer.font_size
             minimum = max(8, min(size, round(min(width, height) * .012)))
             while True:
-                font = self._font(size, text_layer.font_family)
+                font = self._font(size, text_layer.font_family, text_layer.font_weight)
                 lines = self._wrap_spaced(draw, text_layer.content, font, fit_width, text_layer.letter_spacing)
                 spacing = max(0, round(size * max(0, text_layer.line_height - 1)))
                 text = "\n".join(lines)
@@ -1312,7 +1315,8 @@ class LocalProductionEngine:
             fill = self._parse_hex_color(text_layer.color) or (24, 31, 28, 255)
             fill = (*fill[:3], round(255 * text_layer.opacity))
             stroke_fill = self._parse_hex_color(text_layer.stroke_color) or (255, 255, 255, 255)
-            synthetic_bold = max(0, (text_layer.font_weight - 500) // 200)
+            uses_variable_weight = self._font_has_weight_axis(font)
+            synthetic_bold = 0 if uses_variable_weight else max(0, (text_layer.font_weight - 500) // 200)
             effective_stroke = text_layer.stroke_width + synthetic_bold
             def draw_copy(target: ImageDraw.ImageDraw, origin_x: int, origin_y: int, color: tuple[int, int, int, int]) -> None:
                 if not text_layer.letter_spacing:
@@ -1384,6 +1388,7 @@ class LocalProductionEngine:
                 "text_align": text_layer.text_align, "vertical_align": text_layer.vertical_align,
                 "rotation": text_layer.rotation, "content": text_layer.content,
                 "stroke_width": text_layer.stroke_width, "synthetic_bold_width": synthetic_bold,
+                "font_weight_rendering": "variable_axis" if uses_variable_weight else "synthetic_stroke",
                 "effective_stroke_width": effective_stroke,
                 "stroke_color": text_layer.stroke_color, "shadow": text_layer.shadow,
             })
@@ -1815,9 +1820,48 @@ class LocalProductionEngine:
             lines.append(current)
         return lines or [""]
 
-    def _font(self, size: int, family: str = "system_sans") -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def _font(
+        self, size: int, family: str = "system_sans", weight: int = 400,
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         path = (self._font_resolver(family) if self._font_resolver else None) or self._font_paths.get(family) or self._font_path
-        return ImageFont.truetype(str(path), size) if path else ImageFont.load_default(size=size)
+        if not path:
+            return ImageFont.load_default(size=size)
+        font = ImageFont.truetype(str(path), size)
+        axes = self._font_variation_axes(font)
+        if axes:
+            values: list[float] = []
+            has_weight = False
+            for axis in axes:
+                name = self._font_axis_name(axis)
+                value = float(axis.get("default", 0))
+                if name in {"weight", "wght"}:
+                    value = max(float(axis["minimum"]), min(float(axis["maximum"]), float(weight)))
+                    has_weight = True
+                values.append(value)
+            if has_weight:
+                font.set_variation_by_axes(values)
+        return font
+
+    @classmethod
+    def _font_has_weight_axis(cls, font: ImageFont.ImageFont) -> bool:
+        return any(
+            cls._font_axis_name(axis) in {"weight", "wght"}
+            for axis in cls._font_variation_axes(font)
+        )
+
+    @staticmethod
+    def _font_variation_axes(font: ImageFont.ImageFont) -> list[dict[str, Any]]:
+        try:
+            return list(font.get_variation_axes())  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            return []
+
+    @staticmethod
+    def _font_axis_name(axis: dict[str, Any]) -> str:
+        value = axis.get("name", "")
+        if isinstance(value, bytes):
+            value = value.decode("ascii", errors="ignore")
+        return str(value).strip().lower()
 
     @staticmethod
     def _parse_hex_color(value: Any) -> tuple[int, int, int, int] | None:

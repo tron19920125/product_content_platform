@@ -80,6 +80,25 @@ class QualityStub:
         }
 
 
+class FontRenderingTests(unittest.TestCase):
+    def test_variable_font_uses_requested_weight_axis(self) -> None:
+        font_path = (
+            Path(__file__).resolve().parents[2]
+            / "frontend" / "public" / "fonts" / "NotoSansSC-Variable.ttf"
+        )
+        self.assertTrue(font_path.exists())
+        with tempfile.TemporaryDirectory() as directory:
+            engine = LocalProductionEngine(
+                Path(directory), RepairingGenerator(), QualityStub(),
+                font_resolver=lambda _family: font_path,
+            )
+            thin = engine._font(120, "noto-sans-sc", 100)
+            bold = engine._font(120, "noto-sans-sc", 700)
+
+        self.assertTrue(engine._font_has_weight_axis(bold))
+        self.assertGreater(sum(bold.getmask("精致衣物护理")), sum(thin.getmask("精致衣物护理")) * 2)
+
+
 class ProductionEngineTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows Chinese font discovery")
     def test_windows_composition_font_supports_distinct_chinese_glyphs(self) -> None:
