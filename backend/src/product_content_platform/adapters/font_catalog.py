@@ -16,6 +16,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/notosanssc/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
         "file_name": "NotoSansSC-Variable.ttf", "commercial_use": True, "coverage": "完整简体中文",
+        "tags": ["正文", "现代", "通用"],
     },
     {
         "id": "noto-serif-sc", "name": "Noto Serif SC", "display_name": "思源宋体（Noto）",
@@ -24,6 +25,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/notoserifsc/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf",
         "file_name": "NotoSerifSC-Variable.ttf", "commercial_use": True, "coverage": "完整简体中文",
+        "tags": ["正文", "质感", "通用"],
     },
     {
         "id": "lxgw-wenkai", "name": "LXGW WenKai", "display_name": "霞鹜文楷",
@@ -31,6 +33,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license": "OFL-1.1", "license_url": "https://github.com/lxgw/LxgwWenKai/blob/main/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/fonts/TTF/LXGWWenKai-Regular.ttf",
         "file_name": "LXGWWenKai-Regular.ttf", "commercial_use": True, "coverage": "完整简体中文",
+        "tags": ["文艺", "生活方式", "正文"],
     },
     {
         "id": "ma-shan-zheng", "name": "Ma Shan Zheng", "display_name": "马善政毛笔体",
@@ -38,6 +41,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/mashanzheng/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/mashanzheng/MaShanZheng-Regular.ttf",
         "file_name": "MaShanZheng-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "tags": ["国风", "毛笔", "标题"],
     },
     {
         "id": "long-cang", "name": "Long Cang", "display_name": "龙藏体",
@@ -45,6 +49,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/longcang/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/longcang/LongCang-Regular.ttf",
         "file_name": "LongCang-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "tags": ["手写", "自然", "标题"],
     },
     {
         "id": "liu-jian-mao-cao", "name": "Liu Jian Mao Cao", "display_name": "刘建毛草",
@@ -52,6 +57,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/liujianmaocao/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
         "file_name": "LiuJianMaoCao-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "tags": ["国风", "草书", "标题"],
     },
     {
         "id": "zhi-mang-xing", "name": "Zhi Mang Xing", "display_name": "志莽行书",
@@ -59,6 +65,7 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "license_url": "https://github.com/google/fonts/blob/main/ofl/zhimangxing/OFL.txt",
         "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
         "file_name": "ZhiMangXing-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "tags": ["行书", "率性", "标题"],
     },
     {
         "id": "smiley-sans", "name": "Smiley Sans", "display_name": "得意黑",
@@ -67,34 +74,77 @@ _FONT_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "source_url": "https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip",
         "archive_member": "SmileySans-Oblique.ttf",
         "file_name": "SmileySans-Oblique.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "tags": ["促销", "潮流", "标题"],
     },
     {
-        "id": "zcool-kuaile", "name": "ZCOOL KuaiLe", "display_name": "站酷快乐体",
-        "category": "活力标题", "weights": [400], "preview": "快乐上新，好物登场", "license": "OFL-1.1",
-        "license_url": "https://github.com/google/fonts/blob/main/ofl/zcoolkuaile/OFL.txt",
-        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
-        "file_name": "ZCOOLKuaiLe-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "id": "lxgw-marker-gothic", "name": "LXGW Marker Gothic", "display_name": "霞鹜漫黑",
+        "category": "马克笔标题", "weights": [400], "preview": "灵感上新，醒目开场", "license": "OFL-1.1",
+        "license_url": "https://github.com/lxgw/LxgwMarkerGothic/blob/main/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/lxgw/LxgwMarkerGothic/main/fonts/ttf/LXGWMarkerGothic-Regular.ttf",
+        "file_name": "LXGWMarkerGothic-Regular.ttf", "commercial_use": True, "coverage": "完整简繁中文",
+        "tags": ["促销", "广告", "标题"],
     },
     {
-        "id": "zcool-qingke-huangyou", "name": "ZCOOL QingKe HuangYou", "display_name": "站酷庆科黄油体",
-        "category": "几何标题", "weights": [400], "preview": "轻盈设计，刚好出彩", "license": "OFL-1.1",
-        "license_url": "https://github.com/google/fonts/blob/main/ofl/zcoolqingkehuangyou/OFL.txt",
-        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
-        "file_name": "ZCOOLQingKeHuangYou-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "id": "iansui", "name": "Iansui", "display_name": "芫荽",
+        "category": "自然手写", "weights": [400], "preview": "轻松表达，自然有趣", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/iansui/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/iansui/Iansui-Regular.ttf",
+        "file_name": "Iansui-Regular.ttf", "commercial_use": True, "coverage": "简繁中文常用字",
+        "tags": ["手写", "亲和", "生活方式"],
     },
     {
-        "id": "zcool-xiaowei", "name": "ZCOOL XiaoWei", "display_name": "站酷小薇体",
-        "category": "文艺衬线", "weights": [400], "preview": "细品生活，自有余韵", "license": "OFL-1.1",
-        "license_url": "https://github.com/google/fonts/blob/main/ofl/zcoolxiaowei/OFL.txt",
-        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
-        "file_name": "ZCOOLXiaoWei-Regular.ttf", "commercial_use": True, "coverage": "常用简体中文",
+        "id": "wd-xl-lubrifont", "name": "WD-XL Lubrifont SC", "display_name": "润植家如印奏章楷",
+        "category": "圆润展示", "weights": [400], "preview": "圆润上新，亲和醒目", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/wdxllubrifontsc/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/wdxllubrifontsc/WDXLLubrifontSC-Regular.ttf",
+        "file_name": "WDXLLubrifontSC-Regular.ttf", "commercial_use": True, "coverage": "完整简体中文",
+        "tags": ["促销", "圆体", "标题"],
+    },
+    {
+        "id": "bebas-neue", "name": "Bebas Neue", "display_name": "Bebas Neue",
+        "category": "数字价格", "weights": [400], "preview": "NEW 2026 · ¥299", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/bebasneue/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf",
+        "file_name": "BebasNeue-Regular.ttf", "commercial_use": True, "coverage": "拉丁字母与数字",
+        "tags": ["价格", "数字", "促销"],
+    },
+    {
+        "id": "anton", "name": "Anton", "display_name": "Anton",
+        "category": "英文标题", "weights": [400], "preview": "SUPER SALE 50%", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/anton/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf",
+        "file_name": "Anton-Regular.ttf", "commercial_use": True, "coverage": "拉丁字母与数字",
+        "tags": ["英文", "促销", "粗标题"],
+    },
+    {
+        "id": "bungee", "name": "Bungee", "display_name": "Bungee",
+        "category": "潮流展示", "weights": [400], "preview": "DROP 08 · GO!", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/bungee/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bungee/Bungee-Regular.ttf",
+        "file_name": "Bungee-Regular.ttf", "commercial_use": True, "coverage": "拉丁字母与数字",
+        "tags": ["潮流", "英文", "标题"],
+    },
+    {
+        "id": "black-ops-one", "name": "Black Ops One", "display_name": "Black Ops One",
+        "category": "机能展示", "weights": [400], "preview": "POWER 100%", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/blackopsone/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf",
+        "file_name": "BlackOpsOne-Regular.ttf", "commercial_use": True, "coverage": "拉丁字母与数字",
+        "tags": ["机能", "参数", "数字"],
+    },
+    {
+        "id": "lobster", "name": "Lobster", "display_name": "Lobster",
+        "category": "英文手写", "weights": [400], "preview": "Fresh Choice", "license": "OFL-1.1",
+        "license_url": "https://github.com/google/fonts/blob/main/ofl/lobster/OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/lobster/Lobster-Regular.ttf",
+        "file_name": "Lobster-Regular.ttf", "commercial_use": True, "coverage": "拉丁字母与数字",
+        "tags": ["英文", "手写", "生活方式"],
     },
 )
 
 
 _BUNDLED_FONT_IDS = {
-    "ma-shan-zheng", "long-cang", "liu-jian-mao-cao", "zhi-mang-xing",
-    "smiley-sans", "zcool-kuaile", "zcool-qingke-huangyou", "zcool-xiaowei",
+    item["id"] for item in _FONT_DEFINITIONS
 }
 
 
@@ -176,6 +226,8 @@ class FontCatalog:
         available = bundled is not None or (path.exists() and path.stat().st_size >= 16_000)
         return {
             **{key: value for key, value in item.items() if key not in {"source_url", "archive_member"}},
+            "license_verified": item.get("license") == "OFL-1.1" and bool(item.get("license_url")),
+            "redistribution": "允许随软件嵌入和再分发；须保留 OFL-1.1 许可文本，不得单独出售字体文件。",
             "installed": available,
             "preview_available": available,
             "content_url": f"/api/fonts/{item['id']}/content",

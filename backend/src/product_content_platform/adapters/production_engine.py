@@ -1061,7 +1061,8 @@ class LocalProductionEngine:
             fill = self._parse_hex_color(text_layer.color) or (24, 31, 28, 255)
             fill = (*fill[:3], round(255 * text_layer.opacity))
             stroke_fill = self._parse_hex_color(text_layer.stroke_color) or (255, 255, 255, 255)
-            effective_stroke = text_layer.stroke_width + max(0, (text_layer.font_weight - 500) // 200)
+            synthetic_bold = max(0, (text_layer.font_weight - 500) // 200)
+            effective_stroke = text_layer.stroke_width + synthetic_bold
             def draw_copy(target: ImageDraw.ImageDraw, origin_x: int, origin_y: int, color: tuple[int, int, int, int]) -> None:
                 if not text_layer.letter_spacing:
                     target.multiline_text(
@@ -1098,16 +1099,33 @@ class LocalProductionEngine:
                     shadow = shadow.filter(ImageFilter.GaussianBlur(text_layer.shadow_blur))
                 scratch.alpha_composite(shadow)
             draw_copy(ImageDraw.Draw(scratch), x, y, fill)
+            decoration_draw = ImageDraw.Draw(scratch)
+            decoration_width = max(1, round(size / 18) + synthetic_bold)
+            if text_layer.underline:
+                underline_y = min(region_height - 1, y + measured_height + max(1, round(size * .05)))
+                decoration_draw.line((x, underline_y, x + measured_width, underline_y), fill=fill, width=decoration_width)
+            if text_layer.strikethrough:
+                strike_y = min(region_height - 1, y + max(1, round(measured_height * .52)))
+                decoration_draw.line((x, strike_y, x + measured_width, strike_y), fill=fill, width=decoration_width)
+            if text_layer.font_style == "italic":
+                shear = -.18
+                scratch = scratch.transform(
+                    scratch.size, Image.Transform.AFFINE, (1, shear, max(0, round(region_height * .18)), 0, 1, 0),
+                    resample=Image.Resampling.BICUBIC,
+                )
             if text_layer.rotation:
                 scratch = scratch.rotate(-text_layer.rotation, resample=Image.Resampling.BICUBIC, expand=False)
             layer_canvas.alpha_composite(scratch, (region[0], region[1]))
             rendered.append({
                 "id": text_layer.id, "role": text_layer.role, "box": list(region),
                 "font_family": text_layer.font_family, "requested_font_size": text_layer.font_size,
+                "font_weight": text_layer.font_weight, "font_style": text_layer.font_style,
+                "underline": text_layer.underline, "strikethrough": text_layer.strikethrough,
                 "font_size": size, "lines": lines, "color": text_layer.color,
                 "text_align": text_layer.text_align, "vertical_align": text_layer.vertical_align,
                 "rotation": text_layer.rotation, "content": text_layer.content,
-                "stroke_width": text_layer.stroke_width, "effective_stroke_width": effective_stroke,
+                "stroke_width": text_layer.stroke_width, "synthetic_bold_width": synthetic_bold,
+                "effective_stroke_width": effective_stroke,
                 "stroke_color": text_layer.stroke_color, "shadow": text_layer.shadow,
             })
         text_path.parent.mkdir(parents=True, exist_ok=True)

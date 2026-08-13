@@ -268,6 +268,10 @@ class ProductionFlowTest(unittest.TestCase):
         for layer in document["layers"]:
             layer["font_family"] = "system_sans"
         document["layers"][0]["font_family"] = "ma-shan-zheng"
+        document["layers"][0]["font_weight"] = 700
+        document["layers"][0]["font_style"] = "italic"
+        document["layers"][0]["underline"] = True
+        document["layers"][0]["strikethrough"] = True
         document["layers"][0]["stroke_width"] = 12
         document["layers"][0]["stroke_color"] = "#FFFFFF"
         document["layers"].append({
@@ -302,6 +306,10 @@ class ProductionFlowTest(unittest.TestCase):
             if layer["role"] == "headline"
         )
         self.assertEqual("ma-shan-zheng", title_composition["font_family"])
+        self.assertEqual(700, title_composition["font_weight"])
+        self.assertEqual("italic", title_composition["font_style"])
+        self.assertTrue(title_composition["underline"])
+        self.assertTrue(title_composition["strikethrough"])
         self.assertEqual(12, title_composition["stroke_width"])
         self.assertEqual("#FFFFFF", title_composition["stroke_color"])
         active = self.client.get(f"/api/projects/{project_id}/production").json()["pages"][0]["candidates"][0]

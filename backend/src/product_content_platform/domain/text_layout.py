@@ -12,6 +12,7 @@ from .models import utc_now
 TEXT_ROLES = {"headline", "subheadline", "body", "badge", "price", "parameter", "caption", "disclaimer", "custom"}
 TEXT_ALIGNMENTS = {"left", "center", "right"}
 VERTICAL_ALIGNMENTS = {"top", "center", "bottom"}
+FONT_STYLES = {"normal", "italic"}
 
 
 def _box(value: Any) -> tuple[float, float, float, float]:
@@ -43,6 +44,9 @@ class TextLayer:
     box: tuple[float, float, float, float]
     font_family: str = "noto-sans-sc"
     font_weight: int = 600
+    font_style: str = "normal"
+    underline: bool = False
+    strikethrough: bool = False
     font_size: int = 96
     color: str = "#181F1C"
     text_align: str = "left"
@@ -78,6 +82,8 @@ class TextLayer:
             raise DomainValidationError("字体 ID 格式无效")
         if not 100 <= self.font_weight <= 900 or self.font_weight % 100:
             raise DomainValidationError("字体粗细必须为 100-900 的整百数")
+        if self.font_style not in FONT_STYLES:
+            raise DomainValidationError("字体样式必须为 normal 或 italic")
         if not 8 <= self.font_size <= 1024:
             raise DomainValidationError("字号必须在 8-1024px 之间")
         if self.text_align not in TEXT_ALIGNMENTS or self.vertical_align not in VERTICAL_ALIGNMENTS:
@@ -100,6 +106,8 @@ class TextLayer:
             name=str(value.get("name") or "自定义文字"), content=str(value.get("content") or ""),
             box=_box(value.get("box")), font_family=str(value.get("font_family") or "noto-sans-sc"),
             font_weight=int(value.get("font_weight") or 400), font_size=int(value.get("font_size") or 64),
+            font_style=str(value.get("font_style") or "normal"), underline=bool(value.get("underline", False)),
+            strikethrough=bool(value.get("strikethrough", False)),
             color=_color(value.get("color"), "#181F1C"), text_align=str(value.get("text_align") or "left"),
             vertical_align=str(value.get("vertical_align") or "top"), line_height=float(value.get("line_height") or 1.2),
             letter_spacing=float(value.get("letter_spacing") or 0), rotation=float(value.get("rotation") or 0),

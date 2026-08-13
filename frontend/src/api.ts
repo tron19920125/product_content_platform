@@ -279,6 +279,9 @@ export type FontAsset = {
   license_url: string;
   commercial_use: boolean;
   coverage: string;
+  tags: string[];
+  license_verified: boolean;
+  redistribution: string;
   installed: boolean;
   preview_available: boolean;
   content_url: string;
@@ -292,6 +295,9 @@ export type TextLayer = {
   box: [number, number, number, number];
   font_family: string;
   font_weight: number;
+  font_style: "normal" | "italic";
+  underline: boolean;
+  strikethrough: boolean;
   font_size: number;
   color: string;
   text_align: "left" | "center" | "right";

@@ -1,23 +1,60 @@
-import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useState } from "react";
+import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, Candidate, FontAsset, TextDocument, TextLayer } from "./api";
 import { Icon } from "./ui";
 
 type Props = { candidate: Candidate; onComplete: () => Promise<void>; onCancel: () => void };
+type InspectorView = "properties" | "fonts";
+type FontLoadState = "idle" | "loading" | "loaded" | "error" | "unavailable";
 
-type FontLoadState = "loading" | "loaded" | "error" | "unavailable";
+const RECENT_FONT_KEY = "pcp:text-editor:recent-fonts:v1";
 
-function FontPreview({ font, active, state, family, onSelect }: { font: FontAsset; active: boolean; state: FontLoadState; family: string; onSelect: () => void }) {
+function readRecentFonts(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(RECENT_FONT_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 6) : [];
+  } catch { return []; }
+}
+
+function FontPreview({ font, active, state, family, previewText, onVisible, onSelect }: {
+  font: FontAsset;
+  active: boolean;
+  state: FontLoadState;
+  family: string;
+  previewText: string;
+  onVisible: () => void;
+  onSelect: () => void;
+}) {
+  const cardRef = useRef<HTMLButtonElement>(null);
   const disabled = state === "error" || state === "unavailable";
-  return <button type="button" disabled={disabled} className={`font-preview-card ${active ? "active" : ""} ${state}`} onClick={onSelect}>
-    <strong style={{ fontFamily: state === "loaded" ? family : "sans-serif" }}>{font.preview}</strong>
-    <span>{font.display_name}<small>{font.category} · {font.license}</small></span>
-    <em>{state === "loaded" ? "预览已加载" : state === "loading" ? "字体加载中…" : state === "unavailable" ? "字体文件未安装" : "字体加载失败"}</em>
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || disabled || state !== "idle") return;
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) onVisible(); }, { rootMargin: "80px" });
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [disabled, onVisible, state]);
+  return <button ref={cardRef} type="button" disabled={disabled} className={`font-preview-card ${active ? "active" : ""} ${state}`} onClick={onSelect} aria-pressed={active}>
+    <strong lang={font.coverage.startsWith("拉丁") ? "en" : "zh-CN"} style={{ fontFamily: state === "loaded" ? family : "sans-serif" }}>{previewText}</strong>
+    <span>{font.display_name}<small>{font.category} · {font.coverage}</small></span>
+    <em>{state === "loaded" ? "OFL 许可已核验" : state === "loading" ? "正在载入预览…" : state === "unavailable" ? "字体文件未安装" : state === "error" ? "字体加载失败" : "滚动到此处加载"}</em>
   </button>;
 }
 
 function createLayer(index: number): TextLayer {
-  return { id: `custom-${crypto.randomUUID()}`, role: "custom", name: `文本框 ${index + 1}`, content: "双击输入文案", box: [.12, .12 + Math.min(index, 5) * .06, .48, .23 + Math.min(index, 5) * .06], font_family: "noto-sans-sc", font_weight: 600, font_size: 72, color: "#181F1C", text_align: "left", vertical_align: "top", line_height: 1.2, letter_spacing: 0, rotation: 0, opacity: 1, stroke_width: 0, stroke_color: "#FFFFFF", shadow: false, shadow_color: "#000000", shadow_blur: 8, shadow_offset_x: 4, shadow_offset_y: 4, background_color: "", background_opacity: 0, padding: 0, visible: true, locked: false, z_index: index, source: "manual", copy_block_id: "" };
+  return {
+    id: `custom-${crypto.randomUUID()}`, role: "custom", name: `文本框 ${index + 1}`, content: "双击输入文案",
+    box: [.12, .12 + Math.min(index, 5) * .06, .48, .23 + Math.min(index, 5) * .06],
+    font_family: "noto-sans-sc", font_weight: 600, font_style: "normal", underline: false, strikethrough: false,
+    font_size: 72, color: "#181F1C", text_align: "left", vertical_align: "top", line_height: 1.2,
+    letter_spacing: 0, rotation: 0, opacity: 1, stroke_width: 0, stroke_color: "#FFFFFF", shadow: false,
+    shadow_color: "#000000", shadow_blur: 8, shadow_offset_x: 4, shadow_offset_y: 4, background_color: "",
+    background_opacity: 0, padding: 0, visible: true, locked: false, z_index: index, source: "manual", copy_block_id: "",
+  };
+}
+
+function styleDefaults(layer: TextLayer): TextLayer {
+  return { ...layer, font_style: layer.font_style ?? "normal", underline: layer.underline ?? false, strikethrough: layer.strikethrough ?? false };
 }
 
 export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
@@ -25,54 +62,86 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   const [fonts, setFonts] = useState<FontAsset[]>([]);
   const [fontStates, setFontStates] = useState<Record<string, FontLoadState>>({});
   const [selectedId, setSelectedId] = useState("");
+  const [inspectorView, setInspectorView] = useState<InspectorView>("properties");
+  const [fontSearch, setFontSearch] = useState("");
+  const [fontCategory, setFontCategory] = useState("全部");
+  const [recentFonts, setRecentFonts] = useState<string[]>(readRecentFonts);
   const [instruction, setInstruction] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState("");
+  const fontLoadStarted = useRef(new Set<string>());
   const composition = candidate.metadata?.composition as Record<string, unknown> | undefined;
   const canvas = Array.isArray(composition?.canvas) ? composition.canvas as number[] : [2048, 2048];
   const selected = textDocument?.layers.find((layer) => layer.id === selectedId);
+  const selectedFont = fonts.find((font) => font.id === selected?.font_family);
 
   useEffect(() => {
     let active = true;
     setBusy("loading");
     void Promise.all([api.getTextDocument(candidate.id), api.listFonts()]).then(([next, fontRows]) => {
       if (!active) return;
-      setTextDocument(next); setFonts(fontRows); setSelectedId(next.layers[0]?.id ?? ""); setBusy("");
+      const normalized = { ...next, layers: next.layers.map(styleDefaults) };
+      setTextDocument(normalized);
+      setFonts(fontRows);
+      setFontStates(Object.fromEntries(fontRows.map((font) => [font.id, font.preview_available ? "idle" : "unavailable"])) as Record<string, FontLoadState>);
+      setSelectedId(normalized.layers[0]?.id ?? "");
+      setBusy("");
     }).catch((reason) => { if (active) { setError(reason instanceof Error ? reason.message : "文字图层加载失败"); setBusy(""); } });
     return () => { active = false; };
   }, [candidate.id]);
 
-  useEffect(() => {
-    let active = true;
-    const initial = Object.fromEntries(fonts.map((font) => [font.id, font.preview_available ? "loading" : "unavailable"])) as Record<string, FontLoadState>;
-    setFontStates(initial);
-    for (const font of fonts) {
-      if (!font.preview_available) continue;
-      const family = `pcp-${font.id}`;
-      const face = new FontFace(family, `url("${api.resolveUrl(font.content_url)}") format("truetype")`, { weight: "100 900" });
-      void face.load().then((ready) => {
-        if (!active) return;
-        document.fonts.add(ready);
-        setFontStates((current) => ({ ...current, [font.id]: "loaded" }));
-      }).catch(() => {
-        if (active) setFontStates((current) => ({ ...current, [font.id]: "error" }));
-      });
-    }
-    return () => { active = false; };
-  }, [fonts]);
-
   const fontFamilies = useMemo(() => Object.fromEntries(fonts.map((font) => [font.id, `"pcp-${font.id}", sans-serif`])), [fonts]);
-  const displayFonts = useMemo(() => [...fonts].sort((left, right) => Number(right.preview_available) - Number(left.preview_available)), [fonts]);
+  const fontCategories = useMemo(() => ["全部", "最近", ...Array.from(new Set(fonts.map((font) => font.category)))], [fonts]);
+  const displayFonts = useMemo(() => {
+    const query = fontSearch.trim().toLowerCase();
+    return fonts
+      .filter((font) => fontCategory === "全部" || (fontCategory === "最近" ? recentFonts.includes(font.id) : font.category === fontCategory))
+      .filter((font) => !query || [font.name, font.display_name, font.category, font.coverage, ...(font.tags ?? [])].some((value) => value.toLowerCase().includes(query)))
+      .sort((left, right) => {
+        if (fontCategory === "最近") return recentFonts.indexOf(left.id) - recentFonts.indexOf(right.id);
+        return Number(right.preview_available) - Number(left.preview_available) || left.display_name.localeCompare(right.display_name, "zh-CN");
+      });
+  }, [fontCategory, fontSearch, fonts, recentFonts]);
+
+  const loadFont = useCallback((font: FontAsset) => {
+    if (!font.preview_available || fontLoadStarted.current.has(font.id)) return;
+    fontLoadStarted.current.add(font.id);
+    setFontStates((current) => ({ ...current, [font.id]: "loading" }));
+    const family = `pcp-${font.id}`;
+    const face = new FontFace(family, `url("${api.resolveUrl(font.content_url)}") format("truetype")`, { weight: "100 900" });
+    void face.load().then((ready) => {
+      document.fonts.add(ready);
+      setFontStates((current) => ({ ...current, [font.id]: "loaded" }));
+    }).catch(() => setFontStates((current) => ({ ...current, [font.id]: "error" })));
+  }, []);
+
+  useEffect(() => { if (selectedFont) loadFont(selectedFont); }, [loadFont, selectedFont]);
+  useEffect(() => {
+    const closeFontLibrary = (event: KeyboardEvent) => { if (event.key === "Escape" && inspectorView === "fonts") setInspectorView("properties"); };
+    window.addEventListener("keydown", closeFontLibrary);
+    return () => window.removeEventListener("keydown", closeFontLibrary);
+  }, [inspectorView]);
 
   function updateLayer(id: string, changes: Partial<TextLayer>) {
     setTextDocument((current) => current ? ({ ...current, layers: current.layers.map((layer) => layer.id === id ? { ...layer, ...changes, source: "manual" } : layer) }) : current);
     setDirty(true);
   }
 
+  function selectFont(font: FontAsset) {
+    if (!selected) return;
+    loadFont(font);
+    updateLayer(selected.id, { font_family: font.id });
+    setRecentFonts((current) => {
+      const next = [font.id, ...current.filter((id) => id !== font.id)].slice(0, 6);
+      window.localStorage.setItem(RECENT_FONT_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
   function beginTransform(event: ReactPointerEvent, layer: TextLayer, mode: "move" | "resize") {
     if (layer.locked) return;
-    event.preventDefault(); event.stopPropagation(); setSelectedId(layer.id);
+    event.preventDefault(); event.stopPropagation(); setSelectedId(layer.id); setInspectorView("properties");
     const stage = event.currentTarget.closest(".text-layout-stage")?.getBoundingClientRect();
     if (!stage) return;
     const startX = event.clientX; const startY = event.clientY; const start = [...layer.box] as TextLayer["box"];
@@ -85,17 +154,17 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   }
 
-  async function saveDocument(document = textDocument) {
-    if (!document) throw new Error("文字图层尚未加载");
-    const saved = await api.saveTextDocument(candidate.id, document);
-    setTextDocument(saved); setDirty(false); return saved;
+  async function saveDocument(documentValue = textDocument) {
+    if (!documentValue) throw new Error("文字图层尚未加载");
+    const saved = await api.saveTextDocument(candidate.id, documentValue);
+    setTextDocument({ ...saved, layers: saved.layers.map(styleDefaults) }); setDirty(false); return saved;
   }
 
   async function perform(action: "save" | "ai" | "apply") {
     setBusy(action); setError("");
     try {
       if (action === "save") await saveDocument();
-      if (action === "ai") { if (dirty) await saveDocument(); const planned = await api.aiLayoutTextDocument(candidate.id, instruction); setTextDocument(planned); setSelectedId(planned.layers[0]?.id ?? ""); setDirty(false); }
+      if (action === "ai") { if (dirty) await saveDocument(); const planned = await api.aiLayoutTextDocument(candidate.id, instruction); setTextDocument({ ...planned, layers: planned.layers.map(styleDefaults) }); setSelectedId(planned.layers[0]?.id ?? ""); setInspectorView("properties"); setDirty(false); }
       if (action === "apply") { const ready = dirty ? await saveDocument() : textDocument; if (!ready) throw new Error("文字图层尚未加载"); await api.applyTextDocument(candidate.id, ready.version); await onComplete(); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "文字排版操作失败"); } finally { setBusy(""); }
   }
@@ -105,11 +174,33 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     <div className="tool-heading"><div><strong>文字图层工作台</strong><small>像 PPT 一样增删、拖拽和缩放文本框；应用时只重做透明文字层，不调用生图模型。</small></div><button type="button" className="icon-button" aria-label="关闭文字图层工作台" onClick={onCancel}>×</button></div>
     <div className="ai-layout-bar"><input value={instruction} maxLength={1000} onChange={(event) => setInstruction(event.target.value)} placeholder="可选：描述排版方向，例如“国风书法标题、正文克制留白”"/><button type="button" className="secondary" disabled={!!busy} onClick={() => void perform("ai")}>{busy === "ai" ? "AI 初排中…" : "AI 帮我初排"}</button></div>
     <div className="text-layout-workspace">
-      <aside className="text-layer-list"><header><strong>图层</strong><button type="button" onClick={() => { const layer = createLayer(textDocument.layers.length); setTextDocument({ ...textDocument, layers: [...textDocument.layers, layer] }); setSelectedId(layer.id); setDirty(true); }}>＋ 文本框</button></header>{textDocument.layers.map((layer) => <button type="button" key={layer.id} className={layer.id === selectedId ? "active" : ""} onClick={() => setSelectedId(layer.id)}><Icon name="grip"/><span><strong>{layer.name}</strong><small>{layer.content || "空文本"}</small></span><i>{layer.visible ? "●" : "○"}</i></button>)}</aside>
-      <div className="text-layout-canvas-wrap"><div className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => setSelectedId("")}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false}/>{textDocument.layers.map((layer) => { const scale = Math.max(canvas[0] / 620, 1); const stroke = layer.stroke_width ? Math.max(1, layer.stroke_width / scale) : 0; const shadow = layer.shadow ? `${layer.shadow_offset_x / scale}px ${layer.shadow_offset_y / scale}px ${Math.max(1, layer.shadow_blur / scale)}px ${layer.shadow_color}` : "none"; return <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontFamily: fontStates[layer.font_family] === "loaded" ? fontFamilies[layer.font_family] : undefined, fontWeight: layer.font_weight, fontSize: `${Math.max(10, layer.font_size / scale)}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing / scale}px`, WebkitTextStroke: `${stroke}px ${layer.stroke_color}`, paintOrder: "stroke fill", textShadow: shadow, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked && <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/>}</div>; })}</div><small>底图预览 · 字体、描边和阴影会实时显示；坐标按比例保存。</small></div>
-      <aside className="text-property-panel">{selected ? <><header><strong>文本属性</strong><button type="button" className="danger-link" onClick={() => { setTextDocument({ ...textDocument, layers: textDocument.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId(""); setDirty(true); }}>删除</button></header><label><span>图层名称</span><input value={selected.name} onChange={(event) => updateLayer(selected.id, { name: event.target.value })}/></label><label><span>文字内容</span><textarea rows={4} value={selected.content} onChange={(event) => updateLayer(selected.id, { content: event.target.value })}/></label><div className="property-row"><label><span>字号 px</span><input type="number" min="8" max="1024" value={selected.font_size} onChange={(event) => updateLayer(selected.id, { font_size: Number(event.target.value) })}/></label><label><span>粗细</span><select value={selected.font_weight} onChange={(event) => updateLayer(selected.id, { font_weight: Number(event.target.value) })}>{[300,400,500,600,700,800,900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label></div><div className="property-row"><label><span>颜色</span><input type="color" value={selected.color} onChange={(event) => updateLayer(selected.id, { color: event.target.value.toUpperCase() })}/></label><label><span>旋转</span><input type="number" min="-180" max="180" value={selected.rotation} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>对齐</span><select value={selected.text_align} onChange={(event) => updateLayer(selected.id, { text_align: event.target.value as TextLayer["text_align"] })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label><span>行高</span><input type="number" step="0.05" min="0.6" max="3" value={selected.line_height} onChange={(event) => updateLayer(selected.id, { line_height: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>字距</span><input type="number" min="-20" max="100" value={selected.letter_spacing} onChange={(event) => updateLayer(selected.id, { letter_spacing: Number(event.target.value) })}/></label><label><span>描边宽度 px</span><input type="number" min="0" max="32" value={selected.stroke_width} onChange={(event) => updateLayer(selected.id, { stroke_width: Number(event.target.value) })}/></label></div><label><span>描边颜色</span><input type="color" value={selected.stroke_color} onChange={(event) => updateLayer(selected.id, { stroke_color: event.target.value.toUpperCase() })}/></label><label className="check-control"><input type="checkbox" checked={selected.shadow} onChange={(event) => updateLayer(selected.id, { shadow: event.target.checked })}/>启用阴影</label><label className="check-control"><input type="checkbox" checked={selected.locked} onChange={(event) => updateLayer(selected.id, { locked: event.target.checked })}/>锁定图层</label></> : <div className="empty-property"><Icon name="type"/><strong>选择一个文本框</strong><p>可以编辑文字、字体、大小、颜色、对齐、旋转、描边和阴影。</p></div>}</aside>
+      <aside className="text-layer-list"><header><strong>图层</strong><button type="button" onClick={() => { const layer = createLayer(textDocument.layers.length); setTextDocument({ ...textDocument, layers: [...textDocument.layers, layer] }); setSelectedId(layer.id); setInspectorView("properties"); setDirty(true); }}>＋ 文本框</button></header>{textDocument.layers.map((layer) => <button type="button" key={layer.id} className={layer.id === selectedId ? "active" : ""} onClick={() => { setSelectedId(layer.id); setInspectorView("properties"); }}><Icon name="grip"/><span><strong>{layer.name}</strong><small>{layer.content || "空文本"}</small></span><i>{layer.visible ? "●" : "○"}</i></button>)}</aside>
+      <div className="text-layout-canvas-wrap"><div className="text-layout-stage" style={{ aspectRatio: `${canvas[0] || 1} / ${canvas[1] || 1}` }} onPointerDown={() => { setSelectedId(""); setInspectorView("properties"); }}><img src={api.resolveUrl(candidate.base_url)} alt="无营销文字底图" draggable={false}/>{textDocument.layers.map((layer) => { const scale = Math.max(canvas[0] / 620, 1); const stroke = layer.stroke_width ? Math.max(1, layer.stroke_width / scale) : 0; const shadow = layer.shadow ? `${layer.shadow_offset_x / scale}px ${layer.shadow_offset_y / scale}px ${Math.max(1, layer.shadow_blur / scale)}px ${layer.shadow_color}` : "none"; const decoration = [layer.underline ? "underline" : "", layer.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") || "none"; return <div key={layer.id} className={`editable-text-layer ${layer.id === selectedId ? "selected" : ""} ${layer.locked ? "locked" : ""}`} style={{ left: `${layer.box[0] * 100}%`, top: `${layer.box[1] * 100}%`, width: `${(layer.box[2] - layer.box[0]) * 100}%`, height: `${(layer.box[3] - layer.box[1]) * 100}%`, color: layer.color, opacity: layer.opacity, textAlign: layer.text_align, transform: `rotate(${layer.rotation}deg)`, fontFamily: fontStates[layer.font_family] === "loaded" ? fontFamilies[layer.font_family] : undefined, fontWeight: layer.font_weight, fontStyle: layer.font_style, textDecorationLine: decoration, fontSize: `${Math.max(10, layer.font_size / scale)}px`, lineHeight: layer.line_height, letterSpacing: `${layer.letter_spacing / scale}px`, WebkitTextStroke: `${stroke}px ${layer.stroke_color}`, paintOrder: "stroke fill", textShadow: shadow, justifyContent: layer.vertical_align === "center" ? "center" : layer.vertical_align === "bottom" ? "flex-end" : "flex-start", display: layer.visible ? "flex" : "none" }} onPointerDown={(event) => beginTransform(event, layer, "move")}><span>{layer.content}</span>{layer.id === selectedId && !layer.locked ? <i className="text-resize-handle" onPointerDown={(event) => beginTransform(event, layer, "resize")}/> : null}</div>; })}</div><small>底图预览 · 字体、字形和效果会实时显示；坐标按比例保存。</small></div>
+      <aside className={`text-property-panel ${inspectorView === "fonts" ? "font-library-view" : ""}`}>
+        {selected && inspectorView === "fonts" ? <>
+          <header className="font-library-header"><button type="button" className="font-library-back" onClick={() => setInspectorView("properties")}>‹ 文本属性</button><strong>选择字体</strong></header>
+          <label className="font-search"><span className="sr-only">搜索字体</span><input autoFocus value={fontSearch} onChange={(event) => setFontSearch(event.target.value)} placeholder="搜索字体、风格或用途" /></label>
+          <div className="font-category-tabs" role="tablist" aria-label="字体分类">{fontCategories.map((category) => <button type="button" role="tab" aria-selected={fontCategory === category} className={fontCategory === category ? "active" : ""} key={category} onClick={() => setFontCategory(category)}>{category}</button>)}</div>
+          <div className="font-license-note"><strong>可商用开源字体</strong><span>仅展示许可证已核验且允许随软件再分发的字体。</span></div>
+          <div className="font-preview-grid">{displayFonts.length ? displayFonts.map((font) => <FontPreview key={font.id} font={font} active={selected.font_family === font.id} state={fontStates[font.id] ?? "idle"} family={fontFamilies[font.id]} previewText={font.coverage.startsWith("拉丁") ? font.preview : (selected.content.trim().slice(0, 18) || font.preview)} onVisible={() => loadFont(font)} onSelect={() => selectFont(font)}/>) : <p className="font-empty">没有匹配的字体</p>}</div>
+        </> : selected ? <>
+          <header><strong>文本属性</strong><button type="button" className="danger-link" onClick={() => { setTextDocument({ ...textDocument, layers: textDocument.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId(""); setDirty(true); }}>删除</button></header>
+          <label><span>图层名称</span><input value={selected.name} onChange={(event) => updateLayer(selected.id, { name: event.target.value })}/></label>
+          <label><span>文字内容</span><textarea rows={4} value={selected.content} onChange={(event) => updateLayer(selected.id, { content: event.target.value })}/></label>
+          <button type="button" className="font-family-trigger" onClick={() => setInspectorView("fonts")} aria-label="打开字体库"><span style={{ fontFamily: fontStates[selected.font_family] === "loaded" ? fontFamilies[selected.font_family] : undefined }}>{selectedFont?.display_name ?? selected.font_family}</span><small>{selectedFont?.category ?? "字体"}</small><b>›</b></button>
+          <div className="format-toolbar" aria-label="文字样式">
+            <button type="button" className={selected.font_weight >= 700 ? "active" : ""} aria-label="加粗" aria-pressed={selected.font_weight >= 700} onClick={() => updateLayer(selected.id, { font_weight: selected.font_weight >= 700 ? 400 : 700 })}><strong>B</strong></button>
+            <button type="button" className={selected.font_style === "italic" ? "active" : ""} aria-label="斜体" aria-pressed={selected.font_style === "italic"} onClick={() => updateLayer(selected.id, { font_style: selected.font_style === "italic" ? "normal" : "italic" })}><i>I</i></button>
+            <button type="button" className={selected.underline ? "active" : ""} aria-label="下划线" aria-pressed={selected.underline} onClick={() => updateLayer(selected.id, { underline: !selected.underline })}><u>U</u></button>
+            <button type="button" className={selected.strikethrough ? "active" : ""} aria-label="删除线" aria-pressed={selected.strikethrough} onClick={() => updateLayer(selected.id, { strikethrough: !selected.strikethrough })}><s>S</s></button>
+            <span className="font-size-stepper"><button type="button" aria-label="减小字号" onClick={() => updateLayer(selected.id, { font_size: Math.max(8, selected.font_size - 2) })}>−</button><input aria-label="字号" type="number" min="8" max="1024" value={selected.font_size} onChange={(event) => updateLayer(selected.id, { font_size: Number(event.target.value) })}/><button type="button" aria-label="增大字号" onClick={() => updateLayer(selected.id, { font_size: Math.min(1024, selected.font_size + 2) })}>＋</button></span>
+          </div>
+          <div className="property-row"><label><span>颜色</span><input type="color" value={selected.color} onChange={(event) => updateLayer(selected.id, { color: event.target.value.toUpperCase() })}/></label><label><span>对齐</span><select value={selected.text_align} onChange={(event) => updateLayer(selected.id, { text_align: event.target.value as TextLayer["text_align"] })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label></div>
+          <details className="advanced-text-properties"><summary>更多排版与效果</summary><div className="property-row"><label><span>粗细</span><select value={selected.font_weight} onChange={(event) => updateLayer(selected.id, { font_weight: Number(event.target.value) })}>{[300,400,500,600,700,800,900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label><label><span>旋转</span><input type="number" min="-180" max="180" value={selected.rotation} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>行高</span><input type="number" step="0.05" min="0.6" max="3" value={selected.line_height} onChange={(event) => updateLayer(selected.id, { line_height: Number(event.target.value) })}/></label><label><span>字距</span><input type="number" min="-20" max="100" value={selected.letter_spacing} onChange={(event) => updateLayer(selected.id, { letter_spacing: Number(event.target.value) })}/></label></div><div className="property-row"><label><span>描边宽度 px</span><input type="number" min="0" max="32" value={selected.stroke_width} onChange={(event) => updateLayer(selected.id, { stroke_width: Number(event.target.value) })}/></label><label><span>描边颜色</span><input type="color" value={selected.stroke_color} onChange={(event) => updateLayer(selected.id, { stroke_color: event.target.value.toUpperCase() })}/></label></div><label className="check-control"><input type="checkbox" checked={selected.shadow} onChange={(event) => updateLayer(selected.id, { shadow: event.target.checked })}/>启用阴影</label></details>
+          <label className="check-control"><input type="checkbox" checked={selected.locked} onChange={(event) => updateLayer(selected.id, { locked: event.target.checked })}/>锁定图层</label>
+        </> : <div className="empty-property"><Icon name="type"/><strong>选择一个文本框</strong><p>选择后可直接设置字体、字号、加粗、斜体、颜色、描边和其他排版效果。</p></div>}
+      </aside>
     </div>
-    {selected && <div className="font-picker"><div><strong>字体库</strong><span>示例文案使用字体本身实时预览；灰色字体表示本机尚未安装。</span></div><div className="font-preview-grid">{displayFonts.map((font) => <FontPreview key={font.id} font={font} active={selected.font_family === font.id} state={fontStates[font.id] ?? "loading"} family={fontFamilies[font.id]} onSelect={() => updateLayer(selected.id, { font_family: font.id })}/>)}</div></div>}
     {textDocument.ai_reasoning && <p className="tool-note"><strong>AI 初排说明：</strong>{textDocument.ai_reasoning}</p>}
     {busy && <div className="inline-working" role="status"><span className="spinner" />{{ loading: "加载中", save: "保存版本中", ai: "AI 正在初排", apply: "正在确定性渲染文字层" }[busy]}…</div>}
     {error && <div className="notice error">{error}</div>}

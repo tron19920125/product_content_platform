@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   api,
@@ -200,7 +200,7 @@ function Sidebar({ tab, role, preflight, collapsed, onToggle, setRole, setTab }:
     { key: "layouts", label: "版式中心", icon: "layout", admin: true }, { key: "generation", label: "生成配置", icon: "settings", admin: true },
   ];
   return <aside className="sidebar" aria-label="全局导航">
-    <div className="brand"><div className="brand-mark">C</div><div className="brand-copy"><strong>内容工场</strong><span>Content Studio</span></div></div>
+    <div className="brand"><div className="brand-mark"><img src="/brand/content-studio-mark.png" alt="" /></div><div className="brand-copy"><strong>内容工场</strong><span>Content Studio</span></div></div>
     <nav>
       {items.filter((item) => !item.admin || role === "admin").map((item) => <button key={item.key} aria-label={item.label} aria-current={tab === item.key ? "page" : undefined} title={collapsed ? item.label : undefined} className={tab === item.key ? "active" : ""} onClick={() => setTab(item.key)}><Icon name={item.icon} /><span>{item.label}</span></button>)}
     </nav>
@@ -262,6 +262,8 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   const activeLibraryId = plan?.layout_library_id ?? draftLibraryId;
   const activeLibrary = layoutLibraries.find((item) => item.id === activeLibraryId);
   const availableTemplates = templates.filter((item) => item.library_id === activeLibraryId);
+  const planningProductAsset = assets.find((asset) => asset.mime_type.startsWith("image/") && asset.usage === "product");
+  const planningProductImageUrl = planningProductAsset ? api.assetUrl(planningProductAsset.id) : "/demo-product-reference.jpg";
   const reviewCount = production?.pages.filter((row) => row.candidates.some((candidate) => candidate.qa?.status !== "pass") || !row.decision).length ?? 0;
   const approvedCount = production?.pages.filter((row) => row.decision?.decision === "approved").length ?? 0;
 
@@ -467,6 +469,7 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
       {planningRun?.status === "completed" && <PlanningSuggestionPanel run={planningRun} currentPlan={plan} applying={busy === "apply-planning"} onApply={applyPlanningSuggestion} onClose={() => void dismissPlanningSuggestion()} />}
       {!plan ? <div className="empty-state inline-empty"><strong>还没有内容规划</strong><p>录入商品卖点和参数后，可生成一套多页内容结构。</p><button className="primary" disabled={!!busy || hasActivePlanning} onClick={() => void generatePlan()}>{hasActivePlanning ? "规划中…" : "生成内容规划"}</button></div> : <PlanningWorkbench
         plan={plan}
+        productImageUrl={planningProductImageUrl}
         selectedPageId={selectedPlanPageId}
         templates={availableTemplates}
         libraries={layoutLibraries}
@@ -582,8 +585,9 @@ function LayoutLibraryPicker({ libraries, selectedId, onSelect, disabled }: { li
   </div>;
 }
 
-function PlanningWorkbench({ plan, selectedPageId, templates, libraries, activeLibrary, activeLibraryId, recipeCount, disabled, onSelectPage, onSelectLibrary, onChangePage, onMovePage, onReorderPage, onDeletePage }: {
+function PlanningWorkbench({ plan, productImageUrl, selectedPageId, templates, libraries, activeLibrary, activeLibraryId, recipeCount, disabled, onSelectPage, onSelectLibrary, onChangePage, onMovePage, onReorderPage, onDeletePage }: {
   plan: PagePlan;
+  productImageUrl: string;
   selectedPageId: string;
   templates: TemplateDefinition[];
   libraries: LayoutLibrary[];
@@ -603,16 +607,16 @@ function PlanningWorkbench({ plan, selectedPageId, templates, libraries, activeL
   const selected = plan.items[selectedIndex] ?? plan.items[0];
   return <div className="planning-workbench">
     <aside className="planning-page-rail"><header><strong>内容页</strong><span>{plan.items.length}</span></header>{plan.items.map((item, index) => <div key={item.id} draggable={!disabled} className={`${selected?.id === item.id ? "active" : ""} ${dragIndex === index ? "dragging" : ""}`} onDragStart={() => setDragIndex(index)} onDragEnd={() => setDragIndex(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (dragIndex !== null) onReorderPage(dragIndex, index); setDragIndex(null); }}><button className="planning-page-select" onClick={() => onSelectPage(item.id)}><Icon name="grip"/><span className="page-number">{String(item.order).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{pageTypeLabel(item.page_type)} · H{item.heading_level}</small></span><StatusBadge status={item.status}/></button><span className="keyboard-sort"><button aria-label={`上移${item.title}`} disabled={index === 0 || disabled} onClick={() => onMovePage(index, -1)}>↑</button><button aria-label={`下移${item.title}`} disabled={index === plan.items.length - 1 || disabled} onClick={() => onMovePage(index, 1)}>↓</button></span></div>)}</aside>
-    <div className="planning-page-canvas">{selected && <PageEditor item={selected} templates={templates} onChange={(patch) => onChangePage(selectedIndex, patch)} onMoveUp={() => onMovePage(selectedIndex, -1)} onMoveDown={() => onMovePage(selectedIndex, 1)} onDelete={() => onDeletePage(selectedIndex)} first={selectedIndex === 0} last={selectedIndex === plan.items.length - 1}/>}</div>
+    <div className="planning-page-canvas">{selected && <PageEditor item={selected} productImageUrl={productImageUrl} templates={templates} onChange={(patch) => onChangePage(selectedIndex, patch)} onMoveUp={() => onMovePage(selectedIndex, -1)} onMoveDown={() => onMovePage(selectedIndex, 1)} onDelete={() => onDeletePage(selectedIndex)} first={selectedIndex === 0} last={selectedIndex === plan.items.length - 1}/>}</div>
     <aside className="planning-inspector"><section><h4>页面设置</h4><p><span>页码</span><strong>{selectedIndex + 1}/{plan.items.length}</strong></p><p><span>规划版本</span><strong>V{plan.version}</strong></p><p><span>可用配方</span><strong>{recipeCount} 套</strong></p></section><section><h4>版式库</h4><label><span>当前规格</span><select value={activeLibraryId} disabled={disabled} onChange={(event) => onSelectLibrary(event.target.value)}>{libraries.map((library) => <option key={library.id} value={library.id}>{library.name}</option>)}</select></label><small>{activeLibrary?.size} · {activeLibrary?.template_count} 个模板</small></section><section><h4>流程提示</h4><div className={`planning-status ${plan.confirmed ? "success" : "warning"}`}><Icon name={plan.confirmed ? "check" : "info"}/><div><strong>{plan.confirmed ? "规划已确认" : "当前为草稿"}</strong><p>{plan.confirmed ? "可以前往图片生产；再次修改会恢复为草稿。" : "确认后才会开放图片生产。"}</p></div></div></section></aside>
   </div>;
 }
 
-function PageEditor({ item, templates, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; templates: TemplateDefinition[]; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
+function PageEditor({ item, productImageUrl, templates, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; productImageUrl: string; templates: TemplateDefinition[]; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
   const template = templates.find((row) => row.id === item.template_id) ?? templates[0];
   const compatible = templates.filter((row) => row.page_types.includes(item.page_type));
   return <article className="page-editor">
-    <TemplatePreview item={item} template={template} />
+    <TemplatePreview item={item} template={template} productImageUrl={productImageUrl} />
     <div className="page-fields">
       <div className="page-meta"><span>第 {item.order} 页 · {pageTypeLabel(item.page_type)}</span><div className="page-tools"><select aria-label="标题层级" value={item.heading_level} onChange={(event) => onChange({ heading_level: Number(event.target.value) as PageItem["heading_level"] })}><option value="1">H1</option><option value="2">H2</option><option value="3">H3</option><option value="4">H4</option><option value="5">H5</option></select><select value={item.page_type} onChange={(event) => { const pageType = event.target.value as PageItem["page_type"]; const nextTemplate = templates.find((row) => row.page_types.includes(pageType)); onChange({ page_type: pageType, template_id: nextTemplate?.id ?? item.template_id }); }}><option value="hero">主视觉</option><option value="selling_point">核心卖点</option><option value="function">功能说明</option><option value="scene">场景</option><option value="parameters">参数</option></select><select value={item.template_id} onChange={(event) => onChange({ template_id: event.target.value })}>{compatible.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select><button title="上移" disabled={first} onClick={onMoveUp}>↑</button><button title="下移" disabled={last} onClick={onMoveDown}>↓</button><button title="删除" disabled={first && last} onClick={onDelete}>×</button></div></div>
       <Field label="页面标题"><input value={item.title} onChange={(event) => onChange({ title: event.target.value })} /></Field>
@@ -622,11 +626,40 @@ function PageEditor({ item, templates, onChange, onMoveUp, onMoveDown, onDelete,
   </article>;
 }
 
-function TemplatePreview({ item, template }: { item: PageItem; template?: TemplateDefinition }) {
+function FittedPreviewText({ text, maxSize, weight = 400 }: { text: string; maxSize: number; weight?: number }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const target = textRef.current;
+    if (!box || !target) return;
+    const fit = () => {
+      let low = 5;
+      let high = maxSize;
+      let best = low;
+      while (low <= high) {
+        const size = Math.floor((low + high) / 2);
+        target.style.fontSize = `${size}px`;
+        if (target.scrollWidth <= box.clientWidth + 1 && target.scrollHeight <= box.clientHeight + 2) {
+          best = size;
+          low = size + 1;
+        } else high = size - 1;
+      }
+      target.style.fontSize = `${best}px`;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [maxSize, text]);
+  return <div ref={boxRef} className="preview-copy-fit"><span ref={textRef} style={{ fontWeight: weight }}>{text}</span></div>;
+}
+
+function TemplatePreview({ item, template, productImageUrl }: { item: PageItem; template?: TemplateDefinition; productImageUrl: string }) {
   const titleBox = template?.title_box ?? template?.text_box ?? [0.09, 0.07, 0.91, 0.18];
   const bodyBox = template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
   const productBox = template?.product_anchor_box ?? template?.product_box ?? [0.20, 0.32, 0.80, 0.94];
-  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><strong>{item.title}</strong></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><span>{item.body}</span></div><div className="product-shape" style={regionStyle(productBox)}><i /><b /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
+  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><FittedPreviewText text={item.title} maxSize={18} weight={700}/></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><FittedPreviewText text={item.body} maxSize={12}/></div><div className="product-shape" style={regionStyle(productBox)}><img src={productImageUrl} alt="商品参考素材" /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
 }
 
 function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, mode = "production", onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; mode?: "production" | "review"; onRefresh: () => Promise<void> }) {
