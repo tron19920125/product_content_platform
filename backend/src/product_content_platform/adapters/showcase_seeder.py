@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from product_content_platform.domain import (
     AssetUsage,
     Candidate,
     CandidateStatus,
+    FeaturePoint,
     GenerationJob,
     JobStatus,
     PageItem,
@@ -69,6 +71,24 @@ SHOWCASES = (
         "body": "天光倾落，让专业护理成为家的安静一景。",
         "visual_goal": "9:16 移动端海报：上方保留天光文字区，商品在纵向建筑空间下部完整接地。",
         "size": "2160x3840",
+    },
+    {
+        "slug": "landscape-feature-3840",
+        "project_id": "showcase-landscape-feature-3840",
+        "name": "[示例] 4K 横版 · 三项图文卖点",
+        "sku": "DEMO-LANDSCAPE-FEATURE-4K",
+        "library_id": "library-landscape-3840",
+        "template_id": "landscape-feature-band-v1",
+        "page_type": PageType.FUNCTION,
+        "title": "三重智护，洁净有序",
+        "body": "从深层洁净到轻柔呵护，让每一次洗护更从容。",
+        "visual_goal": "横版高端洗护功能页：左侧三项图文卖点，右侧真实商品空间。",
+        "size": "3840x2160",
+        "feature_points": [
+            {"id": "deep-clean", "title": "深层洁净", "description": "减少顽固残留", "icon_concept": "洁净闪光", "fact_refs": ["selling_point:深层洁净"]},
+            {"id": "gentle-care", "title": "轻柔呵护", "description": "保护衣物纤维", "icon_concept": "保护盾牌", "fact_refs": ["selling_point:轻柔呵护"]},
+            {"id": "quiet-energy", "title": "安静节能", "description": "高效融入日常", "icon_concept": "节能叶片", "fact_refs": ["selling_point:安静节能"]},
+        ],
     },
 )
 
@@ -191,6 +211,7 @@ def seed_showcase_projects(
                 body=str(row["body"]),
                 visual_goal=str(row["visual_goal"]),
                 template_id=str(row["template_id"]),
+                feature_points=tuple(FeaturePoint.from_dict(value) for value in row.get("feature_points", [])),
                 heading_level=1,
                 status=PageStatus.READY,
             )
@@ -210,7 +231,7 @@ def seed_showcase_projects(
             )
 
         existing_job = production_repository.get_job(job_id)
-        if existing_job is not None:
+        if existing_job is not None and production_repository.get_candidate(candidate_id) is not None:
             if existing_job.trace.get("bundled_showcase") and existing_job.trace.get("reference_count") != 1:
                 production_repository.update_job(
                     replace(
@@ -236,6 +257,26 @@ def seed_showcase_projects(
         for kind, source in source_paths.items():
             shutil.copy2(source, destination_root / f"{kind}.png")
 
+        composition: dict = {}
+        feature_metadata_source = source_root / f"{slug}-metadata.json"
+        if feature_metadata_source.is_file():
+            shutil.copy2(source_root / f"{slug}-icon.png", destination_root / "icon_layer.png")
+            source_icon_root = source_root / f"{slug}-icons"
+            destination_icon_root = destination_root / "icons"
+            destination_icon_root.mkdir(parents=True, exist_ok=True)
+            for source_icon in source_icon_root.glob("*.png"):
+                shutil.copy2(source_icon, destination_icon_root / source_icon.name)
+            composition = json.loads(feature_metadata_source.read_text(encoding="utf-8"))
+            composition["icon_layer_path"] = str(relative_root / "icon_layer.png")
+            for group in composition.get("feature_groups") or []:
+                for item in group.get("items") or []:
+                    item["icon_path"] = str(relative_root / str(item.get("icon_path") or ""))
+            icon_generation = composition.get("icon_generation") or {}
+            if icon_generation.get("pack_path"):
+                icon_generation["pack_path"] = str(relative_root / str(icon_generation["pack_path"]))
+            for item in icon_generation.get("icons") or []:
+                item["path"] = str(relative_root / str(item.get("path") or ""))
+
         trace = {
             "stage": "completed",
             "progress": 100,
@@ -247,7 +288,7 @@ def seed_showcase_projects(
             "reference_count": 1,
             "reference_files": [product_reference.name],
         }
-        job = GenerationJob(
+        job = existing_job or GenerationJob(
             id=job_id,
             project_id=project_id,
             page_id=page_id,
@@ -258,7 +299,8 @@ def seed_showcase_projects(
             created_at=created_at,
             updated_at=created_at,
         )
-        production_repository.create_jobs([job])
+        if existing_job is None:
+            production_repository.create_jobs([job])
         candidate = Candidate(
             id=candidate_id,
             job_id=job_id,
@@ -285,7 +327,7 @@ def seed_showcase_projects(
                         "canvas_size": row["size"],
                     },
                 },
-                "compose": {
+                "composition": composition or {
                     "showcase_seed": True,
                     "font_family": "system_sans",
                     "title_color": "#1F3027",
@@ -515,6 +557,7 @@ def _seed_azure_acceptance_project(
                 "layout_library_id": "library-square-2048",
                 "template_id": row["template_id"],
                 "text_layer_source": "deterministic_composition",
+                "feature_group_count": len(row.get("feature_points", [])),
                 "reference_count": 1,
             },
             created_at=created_at,

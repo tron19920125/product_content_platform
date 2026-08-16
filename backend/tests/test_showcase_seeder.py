@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from zipfile import ZipFile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -84,6 +85,31 @@ class ShowcaseSeederTest(unittest.TestCase):
                 self.assertEqual("system_sans", portrait_document["layers"][0]["font_family"])
                 self.assertEqual(400, portrait_document["layers"][0]["font_weight"])
                 self.assertEqual("#1F3027", portrait_document["layers"][0]["color"])
+
+                feature_candidate_id = "showcase-landscape-feature-3840-candidate-1"
+                feature_document_response = client.get(
+                    f"/api/candidates/{feature_candidate_id}/text-document"
+                )
+                self.assertEqual(200, feature_document_response.status_code, feature_document_response.text)
+                feature_document = feature_document_response.json()
+                self.assertEqual(1, len(feature_document["feature_groups"]))
+                self.assertEqual(3, len(feature_document["feature_groups"][0]["items"]))
+                feature_icon = client.get(
+                    f"/api/candidates/{feature_candidate_id}/feature-groups/feature-band/items/deep-clean/icon"
+                )
+                self.assertEqual(200, feature_icon.status_code)
+                self.assertGreater(len(feature_icon.content), 1_000)
+
+                feature_export = client.post(
+                    "/api/projects/showcase-landscape-feature-3840/export"
+                )
+                self.assertEqual(201, feature_export.status_code, feature_export.text)
+                feature_archive = root / "exports" / feature_export.json()["file_name"]
+                with ZipFile(feature_archive) as archive:
+                    exported_names = set(archive.namelist())
+                self.assertTrue(any(name.endswith("icon_layer.png") for name in exported_names))
+                self.assertTrue(any("icons/feature-band-deep-clean.png" in name for name in exported_names))
+                self.assertTrue(any(name.endswith("project_summary.json") for name in exported_names))
 
                 jobs = client.get(
                     "/api/jobs", params={"project_id": AZURE_ACCEPTANCE_PROJECT_ID}

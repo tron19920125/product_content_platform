@@ -307,7 +307,16 @@ _DEFAULT_TEMPLATES: tuple[dict[str, Any], ...] = (
         template_id="landscape-feature-band-v1", template_key="landscape-feature-band", library_id="library-landscape-3840",
         name="横版功能展台", page_types=["selling_point", "function"], layout="landscape_feature_band",
         title_box=[.08, .08, .52, .20], body_box=[.08, .22, .43, .36],
-        product_box=[.12, .35, .92, .95], product_anchor_box=[.54, .38, .86, .92], safe_area_box=[.035, .06, .965, .94],
+        product_box=[.47, .24, .96, .94], product_anchor_box=[.58, .34, .90, .92], safe_area_box=[.035, .06, .965, .94],
+        feature_slots=[{
+            "id": "feature-band", "name": "三项核心卖点", "box": [.05, .46, .34, .82],
+            "layout": "row", "columns": 3, "min_items": 3, "max_items": 3,
+            "icon_position": "top", "icon_scale": .30, "item_gap": .012,
+            "icon_text_gap": .012,
+            "card_style": {"background_color": "#F7F3EA", "background_opacity": .72, "radius": .08},
+            "title_style": {"font_family": "noto-sans-sc", "font_weight": 700, "color": "#244A3A"},
+            "description_style": {"font_family": "noto-sans-sc", "font_weight": 400, "color": "#52665C"},
+        }],
         scene_prompt_hint="使用横向延伸的精品展台、克制的功能可视化光效和深景空间，商品位于右下视觉重心，左上保留结构化信息区",
     ),
     _template(

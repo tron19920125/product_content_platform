@@ -150,6 +150,34 @@ class LocalBaseImageGenerator:
             "product_bbox_source": "preserved_from_source",
         }
 
+    def generate_icon_pack(
+        self,
+        *,
+        prompt: str,
+        concepts: list[str],
+        output_path: Path,
+        size: str,
+        quality: str,
+    ) -> dict[str, Any]:
+        width, height = validate_image_size(size)
+        quality = validate_image_quality(quality)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        count = max(1, len(concepts))
+        columns = min(3, count)
+        rows = (count + columns - 1) // columns
+        cell_width, cell_height = width // columns, height // rows
+        for index, concept in enumerate(concepts):
+            column, row = index % columns, index // columns
+            cell = (column * cell_width, row * cell_height, (column + 1) * cell_width, (row + 1) * cell_height)
+            _draw_fallback_icon(canvas, cell, concept, (49, 93, 74, 255))
+        canvas.save(output_path, format="PNG")
+        return {
+            "provider": "local-icon-library", "prompt_chars": len(prompt),
+            "requested_size": size, "actual_size": f"{width}x{height}",
+            "quality": quality, "background": "transparent", "icon_count": len(concepts),
+        }
+
 
 class AzureImageGenerator:
     """Azure image-generation adapter owned by the platform."""
@@ -348,6 +376,45 @@ class AzureImageGenerator:
             "product_bbox_source": "preserved_from_source",
         }
 
+    def generate_icon_pack(
+        self,
+        *,
+        prompt: str,
+        concepts: list[str],
+        output_path: Path,
+        size: str,
+        quality: str,
+    ) -> dict[str, Any]:
+        from product_content_platform.integrations.azure_credentials import token_provider_from_env
+        from product_content_platform.integrations.azure_image_client import default_generation_endpoint, generate_image
+
+        width, height = validate_image_size(size)
+        quality = validate_image_quality(quality)
+        endpoint = os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT", "") or default_generation_endpoint()
+        token_provider = token_provider_from_env(endpoint=endpoint)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = generate_image(
+            prompt=prompt, output_dir=output_path.parent,
+            bearer_token=os.environ.get("AZURE_OPENAI_BEARER_TOKEN", ""),
+            api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
+            token_provider=token_provider, endpoint=endpoint, quality=quality, size=size,
+            output_format="png", background="transparent",
+        )
+        shutil.copyfile(result.image_path, output_path)
+        with Image.open(output_path) as image:
+            actual = image.size
+            alpha = image.convert("RGBA").getchannel("A").getextrema()
+        if actual != (width, height):
+            raise RuntimeError(f"Azure 图标包尺寸不一致：请求 {width}x{height}，实际 {actual[0]}x{actual[1]}")
+        if alpha[0] == 255:
+            raise RuntimeError("Azure 图标包未返回透明背景")
+        return {
+            "provider": "azure-gpt-image-icon-pack", "elapsed_seconds": result.elapsed_seconds,
+            "usage": result.usage, "requested_size": size,
+            "actual_size": f"{actual[0]}x{actual[1]}", "quality": quality,
+            "background": "transparent", "icon_count": len(concepts),
+        }
+
 
 def _reference_limit() -> int:
     try:
@@ -416,3 +483,42 @@ def _remove_connected_light_background(image: Image.Image) -> Image.Image:
     image.putalpha(alpha)
     bbox = alpha.getbbox()
     return image.crop(bbox) if bbox else image
+
+
+def _draw_fallback_icon(
+    canvas: Image.Image,
+    cell: tuple[int, int, int, int],
+    concept: str,
+    color: tuple[int, int, int, int],
+) -> None:
+    """Draw an original, license-safe geometric pictogram for offline/failure fallback."""
+    x1, y1, x2, y2 = cell
+    side = max(16, round(min(x2 - x1, y2 - y1) * .48))
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    box = (cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2)
+    draw = ImageDraw.Draw(canvas)
+    width = max(3, side // 14)
+    lowered = concept.lower()
+    if any(term in lowered for term in ("保护", "安全", "防", "shield")):
+        points = [(cx, box[1]), (box[2], box[1] + side // 5), (box[2] - side // 8, box[3] - side // 4), (cx, box[3]), (box[1] + side // 8, box[3] - side // 4), (box[1], box[1] + side // 5)]
+        draw.line(points + [points[0]], fill=color, width=width, joint="curve")
+        draw.line((cx - side // 6, cy, cx - side // 24, cy + side // 7, cx + side // 5, cy - side // 6), fill=color, width=width, joint="curve")
+    elif any(term in lowered for term in ("洁", "净", "亮", "光", "spark", "clean")):
+        draw.line((cx, box[1], cx, box[3]), fill=color, width=width)
+        draw.line((box[1], cy, box[2], cy), fill=color, width=width)
+        inset = side // 5
+        draw.line((box[1] + inset, box[1] + inset, box[2] - inset, box[3] - inset), fill=color, width=width)
+        draw.line((box[2] - inset, box[1] + inset, box[1] + inset, box[3] - inset), fill=color, width=width)
+    elif any(term in lowered for term in ("省", "节", "环保", "leaf", "energy")):
+        draw.ellipse(box, outline=color, width=width)
+        draw.arc(box, 170, 320, fill=color, width=width)
+        draw.line((box[1] + side // 5, box[3] - side // 6, box[2] - side // 6, box[1] + side // 5), fill=color, width=width)
+    elif any(term in lowered for term in ("容量", "空间", "收纳", "capacity")):
+        draw.rounded_rectangle(box, radius=side // 8, outline=color, width=width)
+        draw.line((box[1] + side // 5, cy, box[2] - side // 5, cy), fill=color, width=width)
+        draw.line((cx, box[1] + side // 5, cx, box[3] - side // 5), fill=color, width=width)
+    else:
+        draw.ellipse(box, outline=color, width=width)
+        inner = side // 4
+        draw.rounded_rectangle((cx - inner, cy - inner, cx + inner, cy + inner), radius=inner // 3, outline=color, width=width)
+        draw.line((cx, box[1] - side // 8, cx, box[1] + side // 8), fill=color, width=width)

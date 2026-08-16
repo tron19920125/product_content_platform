@@ -37,7 +37,7 @@ from .image_configuration import (
     validate_image_quality,
     validate_image_size,
 )
-from .text_layout import TextDocument, TextLayer, TEXT_ROLES
+from .text_layout import FeatureGroup, FeatureItem, TextDocument, TextLayer, TEXT_ROLES
 
 __all__ = [
     "Asset",
@@ -76,5 +76,7 @@ __all__ = [
     "validate_image_size",
     "TextDocument",
     "TextLayer",
+    "FeatureGroup",
+    "FeatureItem",
     "TEXT_ROLES",
 ]

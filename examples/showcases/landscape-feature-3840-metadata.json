@@ -1,0 +1,751 @@
+{
+  "canvas": [
+    3840,
+    2160
+  ],
+  "safe_area": [
+    211,
+    97,
+    3628,
+    2062
+  ],
+  "text_box": [
+    233,
+    225,
+    1790,
+    1592
+  ],
+  "content_box": [
+    192,
+    225,
+    1790,
+    1771
+  ],
+  "rendered_text_bbox": [
+    233,
+    225,
+    1790,
+    1592
+  ],
+  "product_bbox": [
+    2227,
+    734,
+    3456,
+    1987
+  ],
+  "text_layers": [
+    {
+      "id": "headline",
+      "role": "headline",
+      "name": "标题",
+      "content": "三重智护，洁净有序",
+      "box": [
+        307,
+        172,
+        1996,
+        432
+      ],
+      "font_family": "noto-serif-sc",
+      "font_weight": 700,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 141,
+      "color": "#FAFDFB",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.08,
+      "letter_spacing": 1.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#181F1C",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 0,
+      "source": "ai",
+      "copy_block_id": "",
+      "rendered_bbox": [
+        513,
+        225,
+        1790,
+        378
+      ],
+      "requested_font_size": 141,
+      "lines": [
+        "三重智护，洁净有序"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "body",
+      "role": "body",
+      "name": "正文",
+      "content": "从深层洁净到轻柔呵护，让每一次洗护更从容。",
+      "box": [
+        307,
+        475,
+        1651,
+        777
+      ],
+      "font_family": "lxgw-wenkai",
+      "font_weight": 400,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 75,
+      "color": "#37413C",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.42,
+      "letter_spacing": 1.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 1,
+      "source": "ai",
+      "copy_block_id": "",
+      "rendered_bbox": [
+        333.0,
+        534,
+        1624.0,
+        718
+      ],
+      "requested_font_size": 75,
+      "lines": [
+        "从深层洁净到轻柔呵护，让每一次洗护",
+        "更从容。"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "synthetic_stroke",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-deep-clean-title",
+      "role": "custom",
+      "name": "深层洁净·标题",
+      "content": "深层洁净",
+      "box": [
+        208,
+        1221,
+        515,
+        1415
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 700,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 64,
+      "color": "#244A3A",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.12,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 100,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:deep-clean:title",
+      "rendered_bbox": [
+        233,
+        1287,
+        489,
+        1349
+      ],
+      "requested_font_size": 64,
+      "lines": [
+        "深层洁净"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-deep-clean-description",
+      "role": "custom",
+      "name": "深层洁净·说明",
+      "content": "减少顽固残留",
+      "box": [
+        208,
+        1415,
+        515,
+        1732
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 400,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 40,
+      "color": "#52665C",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.35,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 101,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:deep-clean:description",
+      "rendered_bbox": [
+        241,
+        1554,
+        481,
+        1592
+      ],
+      "requested_font_size": 40,
+      "lines": [
+        "减少顽固残留"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-gentle-care-title",
+      "role": "custom",
+      "name": "轻柔呵护·标题",
+      "content": "轻柔呵护",
+      "box": [
+        595,
+        1221,
+        900,
+        1415
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 700,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 64,
+      "color": "#244A3A",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.12,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 102,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:gentle-care:title",
+      "rendered_bbox": [
+        619,
+        1287,
+        875,
+        1349
+      ],
+      "requested_font_size": 64,
+      "lines": [
+        "轻柔呵护"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-gentle-care-description",
+      "role": "custom",
+      "name": "轻柔呵护·说明",
+      "content": "保护衣物纤维",
+      "box": [
+        595,
+        1415,
+        900,
+        1732
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 400,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 40,
+      "color": "#52665C",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.35,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 103,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:gentle-care:description",
+      "rendered_bbox": [
+        627,
+        1554,
+        867,
+        1592
+      ],
+      "requested_font_size": 40,
+      "lines": [
+        "保护衣物纤维"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-quiet-energy-title",
+      "role": "custom",
+      "name": "安静节能·标题",
+      "content": "安静节能",
+      "box": [
+        981,
+        1221,
+        1286,
+        1415
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 700,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 64,
+      "color": "#244A3A",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.12,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 104,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:quiet-energy:title",
+      "rendered_bbox": [
+        1005,
+        1287,
+        1261,
+        1349
+      ],
+      "requested_font_size": 64,
+      "lines": [
+        "安静节能"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    },
+    {
+      "id": "feature-band-quiet-energy-description",
+      "role": "custom",
+      "name": "安静节能·说明",
+      "content": "高效融入日常",
+      "box": [
+        981,
+        1415,
+        1286,
+        1732
+      ],
+      "font_family": "noto-sans-sc",
+      "font_weight": 400,
+      "font_style": "normal",
+      "underline": false,
+      "strikethrough": false,
+      "font_size": 40,
+      "color": "#52665C",
+      "text_align": "center",
+      "vertical_align": "center",
+      "line_height": 1.35,
+      "letter_spacing": 0.0,
+      "rotation": 0.0,
+      "opacity": 1.0,
+      "stroke_width": 0,
+      "stroke_color": "#FFFFFF",
+      "shadow": false,
+      "shadow_color": "#000000",
+      "shadow_blur": 0,
+      "shadow_offset_x": 0,
+      "shadow_offset_y": 0,
+      "background_color": "",
+      "background_opacity": 0.0,
+      "padding": 0,
+      "visible": true,
+      "locked": false,
+      "z_index": 105,
+      "source": "feature_group",
+      "copy_block_id": "feature-band:quiet-energy:description",
+      "rendered_bbox": [
+        1013,
+        1554,
+        1253,
+        1592
+      ],
+      "requested_font_size": 40,
+      "lines": [
+        "高效融入日常"
+      ],
+      "synthetic_bold_width": 0,
+      "font_weight_rendering": "variable_axis",
+      "effective_stroke_width": 0
+    }
+  ],
+  "text_document_version": 1,
+  "feature_groups": [
+    {
+      "id": "feature-band",
+      "name": "三项核心卖点",
+      "box": [
+        192,
+        993,
+        1305,
+        1771
+      ],
+      "items": [
+        {
+          "id": "deep-clean",
+          "title": "深层洁净",
+          "description": "减少顽固残留",
+          "icon_concept": "洁净闪光",
+          "fact_refs": [
+            "selling_point:深层洁净"
+          ],
+          "icon_path": "icons/feature-band-deep-clean.png",
+          "icon_source": "generated",
+          "icon_prompt": "Create a coherent set of 3 premium ecommerce feature pictograms in an exact 3-column by 1-row grid. One centered icon per cell. Use the same minimal line-art language, consistent stroke width, dark forest green, large transparent margins, fully transparent background. Do not draw cards, borders, letters, numbers, labels, logos, watermarks, shadows, or any text.\nCell 1 (row 1, column 1): 洁净闪光\nCell 2 (row 1, column 2): 保护盾牌\nCell 3 (row 1, column 3): 节能叶片",
+          "icon_scale": 1.0,
+          "icon_tint": "#315D4A",
+          "title_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 700,
+            "font_size": 64,
+            "color": "#244A3A",
+            "line_height": 1.12,
+            "text_align": "center"
+          },
+          "description_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 400,
+            "font_size": 40,
+            "color": "#52665C",
+            "line_height": 1.35,
+            "text_align": "center"
+          },
+          "cell_box": [
+            192,
+            993,
+            532,
+            1771
+          ],
+          "icon_box": [
+            280,
+            1032,
+            443,
+            1195
+          ],
+          "title_box": [
+            209,
+            1221,
+            515,
+            1415
+          ],
+          "description_box": [
+            209,
+            1415,
+            515,
+            1732
+          ]
+        },
+        {
+          "id": "gentle-care",
+          "title": "轻柔呵护",
+          "description": "保护衣物纤维",
+          "icon_concept": "保护盾牌",
+          "fact_refs": [
+            "selling_point:轻柔呵护"
+          ],
+          "icon_path": "icons/feature-band-gentle-care.png",
+          "icon_source": "generated",
+          "icon_prompt": "Create a coherent set of 3 premium ecommerce feature pictograms in an exact 3-column by 1-row grid. One centered icon per cell. Use the same minimal line-art language, consistent stroke width, dark forest green, large transparent margins, fully transparent background. Do not draw cards, borders, letters, numbers, labels, logos, watermarks, shadows, or any text.\nCell 1 (row 1, column 1): 洁净闪光\nCell 2 (row 1, column 2): 保护盾牌\nCell 3 (row 1, column 3): 节能叶片",
+          "icon_scale": 1.0,
+          "icon_tint": "#315D4A",
+          "title_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 700,
+            "font_size": 64,
+            "color": "#244A3A",
+            "line_height": 1.12,
+            "text_align": "center"
+          },
+          "description_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 400,
+            "font_size": 40,
+            "color": "#52665C",
+            "line_height": 1.35,
+            "text_align": "center"
+          },
+          "cell_box": [
+            578,
+            993,
+            918,
+            1771
+          ],
+          "icon_box": [
+            666,
+            1032,
+            829,
+            1195
+          ],
+          "title_box": [
+            595,
+            1221,
+            901,
+            1415
+          ],
+          "description_box": [
+            595,
+            1415,
+            901,
+            1732
+          ]
+        },
+        {
+          "id": "quiet-energy",
+          "title": "安静节能",
+          "description": "高效融入日常",
+          "icon_concept": "节能叶片",
+          "fact_refs": [
+            "selling_point:安静节能"
+          ],
+          "icon_path": "icons/feature-band-quiet-energy.png",
+          "icon_source": "generated",
+          "icon_prompt": "Create a coherent set of 3 premium ecommerce feature pictograms in an exact 3-column by 1-row grid. One centered icon per cell. Use the same minimal line-art language, consistent stroke width, dark forest green, large transparent margins, fully transparent background. Do not draw cards, borders, letters, numbers, labels, logos, watermarks, shadows, or any text.\nCell 1 (row 1, column 1): 洁净闪光\nCell 2 (row 1, column 2): 保护盾牌\nCell 3 (row 1, column 3): 节能叶片",
+          "icon_scale": 1.0,
+          "icon_tint": "#315D4A",
+          "title_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 700,
+            "font_size": 64,
+            "color": "#244A3A",
+            "line_height": 1.12,
+            "text_align": "center"
+          },
+          "description_style": {
+            "font_family": "noto-sans-sc",
+            "font_weight": 400,
+            "font_size": 40,
+            "color": "#52665C",
+            "line_height": 1.35,
+            "text_align": "center"
+          },
+          "cell_box": [
+            964,
+            993,
+            1304,
+            1771
+          ],
+          "icon_box": [
+            1052,
+            1032,
+            1215,
+            1195
+          ],
+          "title_box": [
+            981,
+            1221,
+            1287,
+            1415
+          ],
+          "description_box": [
+            981,
+            1415,
+            1287,
+            1732
+          ]
+        }
+      ],
+      "layout": "row",
+      "columns": 3,
+      "icon_position": "top",
+      "icon_scale": 0.3,
+      "item_gap": 0.012,
+      "icon_text_gap": 0.012,
+      "card_style": {
+        "background_color": "#F7F3EA",
+        "background_opacity": 0.72,
+        "radius": 0.08
+      },
+      "visible": true,
+      "locked": false,
+      "z_index": 100,
+      "rows": 1
+    }
+  ],
+  "icon_layer_path": "icon_layer.png",
+  "icon_layer_stored_separately": true,
+  "text_document_source": "ai",
+  "text_document_reasoning": "AI 已生成“杂志质感”排版方案：遵守模板预留区，并依据画布比例、文字层级和底图明暗设置字体、字号、对齐与效果；底图未被修改。 已结合设计要求：极简高级、结构清晰",
+  "text_layer_stored_separately": true,
+  "base_contains_post_layout_text": false,
+  "font": "noto-serif-sc, lxgw-wenkai, noto-sans-sc",
+  "font_family": "noto-serif-sc",
+  "text_color": "#FAFDFB, #37413C, #244A3A, #52665C",
+  "title_box": [
+    307,
+    172,
+    1996,
+    432
+  ],
+  "body_box": [
+    307,
+    475,
+    1651,
+    777
+  ],
+  "title_font_size": 141,
+  "body_font_size": 75,
+  "title_lines": [
+    "三重智护，洁净有序"
+  ],
+  "body_lines": [
+    "从深层洁净到轻柔呵护，让每一次洗护",
+    "更从容。"
+  ],
+  "title_color": "#FAFDFB",
+  "body_color": "#37413C",
+  "text_align": "center",
+  "vertical_align": "center",
+  "title_line_spacing": 152,
+  "body_line_spacing": 106,
+  "offset_x": 0,
+  "offset_y": 0,
+  "title_body_gap": 0,
+  "typography_overrides": {},
+  "background_luminance": 144.78,
+  "color_sample_box": [
+    233,
+    225,
+    1790,
+    1592
+  ],
+  "repair_applied": false,
+  "icon_generation": {
+    "status": "completed",
+    "provider": "local-icon-library",
+    "pack_path": "icons/icon_pack.png",
+    "pack_size": "1024x1024",
+    "quality": "medium",
+    "background": "transparent",
+    "prompt": "Create a coherent set of 3 premium ecommerce feature pictograms in an exact 3-column by 1-row grid. One centered icon per cell. Use the same minimal line-art language, consistent stroke width, dark forest green, large transparent margins, fully transparent background. Do not draw cards, borders, letters, numbers, labels, logos, watermarks, shadows, or any text.\nCell 1 (row 1, column 1): 洁净闪光\nCell 2 (row 1, column 2): 保护盾牌\nCell 3 (row 1, column 3): 节能叶片",
+    "icons": [
+      {
+        "group_id": "feature-band",
+        "item_id": "deep-clean",
+        "title": "深层洁净",
+        "concept": "洁净闪光",
+        "path": "icons/feature-band-deep-clean.png",
+        "source": "generated",
+        "degraded_reason": ""
+      },
+      {
+        "group_id": "feature-band",
+        "item_id": "gentle-care",
+        "title": "轻柔呵护",
+        "concept": "保护盾牌",
+        "path": "icons/feature-band-gentle-care.png",
+        "source": "generated",
+        "degraded_reason": ""
+      },
+      {
+        "group_id": "feature-band",
+        "item_id": "quiet-energy",
+        "title": "安静节能",
+        "concept": "节能叶片",
+        "path": "icons/feature-band-quiet-energy.png",
+        "source": "generated",
+        "degraded_reason": ""
+      }
+    ],
+    "provider_metadata": {
+      "provider": "local-icon-library",
+      "prompt_chars": 456,
+      "requested_size": "1024x1024",
+      "actual_size": "1024x1024",
+      "quality": "medium",
+      "background": "transparent",
+      "icon_count": 3
+    },
+    "error": ""
+  }
+}

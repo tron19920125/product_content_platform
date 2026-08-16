@@ -63,6 +63,16 @@ class BaseImageGenerator(Protocol):
         layout: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    def generate_icon_pack(
+        self,
+        *,
+        prompt: str,
+        concepts: list[str],
+        output_path: Path,
+        size: str,
+        quality: str,
+    ) -> dict[str, Any]: ...
+
 
 class PageProductionEngine(Protocol):
     def execute(
@@ -109,6 +119,16 @@ class PageProductionEngine(Protocol):
         reference_paths: list[Path],
         run_qa: bool = False,
     ) -> ProducedCandidate: ...
+
+    def regenerate_feature_icon(
+        self, *, document: TextDocument, group_id: str, item_id: str, instruction: str = ""
+    ) -> TextDocument: ...
+
+    def replace_feature_icon(
+        self, *, document: TextDocument, group_id: str, item_id: str, content: bytes
+    ) -> TextDocument: ...
+
+    def resolve_feature_icon(self, document: TextDocument, group_id: str, item_id: str) -> Path: ...
 
     def inspect_candidate(
         self,

@@ -121,8 +121,9 @@ class ProductQualityToolkit:
         body: str,
         bbox: tuple[float, float, float, float],
         number_allowlist: list[str],
+        feature_text: list[str] | None = None,
     ) -> dict[str, Any]:
-        expected = [value for value in (title.strip(), body.strip()) if value]
+        expected = [value for value in (title.strip(), body.strip(), *(feature_text or [])) if value]
         result = self._review_text_ocr(
             [self._ocr_line(text="\n".join(expected), confidence=1.0, bbox=bbox)],
             self._text_spec(
@@ -175,6 +176,7 @@ class ProductQualityToolkit:
         generation: dict[str, Any],
         title: str,
         body: str,
+        feature_text: list[str] | None = None,
         bbox: tuple[float, float, float, float],
         number_allowlist: list[str],
         progress: Callable[[str], None] | None = None,
@@ -188,10 +190,11 @@ class ProductQualityToolkit:
                 progress("ocr_output")
             return {
                 "provider": "text-layer",
-                "ocr_lines": [{"text": "\n".join(value for value in (title, body) if value), "bbox": bbox}],
+                "ocr_lines": [{"text": "\n".join(value for value in (title, body, *(feature_text or [])) if value), "bbox": bbox}],
                 "text_review": self.review_known_text(
                     title=title,
                     body=body,
+                    feature_text=feature_text,
                     bbox=bbox,
                     number_allowlist=number_allowlist,
                 ),
@@ -210,7 +213,7 @@ class ProductQualityToolkit:
             ocr_errors.append(str(exc))
             generated_lines = [
                 self._ocr_line(
-                    text="\n".join(value for value in (title, body) if value),
+                    text="\n".join(value for value in (title, body, *(feature_text or [])) if value),
                     confidence=1.0,
                     bbox=bbox,
                 )
@@ -233,7 +236,7 @@ class ProductQualityToolkit:
         text_review = self._review_text_ocr(
             generated_lines,
             self._text_spec(
-                required_text=[value for value in (title.strip(), body.strip()) if value],
+                required_text=[value for value in (title.strip(), body.strip(), *(feature_text or [])) if value],
                 number_allowlist=number_allowlist,
                 strict_number_allowlist=True,
                 expected_text_region=bbox,

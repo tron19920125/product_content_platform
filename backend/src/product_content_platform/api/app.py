@@ -284,6 +284,7 @@ class TextDocumentSavePayload(BaseModel):
 
     base_version: int = Field(ge=0)
     layers: list[dict[str, Any]] = Field(max_length=40)
+    feature_groups: list[dict[str, Any]] | None = Field(default=None, max_length=6)
 
 
 class TextDocumentAiLayoutPayload(BaseModel):
@@ -296,6 +297,12 @@ class TextDocumentApplyPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(ge=1)
+
+
+class FeatureIconRegeneratePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(default="", max_length=500)
 
 
 class RecipeCandidatePayload(BaseModel):
@@ -820,7 +827,8 @@ def create_app(
     def save_text_document(candidate_id: str, payload: TextDocumentSavePayload) -> dict[str, Any]:
         try:
             return production.save_text_document(
-                candidate_id, layers=payload.layers, base_version=payload.base_version,
+                candidate_id, layers=payload.layers, feature_groups=payload.feature_groups,
+                base_version=payload.base_version,
             ).to_dict()
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -840,6 +848,47 @@ def create_app(
     def apply_text_document(candidate_id: str, payload: TextDocumentApplyPayload) -> dict[str, Any]:
         try:
             return candidate_to_dict(production.apply_text_document(candidate_id, payload.version))
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon")
+    def get_feature_icon(candidate_id: str, group_id: str, item_id: str) -> FileResponse:
+        try:
+            return FileResponse(
+                production.feature_icon_file(candidate_id, group_id, item_id), media_type="image/png"
+            )
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon/regenerate")
+    def regenerate_feature_icon(
+        candidate_id: str,
+        group_id: str,
+        item_id: str,
+        payload: FeatureIconRegeneratePayload,
+    ) -> dict[str, Any]:
+        try:
+            return production.regenerate_feature_icon(
+                candidate_id, group_id, item_id, payload.instruction
+            ).to_dict()
+        except DomainValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except EntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon/replace")
+    async def replace_feature_icon(
+        candidate_id: str,
+        group_id: str,
+        item_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return production.replace_feature_icon(
+                candidate_id, group_id, item_id, await request.body()
+            ).to_dict()
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -1244,6 +1293,10 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "metadata": candidate.metadata,
         "base_url": f"/api/candidates/{candidate.id}/files/base",
         "text_layer_url": f"/api/candidates/{candidate.id}/files/text",
+        "icon_layer_url": (
+            f"/api/candidates/{candidate.id}/files/icons"
+            if (candidate.metadata.get("composition") or {}).get("icon_layer_path") else ""
+        ),
         "composed_url": f"/api/candidates/{candidate.id}/files/composed",
         "background_url": (
             f"/api/candidates/{candidate.id}/files/background"

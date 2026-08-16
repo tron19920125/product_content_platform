@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -12,6 +14,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, 
 from product_content_platform.application.production_ports import BaseImageGenerator, ProducedCandidate
 from product_content_platform.domain import (
     Candidate,
+    FeatureGroup,
+    FeatureItem,
     PageItem,
     ProductProfile,
     Project,
@@ -176,10 +180,19 @@ class LocalProductionEngine:
                 candidate_id=f"generation-{uuid4()}", base_path=base_path,
                 page=page, instruction=page.visual_goal,
             )
+            report(
+                "generating_icons", candidate_percent(.63),
+                label="正在生成图文卖点透明图标",
+                candidate_index=index, candidate_count=total_candidates,
+            )
+            initial_text_document, icon_generation = self._prepare_feature_icons(
+                document=initial_text_document, output_root=candidate_root,
+            )
             compose_meta = self._compose_text_document(
                 base_path=base_path, text_path=text_path, output_path=composed_path,
                 document=initial_text_document, product_bbox=product_bbox,
             )
+            compose_meta["icon_generation"] = icon_generation
             qa = self._inspect(
                 project.profile, page, reference_paths, generator_meta, compose_meta,
                 index, base_path, composed_path, review_prompt, review_plan,
@@ -497,6 +510,7 @@ class LocalProductionEngine:
             "left" if any(term in lowered for term in ("左对齐", "靠左", "left")) else
             None
         )
+        feature_groups: list[FeatureGroup] = []
         with Image.open(base_path) as base:
             base = base.convert("RGBA")
             width, height = base.size
@@ -574,6 +588,46 @@ class LocalProductionEngine:
                     "rotation": -1.5 if profile == "expressive" and is_headline else 0,
                 })
                 layers.append(TextLayer.from_dict(layer_value))
+            if current and current.feature_groups:
+                feature_groups = list(current.feature_groups)
+            elif page.feature_points:
+                for group_index, slot in enumerate(template.get("feature_slots") or []):
+                    maximum = max(1, int(slot.get("max_items") or 3))
+                    points = page.feature_points[:maximum]
+                    if not points:
+                        continue
+                    group_box = tuple(float(part) for part in slot["box"])
+                    pixel_box = self._scaled_box(group_box, width, height)
+                    _, _, auto_color = self._text_colors(base, pixel_box)
+                    default_title_style = {
+                        "font_family": "noto-sans-sc", "font_weight": 700,
+                        "font_size": max(18, round(short_edge * .024)), "color": auto_color,
+                        "line_height": 1.12, "text_align": "center",
+                    }
+                    default_description_style = {
+                        "font_family": "noto-sans-sc", "font_weight": 400,
+                        "font_size": max(14, round(short_edge * .014)), "color": auto_color,
+                        "line_height": 1.35, "text_align": "center",
+                    }
+                    slot_title_style = {**default_title_style, **dict(slot.get("title_style") or {})}
+                    slot_description_style = {**default_description_style, **dict(slot.get("description_style") or {})}
+                    feature_groups.append(FeatureGroup(
+                        id=str(slot.get("id") or f"feature-group-{group_index + 1}"),
+                        name=str(slot.get("name") or "图文卖点组"), box=group_box,
+                        layout=str(slot.get("layout") or "row"),
+                        columns=int(slot.get("columns") or min(3, len(points))),
+                        icon_position=str(slot.get("icon_position") or "top"),
+                        icon_scale=float(slot.get("icon_scale") or .28),
+                        item_gap=float(slot.get("item_gap") or .025),
+                        icon_text_gap=float(slot.get("icon_text_gap") or .012),
+                        card_style=dict(slot.get("card_style") or {}), z_index=100 + group_index,
+                        items=tuple(FeatureItem(
+                            id=point.id, title=point.title, description=point.description,
+                            icon_concept=point.icon_concept or point.title,
+                            fact_refs=point.fact_refs, icon_tint=str((slot.get("card_style") or {}).get("accent_color") or "#315D4A"),
+                            title_style=slot_title_style, description_style=slot_description_style,
+                        ) for point in points),
+                    ))
         slot_ids = {str(slot.get("id")) for slot in slots}
         for existing in (current.layers if current else ()):
             if existing.id not in slot_ids:
@@ -593,8 +647,231 @@ class LocalProductionEngine:
             reasoning += f" 已结合设计要求：{art_direction}"
         return TextDocument(
             candidate_id=candidate_id, version=(current.version + 1 if current else 1),
-            layers=tuple(layers), source="ai", ai_reasoning=reasoning,
+            layers=tuple(layers), feature_groups=tuple(feature_groups), source="ai", ai_reasoning=reasoning,
         )
+
+    def _prepare_feature_icons(
+        self,
+        *,
+        document: TextDocument,
+        output_root: Path,
+    ) -> tuple[TextDocument, dict[str, Any]]:
+        """Generate one transparent icon pack, then persist auditable per-item PNG layers."""
+        items = [(group.id, item) for group in document.feature_groups if group.visible for item in group.items]
+        if not items:
+            return document, {"status": "not_required", "icons": []}
+        configured_size = os.environ.get("PCP_ICON_PACK_SIZE", "1024x1024")
+        configured_quality = os.environ.get("PCP_ICON_QUALITY", "medium")
+        try:
+            pack_width, pack_height = validate_image_size(configured_size)
+        except Exception:
+            configured_size = "1024x1024"
+            pack_width, pack_height = 1024, 1024
+        try:
+            configured_quality = validate_image_quality(configured_quality)
+        except Exception:
+            configured_quality = "medium"
+        count = len(items)
+        columns = min(3, count)
+        rows = (count + columns - 1) // columns
+        concepts = [item.icon_concept or item.title for _, item in items]
+        position_lines = [
+            f"Cell {index + 1} (row {index // columns + 1}, column {index % columns + 1}): {concept}"
+            for index, concept in enumerate(concepts)
+        ]
+        prompt = (
+            f"Create a coherent set of {count} premium ecommerce feature pictograms in an exact "
+            f"{columns}-column by {rows}-row grid. One centered icon per cell. "
+            "Use the same minimal line-art language, consistent stroke width, dark forest green, "
+            "large transparent margins, fully transparent background. Do not draw cards, borders, "
+            "letters, numbers, labels, logos, watermarks, shadows, or any text.\n" + "\n".join(position_lines)
+        )
+        icon_root = output_root / "icons"
+        icon_root.mkdir(parents=True, exist_ok=True)
+        pack_path = icon_root / "icon_pack.png"
+        provider_meta: dict[str, Any] = {}
+        pack_error = ""
+        try:
+            generate_pack = getattr(self._generator, "generate_icon_pack", None)
+            if not callable(generate_pack):
+                raise RuntimeError("当前生图适配器未实现透明图标包生成")
+            provider_meta = generate_pack(
+                prompt=prompt, concepts=concepts, output_path=pack_path,
+                size=configured_size, quality=configured_quality,
+            )
+            pack = Image.open(pack_path).convert("RGBA")
+            if pack.size != (pack_width, pack_height):
+                raise RuntimeError("图标包返回尺寸与请求不一致")
+            if pack.getchannel("A").getextrema()[0] == 255:
+                raise RuntimeError("图标包没有透明背景")
+        except Exception as exc:
+            pack_error = str(exc)
+            pack = None
+
+        icon_rows: list[dict[str, Any]] = []
+        replacements: dict[tuple[str, str], FeatureItem] = {}
+        cell_width, cell_height = pack_width // columns, pack_height // rows
+        for index, (group_id, item) in enumerate(items):
+            safe_id = re.sub(r"[^A-Za-z0-9_-]+", "-", f"{group_id}-{item.id}").strip("-") or f"feature-{index + 1}"
+            icon_path = icon_root / f"{safe_id}.png"
+            source = "generated"
+            degraded_reason = ""
+            normalized = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+            if pack is not None:
+                column, row = index % columns, index // columns
+                crop = pack.crop((
+                    column * cell_width, row * cell_height,
+                    (column + 1) * cell_width, (row + 1) * cell_height,
+                ))
+                alpha_box = crop.getchannel("A").getbbox()
+                if alpha_box:
+                    cropped = crop.crop(alpha_box)
+                    fitted = ImageOps.contain(cropped, (400, 400), Image.Resampling.LANCZOS)
+                    normalized.alpha_composite(fitted, ((512 - fitted.width) // 2, (512 - fitted.height) // 2))
+                else:
+                    degraded_reason = "生成图标为空"
+            else:
+                degraded_reason = pack_error or "图标包生成失败"
+            if normalized.getchannel("A").getbbox() is None:
+                source = "builtin_fallback"
+                self._draw_feature_fallback_icon(normalized, item.icon_concept or item.title, item.icon_tint)
+            normalized.save(icon_path, format="PNG")
+            relative_path = self._relative(icon_path)
+            replacement = FeatureItem.from_dict({
+                **item.to_dict(), "icon_path": relative_path, "icon_source": source,
+                "icon_prompt": prompt,
+            })
+            replacements[(group_id, item.id)] = replacement
+            icon_rows.append({
+                "group_id": group_id, "item_id": item.id, "title": item.title,
+                "concept": item.icon_concept, "path": relative_path, "source": source,
+                "degraded_reason": degraded_reason,
+            })
+        updated_groups = tuple(FeatureGroup.from_dict({
+            **group.to_dict(),
+            "items": [replacements.get((group.id, item.id), item).to_dict() for item in group.items],
+        }) for group in document.feature_groups)
+        metadata = {
+            "status": "degraded" if any(row["source"] == "builtin_fallback" for row in icon_rows) else "completed",
+            "provider": provider_meta.get("provider") or "builtin-icon-library",
+            "pack_path": self._relative(pack_path) if pack_path.exists() else "",
+            "pack_size": configured_size, "quality": configured_quality,
+            "background": "transparent", "prompt": prompt, "icons": icon_rows,
+            "provider_metadata": provider_meta, "error": pack_error,
+        }
+        return replace(document, feature_groups=updated_groups), metadata
+
+    def regenerate_feature_icon(
+        self,
+        *,
+        document: TextDocument,
+        group_id: str,
+        item_id: str,
+        instruction: str = "",
+    ) -> TextDocument:
+        group, item = self._feature_item(document, group_id, item_id)
+        concept = item.icon_concept
+        if instruction.strip():
+            concept = f"{concept}; custom direction: {instruction.strip()}"
+        target_item = FeatureItem.from_dict({**item.to_dict(), "icon_concept": concept, "icon_path": ""})
+        target_group = FeatureGroup.from_dict({**group.to_dict(), "items": [target_item.to_dict()]})
+        temporary = replace(document, feature_groups=(target_group,))
+        output_root = self._root / "feature-icon-edits" / document.candidate_id / f"v{document.version + 1}-{uuid4()}"
+        generated, _ = self._prepare_feature_icons(document=temporary, output_root=output_root)
+        replacement = replace(generated.feature_groups[0].items[0], icon_concept=item.icon_concept)
+        return self._replace_feature_item(document, group_id, item_id, replacement)
+
+    def replace_feature_icon(
+        self,
+        *,
+        document: TextDocument,
+        group_id: str,
+        item_id: str,
+        content: bytes,
+    ) -> TextDocument:
+        _, item = self._feature_item(document, group_id, item_id)
+        if len(content) > 8 * 1024 * 1024:
+            raise ValueError("替换图标不能超过 8MB")
+        try:
+            source = Image.open(BytesIO(content)).convert("RGBA")
+        except OSError as exc:
+            raise ValueError("替换图标必须是有效的 PNG 或 WebP 图片") from exc
+        if source.getchannel("A").getextrema()[0] == 255:
+            raise ValueError("替换图标必须包含透明背景")
+        alpha_box = source.getchannel("A").getbbox()
+        if alpha_box is None:
+            raise ValueError("替换图标不能是全透明图片")
+        cropped = source.crop(alpha_box)
+        normalized = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        fitted = ImageOps.contain(cropped, (400, 400), Image.Resampling.LANCZOS)
+        normalized.alpha_composite(fitted, ((512 - fitted.width) // 2, (512 - fitted.height) // 2))
+        output_root = self._root / "feature-icon-edits" / document.candidate_id / f"v{document.version + 1}-{uuid4()}"
+        output_root.mkdir(parents=True, exist_ok=True)
+        output_path = output_root / f"{re.sub(r'[^A-Za-z0-9_-]+', '-', item.id)}.png"
+        normalized.save(output_path, format="PNG")
+        replacement = FeatureItem.from_dict({
+            **item.to_dict(), "icon_path": self._relative(output_path),
+            "icon_source": "user_upload", "icon_prompt": "",
+        })
+        return self._replace_feature_item(document, group_id, item_id, replacement)
+
+    def resolve_feature_icon(self, document: TextDocument, group_id: str, item_id: str) -> Path:
+        _, item = self._feature_item(document, group_id, item_id)
+        if not item.icon_path:
+            raise FileNotFoundError(item_id)
+        return self.resolve(item.icon_path)
+
+    @staticmethod
+    def _feature_item(document: TextDocument, group_id: str, item_id: str) -> tuple[FeatureGroup, FeatureItem]:
+        group = next((value for value in document.feature_groups if value.id == group_id), None)
+        if group is None:
+            raise ValueError("图文卖点组不存在")
+        item = next((value for value in group.items if value.id == item_id), None)
+        if item is None:
+            raise ValueError("图文卖点项不存在")
+        return group, item
+
+    @staticmethod
+    def _replace_feature_item(
+        document: TextDocument,
+        group_id: str,
+        item_id: str,
+        replacement: FeatureItem,
+    ) -> TextDocument:
+        groups = tuple(FeatureGroup.from_dict({
+            **group.to_dict(),
+            "items": [replacement.to_dict() if group.id == group_id and item.id == item_id else item.to_dict() for item in group.items],
+        }) for group in document.feature_groups)
+        return replace(document, feature_groups=groups)
+
+    @staticmethod
+    def _draw_feature_fallback_icon(canvas: Image.Image, concept: str, color: str) -> None:
+        rgba = LocalProductionEngine._parse_hex_color(color) or (49, 93, 74, 255)
+        draw = ImageDraw.Draw(canvas)
+        box = (112, 112, 400, 400)
+        cx, cy, width = 256, 256, 22
+        lowered = concept.lower()
+        if any(term in lowered for term in ("保护", "安全", "防", "shield")):
+            points = [(cx, 100), (396, 154), (364, 340), (cx, 416), (148, 340), (116, 154)]
+            draw.line(points + [points[0]], fill=rgba, width=width, joint="curve")
+            draw.line((190, 258, 238, 304, 330, 204), fill=rgba, width=width, joint="curve")
+        elif any(term in lowered for term in ("洁", "净", "亮", "光", "spark", "clean")):
+            draw.line((cx, 84, cx, 428), fill=rgba, width=width)
+            draw.line((84, cy, 428, cy), fill=rgba, width=width)
+            draw.line((138, 138, 374, 374), fill=rgba, width=width)
+            draw.line((374, 138, 138, 374), fill=rgba, width=width)
+        elif any(term in lowered for term in ("省", "节", "环保", "leaf", "energy")):
+            draw.ellipse(box, outline=rgba, width=width)
+            draw.arc(box, 165, 320, fill=rgba, width=width)
+            draw.line((156, 356, 354, 154), fill=rgba, width=width)
+        elif any(term in lowered for term in ("容量", "空间", "收纳", "capacity")):
+            draw.rounded_rectangle(box, radius=36, outline=rgba, width=width)
+            draw.line((168, cy, 344, cy), fill=rgba, width=width)
+            draw.line((cx, 168, cx, 344), fill=rgba, width=width)
+        else:
+            draw.ellipse(box, outline=rgba, width=width)
+            draw.rounded_rectangle((190, 190, 322, 322), radius=28, outline=rgba, width=width)
+            draw.line((cx, 70, cx, 150), fill=rgba, width=width)
 
     def _fit_document_font_size(
         self,
@@ -645,9 +922,18 @@ class LocalProductionEngine:
         """Restore the editable document from the text that is already baked into composed.png."""
         composition = dict(candidate.metadata.get("composition") or candidate.metadata.get("compose") or {})
         rendered_layers = composition.get("text_layers")
+        rendered_feature_groups = composition.get("feature_groups")
+        feature_virtual_layer_ids = {
+            f"{group.get('id')}-{item.get('id')}-{suffix}"
+            for group in (rendered_feature_groups if isinstance(rendered_feature_groups, list) else [])
+            if isinstance(group, dict)
+            for item in (group.get("items") or [])
+            if isinstance(item, dict)
+            for suffix in ("title", "description")
+        }
         is_showcase = bool(composition.get("showcase_seed"))
         has_legacy_render = bool(composition.get("canvas") and composition.get("title_font_size"))
-        if not isinstance(rendered_layers, list) and not is_showcase and not has_legacy_render:
+        if not isinstance(rendered_layers, list) and not isinstance(rendered_feature_groups, list) and not is_showcase and not has_legacy_render:
             return None
 
         with Image.open(self.resolve(candidate.base_path)) as base:
@@ -665,6 +951,11 @@ class LocalProductionEngine:
         if isinstance(rendered_layers, list):
             for index, raw in enumerate(rendered_layers):
                 if not isinstance(raw, dict):
+                    continue
+                if isinstance(rendered_feature_groups, list) and (
+                    str(raw.get("source") or "") == "feature_group"
+                    or str(raw.get("id") or "") in feature_virtual_layer_ids
+                ):
                     continue
                 role = str(raw.get("role") or "custom")
                 lines = raw.get("lines")
@@ -709,12 +1000,21 @@ class LocalProductionEngine:
                     "line_height": round(1 + spacing / max(size, 1), 3),
                     "letter_spacing": 0, "z_index": index, "source": "candidate",
                 }))
-        if not layers:
+        feature_groups: list[FeatureGroup] = []
+        if isinstance(rendered_feature_groups, list):
+            for raw_group in rendered_feature_groups:
+                if not isinstance(raw_group, dict):
+                    continue
+                group_value = dict(raw_group)
+                group_value["box"] = normalized_box(raw_group.get("box"), [.08, .55, .92, .88])
+                feature_groups.append(FeatureGroup.from_dict(group_value))
+        if not layers and not feature_groups:
             return None
         return TextDocument(
             candidate_id=candidate.id,
             version=1,
             layers=tuple(layers),
+            feature_groups=tuple(feature_groups),
             source=str(composition.get("text_document_source") or "candidate"),
             ai_reasoning=str(
                 composition.get("text_document_reasoning")
@@ -1258,9 +1558,13 @@ class LocalProductionEngine:
         width, height = base.size
         safe_area = self._scaled_box((.055, .045, .945, .955), width, height)
         layer_canvas = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        icon_canvas = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        feature_layers, rendered_feature_groups = self._layout_feature_groups(
+            document=document, width=width, height=height, icon_canvas=icon_canvas,
+        )
         rendered: list[dict[str, Any]] = []
         repaired = False
-        for text_layer in sorted(document.layers, key=lambda item: item.z_index):
+        for text_layer in sorted((*document.layers, *feature_layers), key=lambda item: item.z_index):
             if not text_layer.visible or not text_layer.content:
                 continue
             region = self._scaled_box(text_layer.box, width, height)
@@ -1394,11 +1698,21 @@ class LocalProductionEngine:
             })
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer_canvas.save(text_path, format="PNG")
-        Image.alpha_composite(base, layer_canvas).convert("RGB").save(output_path, format="PNG")
+        icon_layer_path = text_path.parent / "icon_layer.png"
+        if rendered_feature_groups:
+            icon_canvas.save(icon_layer_path, format="PNG")
+        Image.alpha_composite(Image.alpha_composite(base, icon_canvas), layer_canvas).convert("RGB").save(output_path, format="PNG")
         boxes = [item["rendered_bbox"] for item in rendered]
         union_box = [
             min((box[0] for box in boxes), default=0), min((box[1] for box in boxes), default=0),
             max((box[2] for box in boxes), default=0), max((box[3] for box in boxes), default=0),
+        ]
+        content_boxes = [union_box, *(group["box"] for group in rendered_feature_groups)]
+        content_union = [
+            min((box[0] for box in content_boxes if box[2] > box[0]), default=0),
+            min((box[1] for box in content_boxes if box[3] > box[1]), default=0),
+            max((box[2] for box in content_boxes), default=0),
+            max((box[3] for box in content_boxes), default=0),
         ]
         headline = next((item for item in rendered if item["role"] == "headline"), None)
         body = next((item for item in rendered if item["role"] in {"body", "subheadline"}), None)
@@ -1406,8 +1720,12 @@ class LocalProductionEngine:
         sample_box = tuple(union_box) if union_box[2] > union_box[0] and union_box[3] > union_box[1] else (0, 0, width, height)
         return {
             "canvas": [width, height], "safe_area": list(safe_area), "text_box": union_box,
+            "content_box": content_union,
             "rendered_text_bbox": union_box, "product_bbox": list(product_bbox),
             "text_layers": rendered, "text_document_version": document.version,
+            "feature_groups": rendered_feature_groups,
+            "icon_layer_path": self._relative(icon_layer_path) if rendered_feature_groups else "",
+            "icon_layer_stored_separately": bool(rendered_feature_groups),
             "text_document_source": document.source, "text_document_reasoning": document.ai_reasoning,
             "text_layer_stored_separately": True, "base_contains_post_layout_text": False,
             "font": ", ".join(dict.fromkeys(item["font_family"] for item in rendered)) or "none",
@@ -1431,6 +1749,158 @@ class LocalProductionEngine:
             "color_sample_box": list(sample_box),
             "repair_applied": repaired,
         }
+
+    def _layout_feature_groups(
+        self,
+        *,
+        document: TextDocument,
+        width: int,
+        height: int,
+        icon_canvas: Image.Image,
+    ) -> tuple[list[TextLayer], list[dict[str, Any]]]:
+        text_layers: list[TextLayer] = []
+        rendered_groups: list[dict[str, Any]] = []
+        for group in sorted(document.feature_groups, key=lambda item: item.z_index):
+            if not group.visible or not group.items:
+                continue
+            group_box = self._scaled_box(group.box, width, height)
+            group_width, group_height = group_box[2] - group_box[0], group_box[3] - group_box[1]
+            count = len(group.items)
+            columns = count if group.layout == "row" else 1 if group.layout == "column" else min(group.columns, count)
+            rows = (count + columns - 1) // columns
+            gap_x = round(width * group.item_gap)
+            gap_y = round(height * group.item_gap)
+            cell_width = max(1, (group_width - gap_x * (columns - 1)) // columns)
+            cell_height = max(1, (group_height - gap_y * (rows - 1)) // rows)
+            rendered_items: list[dict[str, Any]] = []
+            for index, item in enumerate(group.items):
+                column, row = index % columns, index // columns
+                cell_x = group_box[0] + column * (cell_width + gap_x)
+                cell_y = group_box[1] + row * (cell_height + gap_y)
+                cell = (cell_x, cell_y, cell_x + cell_width, cell_y + cell_height)
+                card_style = group.card_style
+                card_color = self._parse_hex_color(card_style.get("background_color"))
+                card_opacity = max(0.0, min(1.0, float(card_style.get("background_opacity", 0))))
+                card_radius = max(0, round(min(cell_width, cell_height) * float(card_style.get("radius", .08))))
+                border_color = self._parse_hex_color(card_style.get("border_color"))
+                border_width = max(0, min(24, int(card_style.get("border_width", 0))))
+                if card_color and card_opacity:
+                    ImageDraw.Draw(icon_canvas).rounded_rectangle(
+                        cell, radius=card_radius, fill=(*card_color[:3], round(255 * card_opacity)),
+                        outline=border_color if border_width else None, width=border_width,
+                    )
+                elif border_color and border_width:
+                    ImageDraw.Draw(icon_canvas).rounded_rectangle(
+                        cell, radius=card_radius, outline=border_color, width=border_width,
+                    )
+                padding_x = max(4, round(cell_width * .05))
+                padding_y = max(4, round(cell_height * .05))
+                icon_gap = max(0, round((width if group.icon_position == "left" else height) * group.icon_text_gap))
+                if group.icon_position == "left":
+                    icon_side = max(12, round(min(cell_height * .55, cell_width * group.icon_scale) * item.icon_scale))
+                    icon_x = cell[0] + padding_x
+                    icon_y = cell[1] + (cell_height - icon_side) // 2
+                    text_box = (
+                        min(cell[2] - padding_x, icon_x + icon_side + icon_gap), cell[1] + padding_y,
+                        cell[2] - padding_x, cell[3] - padding_y,
+                    )
+                    text_align = "left"
+                else:
+                    icon_side = max(12, round(min(cell_width * .48, cell_height * group.icon_scale) * item.icon_scale))
+                    icon_x = cell[0] + (cell_width - icon_side) // 2
+                    icon_y = cell[1] + padding_y
+                    text_box = (
+                        cell[0] + padding_x, min(cell[3] - padding_y, icon_y + icon_side + icon_gap),
+                        cell[2] - padding_x, cell[3] - padding_y,
+                    )
+                    text_align = "center"
+                icon_box = (icon_x, icon_y, icon_x + icon_side, icon_y + icon_side)
+                self._place_feature_icon(icon_canvas, item, icon_box)
+                available_height = max(1, text_box[3] - text_box[1])
+                if item.description:
+                    title_height = max(1, round(available_height * .38))
+                    title_box = (text_box[0], text_box[1], text_box[2], min(text_box[3], text_box[1] + title_height))
+                    description_box = (text_box[0], title_box[3], text_box[2], text_box[3])
+                else:
+                    title_box, description_box = text_box, None
+                title_layer = self._feature_text_layer(
+                    item=item, group=group, kind="title", content=item.title, pixel_box=title_box,
+                    width=width, height=height, fallback_align=text_align, z_index=group.z_index + index * 2,
+                )
+                text_layers.append(title_layer)
+                if item.description and description_box:
+                    text_layers.append(self._feature_text_layer(
+                        item=item, group=group, kind="description", content=item.description,
+                        pixel_box=description_box, width=width, height=height,
+                        fallback_align=text_align, z_index=group.z_index + index * 2 + 1,
+                    ))
+                rendered_items.append({
+                    **item.to_dict(), "cell_box": list(cell), "icon_box": list(icon_box),
+                    "title_box": list(title_box),
+                    "description_box": list(description_box) if description_box else [],
+                })
+            rendered_groups.append({
+                **group.to_dict(), "box": list(group_box), "columns": columns, "rows": rows,
+                "items": rendered_items,
+            })
+        return text_layers, rendered_groups
+
+    def _place_feature_icon(
+        self,
+        canvas: Image.Image,
+        item: FeatureItem,
+        box: tuple[int, int, int, int],
+    ) -> None:
+        icon: Image.Image | None = None
+        if item.icon_path:
+            try:
+                icon = Image.open(self.resolve(item.icon_path)).convert("RGBA")
+            except (FileNotFoundError, OSError, ValueError):
+                icon = None
+        if icon is None or icon.getchannel("A").getbbox() is None:
+            icon = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+            self._draw_feature_fallback_icon(icon, item.icon_concept or item.title, item.icon_tint)
+        fitted = ImageOps.contain(icon, (max(1, box[2] - box[0]), max(1, box[3] - box[1])), Image.Resampling.LANCZOS)
+        canvas.alpha_composite(fitted, (
+            box[0] + (box[2] - box[0] - fitted.width) // 2,
+            box[1] + (box[3] - box[1] - fitted.height) // 2,
+        ))
+
+    @staticmethod
+    def _feature_text_layer(
+        *,
+        item: FeatureItem,
+        group: FeatureGroup,
+        kind: str,
+        content: str,
+        pixel_box: tuple[int, int, int, int],
+        width: int,
+        height: int,
+        fallback_align: str,
+        z_index: int,
+    ) -> TextLayer:
+        style = item.title_style if kind == "title" else item.description_style
+        normalized_box = [
+            pixel_box[0] / width, pixel_box[1] / height,
+            max(pixel_box[0] + 1, pixel_box[2]) / width,
+            max(pixel_box[1] + 1, pixel_box[3]) / height,
+        ]
+        return TextLayer.from_dict({
+            "id": f"{group.id}-{item.id}-{kind}", "role": "custom",
+            "name": f"{item.title}·{'标题' if kind == 'title' else '说明'}", "content": content,
+            "box": normalized_box, "font_family": style.get("font_family") or "noto-sans-sc",
+            "font_weight": int(style.get("font_weight") or (700 if kind == "title" else 400)),
+            "font_size": int(style.get("font_size") or (48 if kind == "title" else 30)),
+            "font_style": style.get("font_style") or "normal",
+            "color": style.get("color") or "#315D4A", "text_align": style.get("text_align") or fallback_align,
+            "vertical_align": style.get("vertical_align") or "center",
+            "line_height": float(style.get("line_height") or (1.12 if kind == "title" else 1.35)),
+            "letter_spacing": float(style.get("letter_spacing") or 0),
+            "stroke_width": int(style.get("stroke_width") or 0),
+            "stroke_color": style.get("stroke_color") or "#FFFFFF",
+            "shadow": bool(style.get("shadow", False)), "z_index": z_index,
+            "source": "feature_group", "copy_block_id": f"{group.id}:{item.id}:{kind}",
+        })
 
     def _inspect(
         self,
@@ -1461,7 +1931,35 @@ class LocalProductionEngine:
         overlap = self._overlap_ratio(rendered, product)
         if overlap > .04:
             issues.append(self._issue("subject_text_overlap", "P1", "文字遮挡商品主体", "recompose"))
-        expected_text = f"{page.title}\n{page.body}".strip()
+        feature_layout_evidence: list[dict[str, Any]] = []
+        for group in compose_meta.get("feature_groups") or []:
+            group_box = tuple(group.get("box") or ())
+            if len(group_box) != 4:
+                continue
+            group_overlap = self._overlap_ratio(group_box, product)
+            if not self._contains(safe, group_box):
+                issues.append(self._issue("feature_group_safe_area", "P0", f"图文卖点组“{group.get('name', '')}”超出模板安全区", "recompose"))
+            if group_overlap > .04:
+                issues.append(self._issue("feature_group_product_overlap", "P1", f"图文卖点组“{group.get('name', '')}”遮挡商品主体", "recompose"))
+            feature_layout_evidence.append({
+                "id": group.get("id", ""), "name": group.get("name", ""),
+                "box": list(group_box), "overlap_ratio": round(group_overlap, 4),
+                "items": [{
+                    "id": item.get("id", ""), "title": item.get("title", ""),
+                    "fact_refs": item.get("fact_refs") or [], "icon_source": item.get("icon_source", ""),
+                    "icon_path": item.get("icon_path", ""),
+                } for item in group.get("items") or []],
+            })
+        for point in page.feature_points:
+            if not point.fact_refs:
+                issues.append(self._issue(
+                    "feature_fact_evidence_missing", "P1",
+                    f"图文卖点“{point.title}”缺少可追溯事实依据", "copy",
+                ))
+        feature_copy = "\n".join(
+            part for point in page.feature_points for part in (point.title, point.description) if part.strip()
+        )
+        expected_text = "\n".join(part for part in (page.title, page.body, feature_copy) if part.strip())
         if not page.title.strip():
             issues.append(self._issue("title_missing", "P0", "页面标题为空", "copy"))
         allowed_source = " ".join([
@@ -1498,7 +1996,7 @@ class LocalProductionEngine:
                 rendered[0] / canvas_width, rendered[1] / canvas_height,
                 rendered[2] / canvas_width, rendered[3] / canvas_height,
             )
-            reserved = compose_meta["text_box"]
+            reserved = compose_meta.get("content_box") or compose_meta["text_box"]
             reserved_bbox = (
                 reserved[0] / canvas_width, reserved[1] / canvas_height,
                 reserved[2] / canvas_width, reserved[3] / canvas_height,
@@ -1550,11 +2048,14 @@ class LocalProductionEngine:
                     "renderer": "Pillow",
                     "base_image_stored_separately": True,
                     "text_layer_stored_separately": True,
+                    "icon_layer_stored_separately": bool(compose_meta.get("icon_layer_path")),
                     "base_image_path": self._relative(base_path),
                     "text_layer_path": self._relative(output_path.parent / "text_layer.png"),
+                    "icon_layer_path": compose_meta.get("icon_layer_path", ""),
                     "composed_image_path": self._relative(output_path),
                     "authoritative_title": page.title,
                     "authoritative_body": page.body,
+                    "authoritative_feature_points": [point.to_dict() for point in page.feature_points],
                     "product_layer_file": generator_meta.get("product_layer_file", ""),
                     "reference_strategy": generator_meta.get("reference_strategy", ""),
                     "product_generated_by_model": generator_meta.get("product_generated_by_model", False),
@@ -1569,6 +2070,10 @@ class LocalProductionEngine:
                     generation={**generator_meta, "composition_provenance": composition_provenance},
                     title=page.title,
                     body=page.body,
+                    feature_text=[
+                        part for point in page.feature_points
+                        for part in (point.title, point.description) if part.strip()
+                    ],
                     bbox=bbox,
                     number_allowlist=copy_number_allowlist,
                     progress=lambda stage: report(
@@ -1593,7 +2098,11 @@ class LocalProductionEngine:
                     }
             else:
                 text_review = self._quality_toolkit.review_known_text(
-                    title=page.title, body=page.body, bbox=bbox, number_allowlist=copy_number_allowlist
+                    title=page.title, body=page.body, bbox=bbox, number_allowlist=copy_number_allowlist,
+                    feature_text=[
+                        part for point in page.feature_points
+                        for part in (point.title, point.description) if part.strip()
+                    ],
                 )
 
             for text_issue in text_review.get("issues", []):
@@ -1634,15 +2143,18 @@ class LocalProductionEngine:
                     "subject_anchor_box": list((generator_meta.get("layout") or {}).get("product_anchor_box") or product),
                     "subject_allowed_box": list((generator_meta.get("layout") or {}).get("allowed_product_extent_box") or product),
                     "overlap_ratio": round(overlap, 4),
+                    "feature_groups": feature_layout_evidence,
                 },
                 "composition_provenance": {
                     "post_composed": True,
                     "renderer": "Pillow",
                     "base_image_path": self._relative(base_path),
                     "text_layer_path": self._relative(output_path.parent / "text_layer.png"),
+                    "icon_layer_path": compose_meta.get("icon_layer_path", ""),
                     "composed_image_path": self._relative(output_path),
                     "authoritative_title": page.title,
                     "authoritative_body": page.body,
+                    "authoritative_feature_points": [point.to_dict() for point in page.feature_points],
                 },
                 "product_facts": {
                     "found_numbers": found_numbers,
@@ -1712,14 +2224,17 @@ class LocalProductionEngine:
             "authoritative_copy": {
                 "title": page.title,
                 "body": page.body,
-                "serialization": json.dumps(
-                    {"title": page.title, "body": page.body}, ensure_ascii=False
-                ),
+                "feature_points": [point.to_dict() for point in page.feature_points],
+                "serialization": json.dumps({
+                    "title": page.title, "body": page.body,
+                    "feature_points": [point.to_dict() for point in page.feature_points],
+                }, ensure_ascii=False),
                 "policy": "逐字匹配原文，不添加或删除任何标点；由 OCR 和独立文字层确定性校验",
             },
             "composition_evidence": {
                 "post_composed": True,
                 "base_and_text_layer_are_separate_files": True,
+                "feature_icon_and_text_layers_are_separate_files": bool(page.feature_points),
                 "copy_review_owner": "deterministic_ocr",
                 "product_composition_strategy": reference_strategy,
                 "reference_product_layer_is_exact_source": reference_strategy == "layered_product",

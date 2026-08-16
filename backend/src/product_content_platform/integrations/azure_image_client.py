@@ -149,6 +149,7 @@ def generate_image(
     size: str = "2048x2048",
     quality: str = "high",
     output_format: str = "png",
+    background: str | None = None,
     timeout: int = DEFAULT_IMAGE_TIMEOUT_SECONDS,
 ) -> GeneratedImage:
     resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
@@ -160,6 +161,8 @@ def generate_image(
         "n": 1,
         "output_format": output_format,
     }
+    if background:
+        request_payload["background"] = background
     if stream_response:
         request_payload["stream"] = True
         request_payload["partial_images"] = _partial_image_count()

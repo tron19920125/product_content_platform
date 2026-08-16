@@ -7,11 +7,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from product_content_platform.adapters.base_image_generation import _composite_reference_product
+from product_content_platform.adapters.base_image_generation import LocalBaseImageGenerator, _composite_reference_product
 from product_content_platform.adapters.production_engine import LocalProductionEngine
 from product_content_platform.domain import (
     Candidate,
     CandidateStatus,
+    FeaturePoint,
     PageItem,
     PageStatus,
     PageType,
@@ -100,6 +101,58 @@ class FontRenderingTests(unittest.TestCase):
 
 
 class ProductionEngineTest(unittest.TestCase):
+    def test_feature_group_generates_transparent_icons_and_separate_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_path = root / "base.png"
+            Image.new("RGB", (1536, 1024), "#F5F2EA").save(base_path)
+            template = {
+                "id": "feature-demo", "size": "1536x1024",
+                "text_box": [.06, .08, .46, .32], "title_box": [.06, .08, .46, .18],
+                "body_box": [.06, .20, .46, .32], "product_box": [.54, .12, .94, .92],
+                "product_anchor_box": [.58, .16, .90, .88],
+                "feature_slots": [{
+                    "id": "feature-band", "name": "核心功能", "box": [.06, .52, .48, .86],
+                    "layout": "row", "columns": 3, "max_items": 3,
+                    "icon_position": "top", "icon_scale": .3,
+                }],
+            }
+            engine = LocalProductionEngine(
+                root / "production", LocalBaseImageGenerator(), QualityStub(),
+                template_resolver=lambda _template_id: template,
+            )
+            page = PageItem(
+                id="feature-page", order=1, page_type=PageType.FUNCTION,
+                title="三重专业护理", body="看得见的洁净与安心", visual_goal="高端功能展示",
+                template_id="feature-demo", status=PageStatus.READY,
+                feature_points=(
+                    FeaturePoint("clean", "深层洁净", "减少残留", "洁净闪光", ("selling_point:深层洁净",)),
+                    FeaturePoint("care", "轻柔呵护", "保护衣物", "保护盾牌", ("selling_point:轻柔呵护",)),
+                    FeaturePoint("energy", "节能省心", "高效运行", "节能叶片", ("selling_point:节能省心",)),
+                ),
+            )
+
+            document = engine._build_text_document(
+                candidate_id="candidate-feature", base_path=base_path, page=page,
+            )
+            candidate_root = root / "production" / "candidate"
+            prepared, icon_meta = engine._prepare_feature_icons(document=document, output_root=candidate_root)
+            composition = engine._compose_text_document(
+                base_path=base_path, text_path=candidate_root / "text_layer.png",
+                output_path=candidate_root / "composed.png", document=prepared,
+                product_bbox=(830, 160, 1400, 900),
+            )
+
+            self.assertEqual(1, len(prepared.feature_groups))
+            self.assertEqual(3, len(prepared.feature_groups[0].items))
+            self.assertEqual("completed", icon_meta["status"])
+            self.assertTrue(all(Path(engine.resolve(item.icon_path)).exists() for item in prepared.feature_groups[0].items))
+            self.assertTrue(Path(engine.resolve(composition["icon_layer_path"])).exists())
+            self.assertEqual(3, len(composition["feature_groups"][0]["items"]))
+            with Image.open(engine.resolve(composition["icon_layer_path"])) as icon_layer:
+                self.assertEqual("RGBA", icon_layer.mode)
+                self.assertEqual(0, icon_layer.getchannel("A").getextrema()[0])
+
     @unittest.skipUnless(os.name == "nt", "Windows Chinese font discovery")
     def test_windows_composition_font_supports_distinct_chinese_glyphs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

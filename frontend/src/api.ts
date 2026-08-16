@@ -264,6 +264,7 @@ export type Candidate = {
   metadata?: Record<string, unknown>;
   base_url: string;
   text_layer_url: string;
+  icon_layer_url?: string;
   composed_url: string;
   background_url?: string;
   product_layer_url?: string;
@@ -353,11 +354,44 @@ export type TextDocument = {
   candidate_id: string;
   version: number;
   layers: TextLayer[];
+  feature_groups: FeatureGroup[];
   status: "draft" | "applied";
   source: string;
   ai_reasoning: string;
   created_at: string;
   updated_at: string;
+};
+
+export type FeatureItemLayer = {
+  id: string;
+  title: string;
+  description: string;
+  icon_concept: string;
+  fact_refs: string[];
+  icon_path: string;
+  icon_source: string;
+  icon_prompt: string;
+  icon_scale: number;
+  icon_tint: string;
+  title_style: Record<string, unknown>;
+  description_style: Record<string, unknown>;
+};
+
+export type FeatureGroup = {
+  id: string;
+  name: string;
+  box: [number, number, number, number];
+  items: FeatureItemLayer[];
+  layout: "row" | "column" | "grid";
+  columns: number;
+  icon_position: "top" | "left";
+  icon_scale: number;
+  item_gap: number;
+  icon_text_gap: number;
+  card_style: Record<string, unknown>;
+  visible: boolean;
+  locked: boolean;
+  z_index: number;
 };
 
 export type StitchSettings = {
@@ -524,10 +558,21 @@ export const api = {
   reviewCandidate: (candidateId: string, decision: "approved" | "rejected", overrideReason = "", skipQa = false) =>
     request<ReviewDecision>(`/candidates/${candidateId}/review`, { method: "POST", body: JSON.stringify({ decision, override_reason: overrideReason, reviewer: "local-user", skip_qa: skipQa }) }),
   getTextDocument: (candidateId: string) => request<TextDocument>(`/candidates/${candidateId}/text-document`),
-  saveTextDocument: (candidateId: string, document: Pick<TextDocument, "version" | "layers">) =>
-    request<TextDocument>(`/candidates/${candidateId}/text-document`, { method: "PUT", body: JSON.stringify({ base_version: document.version, layers: document.layers }) }),
+  saveTextDocument: (candidateId: string, document: Pick<TextDocument, "version" | "layers" | "feature_groups">) =>
+    request<TextDocument>(`/candidates/${candidateId}/text-document`, { method: "PUT", body: JSON.stringify({ base_version: document.version, layers: document.layers, feature_groups: document.feature_groups }) }),
   aiLayoutTextDocument: (candidateId: string, instruction = "") =>
     request<TextDocument>(`/candidates/${candidateId}/text-document/ai-layout`, { method: "POST", body: JSON.stringify({ instruction }) }),
+  featureIconUrl: (candidateId: string, groupId: string, itemId: string, version = 0) =>
+    `${API_BASE}/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon?v=${version}`,
+  regenerateFeatureIcon: (candidateId: string, groupId: string, itemId: string, instruction = "") =>
+    request<TextDocument>(`/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon/regenerate`, { method: "POST", body: JSON.stringify({ instruction }) }),
+  replaceFeatureIcon: async (candidateId: string, groupId: string, itemId: string, file: File) => {
+    const response = await fetch(`${API_BASE}/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon/replace`, {
+      method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file,
+    });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<TextDocument>;
+  },
   applyTextDocument: (candidateId: string, version: number) =>
     request<Candidate>(`/candidates/${candidateId}/text-document/apply`, { method: "POST", body: JSON.stringify({ version }) }),
   runCandidateQa: (candidateId: string) => request<QAResult>(`/candidates/${candidateId}/qa`, { method: "POST" }),

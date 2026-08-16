@@ -264,12 +264,13 @@ class SQLiteProductionRepository:
             connection.execute(
                 """
                 INSERT INTO text_documents
-                    (candidate_id, version, layers, status, source, ai_reasoning, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (candidate_id, version, layers, feature_groups, status, source, ai_reasoning, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document.candidate_id, document.version,
                     json.dumps([layer.to_dict() for layer in document.layers], ensure_ascii=False),
+                    json.dumps([group.to_dict() for group in document.feature_groups], ensure_ascii=False),
                     document.status, document.source, document.ai_reasoning,
                     document.created_at.isoformat(), document.updated_at.isoformat(),
                 ),
@@ -289,6 +290,7 @@ class SQLiteProductionRepository:
         return TextDocument.from_dict({
             "candidate_id": row["candidate_id"], "version": row["version"],
             "layers": json.loads(row["layers"]), "status": row["status"],
+            "feature_groups": json.loads(row["feature_groups"] or "[]"),
             "source": row["source"], "ai_reasoning": row["ai_reasoning"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         })
@@ -302,6 +304,7 @@ class SQLiteProductionRepository:
         return [TextDocument.from_dict({
             "candidate_id": row["candidate_id"], "version": row["version"],
             "layers": json.loads(row["layers"]), "status": row["status"],
+            "feature_groups": json.loads(row["feature_groups"] or "[]"),
             "source": row["source"], "ai_reasoning": row["ai_reasoning"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }) for row in rows]
@@ -435,6 +438,7 @@ class SQLiteProductionRepository:
                     candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
                     version INTEGER NOT NULL,
                     layers TEXT NOT NULL,
+                    feature_groups TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     source TEXT NOT NULL,
                     ai_reasoning TEXT NOT NULL DEFAULT '',
@@ -460,6 +464,11 @@ class SQLiteProductionRepository:
             if "qa_disposition" not in review_columns:
                 connection.execute(
                     "ALTER TABLE review_decisions ADD COLUMN qa_disposition TEXT NOT NULL DEFAULT 'qa_completed'"
+                )
+            text_document_columns = {row["name"] for row in connection.execute("PRAGMA table_info(text_documents)")}
+            if "feature_groups" not in text_document_columns:
+                connection.execute(
+                    "ALTER TABLE text_documents ADD COLUMN feature_groups TEXT NOT NULL DEFAULT '[]'"
                 )
 
     @staticmethod
