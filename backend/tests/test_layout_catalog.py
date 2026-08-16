@@ -76,6 +76,32 @@ class LayoutContentCatalogTest(unittest.TestCase):
             self.assertEqual("3840x2160", migrated["size"])
             self.assertEqual(2, payload["schema_version"])
 
+    def test_feature_slot_is_versioned_validated_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Path(directory) / "templates.json"
+            catalog = LayoutContentCatalog(storage)
+            draft = catalog.create_template_draft(
+                library_id="library-landscape-3840",
+                name="三联图文卖点",
+                page_types=["selling_point"],
+                feature_slots=[{
+                    "id": "feature-band", "name": "三联卖点", "box": [.06, .58, .42, .88],
+                    "layout": "row", "columns": 3, "min_items": 3, "max_items": 3,
+                    "icon_position": "top",
+                }],
+            )
+            self.assertEqual("feature-band", draft["feature_slots"][0]["id"])
+            self.assertIn("后期叠加透明图标", draft["composition_instruction"])
+
+            restored = LayoutContentCatalog(storage).template(draft["id"])
+            self.assertEqual(3, restored["feature_slots"][0]["max_items"])
+
+            with self.assertRaises(DomainValidationError):
+                catalog.update_template_draft(
+                    draft["id"],
+                    feature_slots=[{"id": "bad", "box": [.02, .02, .20, .20], "min_items": 4, "max_items": 2}],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

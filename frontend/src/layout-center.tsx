@@ -4,7 +4,7 @@ import { api, ImageCapabilities, LayoutLibrary, TemplateDefinition } from "./api
 import { Icon, IconButton } from "./ui";
 
 type BoxKey = "safe_area_box" | "product_box" | "product_anchor_box";
-type RegionKey = BoxKey | `text:${string}`;
+type RegionKey = BoxKey | `text:${string}` | `feature:${string}`;
 type Box = [number, number, number, number];
 
 const PAGE_TYPES = [
@@ -200,6 +200,7 @@ function TemplateMiniature({ template }: { template: TemplateDefinition }) {
   return <div className="layout-miniature" style={{ aspectRatio: `${template.width} / ${template.height}` }}>
     <div className="mini-environment" />
     {template.text_slots.map((slot) => <div key={slot.id} className={`mini-box ${slot.role === "headline" ? "title" : "body"}`} style={regionStyle(slot.box)}><span>{slot.name}</span></div>)}
+    {template.feature_slots.map((slot) => <div key={slot.id} className="mini-box feature" style={regionStyle(slot.box)}><span>{slot.name}</span></div>)}
     <div className="mini-box allowed" style={regionStyle(template.product_box)} />
     <div className="mini-product" style={regionStyle(template.product_anchor_box)}><img src={api.resolveUrl(EDITOR_PRODUCT_ASSET)} alt="" /></div>
     <small>{template.size}</small>
@@ -248,11 +249,14 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
 
   const getBox = useCallback((source: TemplateDefinition, key: RegionKey): Box => {
     if (key.startsWith("text:")) return source.text_slots.find((slot) => slot.id === key.slice(5))?.box ?? source.title_box;
+    if (key.startsWith("feature:")) return source.feature_slots.find((slot) => slot.id === key.slice(8))?.box ?? source.safe_area_box;
     return source[key as BoxKey];
   }, []);
-  const withBox = useCallback((source: TemplateDefinition, key: RegionKey, box: Box): TemplateDefinition => key.startsWith("text:")
-    ? { ...source, text_slots: source.text_slots.map((slot) => slot.id === key.slice(5) ? { ...slot, box } : slot) }
-    : { ...source, [key]: box }, []);
+  const withBox = useCallback((source: TemplateDefinition, key: RegionKey, box: Box): TemplateDefinition => {
+    if (key.startsWith("text:")) return { ...source, text_slots: source.text_slots.map((slot) => slot.id === key.slice(5) ? { ...slot, box } : slot) };
+    if (key.startsWith("feature:")) return { ...source, feature_slots: source.feature_slots.map((slot) => slot.id === key.slice(8) ? { ...slot, box } : slot) };
+    return { ...source, [key]: box };
+  }, []);
   const setBox = (key: RegionKey, box: Box) => setDraft((current) => withBox(current, key, box));
   const begin = (event: ReactPointerEvent, key: RegionKey, mode: "move" | ResizeHandle) => {
     event.preventDefault(); event.stopPropagation();
@@ -273,6 +277,7 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
       { key: "safe_area_box", box: draft.safe_area_box }, { key: "product_box", box: draft.product_box },
       { key: "product_anchor_box", box: draft.product_anchor_box },
       ...draft.text_slots.map((slot) => ({ key: `text:${slot.id}` as RegionKey, box: slot.box })),
+      ...draft.feature_slots.map((slot) => ({ key: `feature:${slot.id}` as RegionKey, box: slot.box })),
     ];
     const otherBoxes = allRegions.filter((row) => row.key !== interaction.key).map((row) => row.box);
     const targetsX = [.01, .5, .99, ...otherBoxes.flatMap((box) => [box[0], (box[0] + box[2]) / 2, box[2]])];
@@ -359,6 +364,7 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
       const saved = await api.updateTemplateDraft(draft.id, {
         name: draft.name, page_types: draft.page_types,
         title_box: draft.title_box, body_box: draft.body_box, text_slots: draft.text_slots,
+        feature_slots: draft.feature_slots,
         product_box: draft.product_box, product_anchor_box: draft.product_anchor_box,
         safe_area_box: draft.safe_area_box, scene_prompt_hint: draft.scene_prompt_hint,
       });
@@ -379,6 +385,7 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
   const contains = (outer: Box, inner: Box) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
   const validationIssues = [
     ...draft.text_slots.map((slot) => !contains(draft.safe_area_box, slot.box) ? `${slot.name}超出安全区` : ""),
+    ...draft.feature_slots.map((slot) => !contains(draft.safe_area_box, slot.box) ? `${slot.name}超出安全区` : ""),
     !contains(draft.product_box, draft.product_anchor_box) ? "商品核心区必须位于商品允许区内" : "",
   ].filter(Boolean);
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -399,7 +406,13 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
     <section className="template-editor-panel">
       <header className="editor-topbar"><div className="editor-breadcrumb"><button onClick={requestClose}><Icon name="back"/>返回</button><span>版式中心</span><i>/</i><span>{library.name}</span><i>/</i><strong>V{draft.version}</strong></div><label className="editor-name"><input value={draft.name} aria-label="模板名称" onChange={(event) => { setSavedAt(null); setDraft({ ...draft, name: event.target.value }); }}/><Icon name="edit" size={15}/></label><div className="editor-save-state"><span className="status-dot ready"/>{savedAt ? `已保存 ${savedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : dirty ? "当前有未保存修改" : "草稿已同步"}</div><div className="editor-command-bar"><IconButton icon="undo" label="撤销 Ctrl+Z" disabled={historyIndex <= 0} onClick={undo}/><IconButton icon="redo" label="重做 Ctrl+Shift+Z" disabled={historyIndex >= history.length - 1} onClick={redo}/><button className="secondary"><Icon name="preview"/>预览</button>{validationIssues.length > 0 && <button className="validation-trigger"><Icon name="alert"/>查看 {validationIssues.length} 个问题</button>}<button className="secondary" disabled={!!busy || !dirty} onClick={() => void save(false)}>{busy === "save" ? "保存中…" : "保存草稿"}</button><button className="primary" disabled={!!busy || validationIssues.length > 0} onClick={() => void save(true)}>{busy === "publish" ? "发布中…" : "发布"}</button></div></header>
       <div className="template-editor-workspace">
-        <aside className="editor-layers"><header><strong>图层 / 区域</strong><Icon name="layers"/></header><button className="editor-add-text" onClick={() => { const id = `text-${crypto.randomUUID()}`; const slot = { id, role: "custom" as const, name: `文本框 ${draft.text_slots.length + 1}`, box: [.1, .1, .42, .2] as Box, required: false, max_lines: 4, default_style: {} }; commit({ ...draft, text_slots: [...draft.text_slots, slot] }); setActiveKey(`text:${id}`); }}><Icon name="plus"/><span>新增文字预留框</span></button>{draft.text_slots.map((slot) => { const key = `text:${slot.id}` as RegionKey; return <button key={key} className={activeKey === key ? "active" : ""} onClick={() => setActiveKey(key)}><Icon name="grip"/><span>{slot.name}</span><Icon name="eye"/><Icon name="unlock"/></button>; })}{(["safe_area_box", "product_box", "product_anchor_box"] as BoxKey[]).map((key) => <button key={key} className={activeKey === key ? "active" : ""} onClick={() => setActiveKey(key)}><Icon name="grip"/><span>{boxLabel(key)}</span><Icon name="eye"/><Icon name={key === "safe_area_box" ? "lock" : "unlock"}/></button>)}<p>拖动调整区域，方向键精调位置</p></aside>
+        <aside className="editor-layers"><header><strong>图层 / 区域</strong><Icon name="layers"/></header>
+          <button className="editor-add-text" onClick={() => { const id = `text-${crypto.randomUUID()}`; const slot = { id, role: "custom" as const, name: `文本框 ${draft.text_slots.length + 1}`, box: [.1, .1, .42, .2] as Box, required: false, max_lines: 4, default_style: {} }; commit({ ...draft, text_slots: [...draft.text_slots, slot] }); setActiveKey(`text:${id}`); }}><Icon name="plus"/><span>新增文字预留框</span></button>
+          <button className="editor-add-text feature" disabled={draft.feature_slots.length >= 3} onClick={() => { const id = `feature-${crypto.randomUUID()}`; const slot: TemplateDefinition["feature_slots"][number] = { id, name: `图文卖点组 ${draft.feature_slots.length + 1}`, box: [.08, .56, .48, .88], layout: "row", columns: 3, min_items: 2, max_items: 3, icon_position: "top", icon_scale: .28, item_gap: .025, icon_text_gap: .012, card_style: {}, title_style: {}, description_style: {} }; commit({ ...draft, feature_slots: [...draft.feature_slots, slot] }); setActiveKey(`feature:${id}`); }}><Icon name="plus"/><span>新增图文卖点预留区</span></button>
+          {draft.text_slots.map((slot) => { const key = `text:${slot.id}` as RegionKey; return <button key={key} className={activeKey === key ? "active" : ""} onClick={() => setActiveKey(key)}><Icon name="grip"/><span>{slot.name}</span><Icon name="eye"/><Icon name="unlock"/></button>; })}
+          {draft.feature_slots.map((slot) => { const key = `feature:${slot.id}` as RegionKey; return <button key={key} className={activeKey === key ? "active" : ""} onClick={() => setActiveKey(key)}><Icon name="grip"/><span>{slot.name}</span><Icon name="eye"/><Icon name="unlock"/></button>; })}
+          {(["safe_area_box", "product_box", "product_anchor_box"] as BoxKey[]).map((key) => <button key={key} className={activeKey === key ? "active" : ""} onClick={() => setActiveKey(key)}><Icon name="grip"/><span>{boxLabel(key)}</span><Icon name="eye"/><Icon name={key === "safe_area_box" ? "lock" : "unlock"}/></button>)}<p>拖动调整区域，方向键精调位置</p>
+        </aside>
         <div ref={stageRef} className={`editor-stage ${spacePressed ? "pan-ready" : ""} ${isPanning ? "panning" : ""}`} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={() => setIsPanning(false)} onPointerCancel={() => setIsPanning(false)}>
           <div className="editor-canvas-transform" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom / 75})` }}>
           <div className="canvas-dimension width">{library.width}px</div><div className="canvas-dimension height">{library.height}px</div>
@@ -408,6 +421,7 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
             {interaction && <><i className="alignment-guide vertical"/><i className="alignment-guide horizontal"/></>}
             <EditableBox label="安全区" kind="safe" box={draft.safe_area_box} active={activeKey === "safe_area_box"} onMove={(event) => begin(event, "safe_area_box", "move")} onResize={(event, handle) => begin(event, "safe_area_box", handle)} />
             {draft.text_slots.map((slot) => { const key = `text:${slot.id}` as RegionKey; return <EditableBox key={slot.id} label={slot.name} kind={slot.role === "headline" ? "title" : "body"} box={slot.box} active={activeKey === key} onMove={(event) => begin(event, key, "move")} onResize={(event, handle) => begin(event, key, handle)}><span>{slot.role === "headline" ? "高端洗护新境界" : "让专业护理融入理想生活"}</span></EditableBox>; })}
+            {draft.feature_slots.map((slot) => { const key = `feature:${slot.id}` as RegionKey; return <EditableBox key={slot.id} label={slot.name} kind="feature" box={slot.box} active={activeKey === key} onMove={(event) => begin(event, key, "move")} onResize={(event, handle) => begin(event, key, handle)}><span className="feature-slot-sample">{Array.from({ length: slot.max_items }, (_, index) => <i key={index}><b>◇</b><em>卖点 {index + 1}</em></i>)}</span></EditableBox>; })}
             <EditableBox label="商品允许区" kind="allowed" box={draft.product_box} active={activeKey === "product_box"} onMove={(event) => begin(event, "product_box", "move")} onResize={(event, handle) => begin(event, "product_box", handle)} />
             <EditableBox label="商品核心区" kind="product" box={draft.product_anchor_box} active={activeKey === "product_anchor_box"} onMove={(event) => begin(event, "product_anchor_box", "move")} onResize={(event, handle) => begin(event, "product_anchor_box", handle)}><img className="editor-product-asset" src={api.resolveUrl(EDITOR_PRODUCT_ASSET)} alt="版式预览商品" /></EditableBox>
           </div>
@@ -416,7 +430,11 @@ function TemplateEditor({ template, library, onClose, onSaved }: { template: Tem
         </div>
         <aside className="editor-inspector">
           <div className="inspector-tabs"><button className="active">样式</button><button>数据</button></div>
-          <section><h4>位置与尺寸</h4>{activeKey.startsWith("text:") && (() => { const id = activeKey.slice(5); const slot = draft.text_slots.find((item) => item.id === id); return slot ? <div className="template-text-properties"><label>名称<input value={slot.name} onChange={(event) => setDraft({ ...draft, text_slots: draft.text_slots.map((item) => item.id === id ? { ...item, name: event.target.value } : item) })} onBlur={() => commit(draft)}/></label><label>角色<select value={slot.role} onChange={(event) => commit({ ...draft, text_slots: draft.text_slots.map((item) => item.id === id ? { ...item, role: event.target.value as typeof item.role } : item) })}><option value="headline">标题</option><option value="body">正文</option><option value="badge">标签</option><option value="caption">说明</option><option value="custom">自定义</option></select></label><button className="danger-link" disabled={draft.text_slots.length <= 1} onClick={() => { commit({ ...draft, text_slots: draft.text_slots.filter((item) => item.id !== id) }); setActiveKey(`text:${draft.text_slots.find((item) => item.id !== id)?.id ?? ""}`); }}>删除此预留框</button></div> : null; })()}<div className="geometry-grid">{(["x", "y", "w", "h"] as const).map((field) => <label key={field}><span>{field.toUpperCase()}</span><input type="number" value={geometry[field]} onChange={(event) => updateGeometry(field, Number(event.target.value))}/><i>px</i></label>)}</div><div className="nudge-controls"><button aria-label="左移 1px" onClick={() => nudge(-1, 0)}>←</button><button aria-label="上移 1px" onClick={() => nudge(0, -1)}>↑</button><button aria-label="下移 1px" onClick={() => nudge(0, 1)}>↓</button><button aria-label="右移 1px" onClick={() => nudge(1, 0)}>→</button><span>Shift + 方向键移动 10px</span></div></section>
+          <section><h4>位置与尺寸</h4>
+            {activeKey.startsWith("text:") && (() => { const id = activeKey.slice(5); const slot = draft.text_slots.find((item) => item.id === id); return slot ? <div className="template-text-properties"><label>名称<input value={slot.name} onChange={(event) => setDraft({ ...draft, text_slots: draft.text_slots.map((item) => item.id === id ? { ...item, name: event.target.value } : item) })} onBlur={() => commit(draft)}/></label><label>角色<select value={slot.role} onChange={(event) => commit({ ...draft, text_slots: draft.text_slots.map((item) => item.id === id ? { ...item, role: event.target.value as typeof item.role } : item) })}><option value="headline">标题</option><option value="body">正文</option><option value="badge">标签</option><option value="caption">说明</option><option value="custom">自定义</option></select></label><button className="danger-link" disabled={draft.text_slots.length <= 1} onClick={() => { commit({ ...draft, text_slots: draft.text_slots.filter((item) => item.id !== id) }); setActiveKey(`text:${draft.text_slots.find((item) => item.id !== id)?.id ?? ""}`); }}>删除此预留框</button></div> : null; })()}
+            {activeKey.startsWith("feature:") && (() => { const id = activeKey.slice(8); const slot = draft.feature_slots.find((item) => item.id === id); if (!slot) return null; const update = (changes: Partial<typeof slot>) => commit({ ...draft, feature_slots: draft.feature_slots.map((item) => item.id === id ? { ...item, ...changes } : item) }); return <div className="template-feature-properties"><label>名称<input value={slot.name} onChange={(event) => setDraft({ ...draft, feature_slots: draft.feature_slots.map((item) => item.id === id ? { ...item, name: event.target.value } : item) })} onBlur={() => commit(draft)}/></label><label>排布<select value={slot.layout} onChange={(event) => update({ layout: event.target.value as typeof slot.layout })}><option value="row">横向排列</option><option value="column">纵向排列</option><option value="grid">网格排列</option></select></label><label>图标位置<select value={slot.icon_position} onChange={(event) => update({ icon_position: event.target.value as typeof slot.icon_position })}><option value="top">图标在上</option><option value="left">图标在左</option></select></label><label>默认数量<span className="feature-count-inputs"><input type="number" min="1" max={slot.max_items} value={slot.min_items} onChange={(event) => update({ min_items: Number(event.target.value) })}/><i>至</i><input type="number" min={slot.min_items} max="6" value={slot.max_items} onChange={(event) => update({ max_items: Number(event.target.value), columns: Math.min(slot.columns, Number(event.target.value)) })}/></span></label><label>列数<input type="number" min="1" max={slot.max_items} value={slot.columns} onChange={(event) => update({ columns: Number(event.target.value) })}/></label><button className="danger-link" onClick={() => { commit({ ...draft, feature_slots: draft.feature_slots.filter((item) => item.id !== id) }); setActiveKey(`text:${draft.text_slots[0]?.id ?? ""}`); }}>删除图文卖点预留区</button></div>; })()}
+            <div className="geometry-grid">{(["x", "y", "w", "h"] as const).map((field) => <label key={field}><span>{field.toUpperCase()}</span><input type="number" value={geometry[field]} onChange={(event) => updateGeometry(field, Number(event.target.value))}/><i>px</i></label>)}</div><div className="nudge-controls"><button aria-label="左移 1px" onClick={() => nudge(-1, 0)}>←</button><button aria-label="上移 1px" onClick={() => nudge(0, -1)}>↑</button><button aria-label="下移 1px" onClick={() => nudge(0, 1)}>↓</button><button aria-label="右移 1px" onClick={() => nudge(1, 0)}>→</button><span>Shift + 方向键移动 10px</span></div>
+          </section>
           {validationIssues.length > 0 && <section className="editor-validation"><h4><Icon name="alert"/>布局问题</h4>{validationIssues.map((issue) => <p key={issue}>{issue}<small>请调整区域位置或尺寸后再发布。</small></p>)}</section>}
           <section><h4>适用页面</h4><fieldset>{PAGE_TYPES.map(([value, label]) => <label className="check" key={value}><input type="checkbox" checked={draft.page_types.includes(value)} onChange={(event) => commit({ ...draft, page_types: event.target.checked ? [...draft.page_types, value] : draft.page_types.filter((item) => item !== value) })} />{label}</label>)}</fieldset></section>
           <section><label>场景生成提示<textarea rows={6} value={draft.scene_prompt_hint} onChange={(event) => { setSavedAt(null); setDraft({ ...draft, scene_prompt_hint: event.target.value }); }} onBlur={() => commit(draft)} /></label></section>

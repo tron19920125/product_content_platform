@@ -10,6 +10,7 @@ from product_content_platform.domain import (
     AssetUsage,
     DomainValidationError,
     EntityNotFoundError,
+    FeaturePoint,
     PageItem,
     PagePlan,
     PageStatus,
@@ -138,7 +139,7 @@ class PlanningApplication:
         suggestion_rows = list(run.suggestion.get("pages") or [])
         if not suggestion_rows:
             raise DomainValidationError("规划建议没有可应用的页面")
-        allowed_fields = {"title", "body", "visual_goal"}
+        allowed_fields = {"title", "body", "visual_goal", "feature_points"}
         selections = selected_fields or {
             str(row["key"]): sorted(allowed_fields) for row in suggestion_rows
         }
@@ -156,10 +157,14 @@ class PlanningApplication:
             previous = current_by_id.get(key)
             fields = sorted(set(selections.get(key) or []))
             if previous:
-                values = {
+                values: dict[str, Any] = {
                     name: str(row.get(name) or getattr(previous, name)) if name in fields else getattr(previous, name)
-                    for name in allowed_fields
+                    for name in {"title", "body", "visual_goal"}
                 }
+                values["feature_points"] = (
+                    tuple(FeaturePoint.from_dict(value) for value in row.get("feature_points") or ())
+                    if "feature_points" in fields else previous.feature_points
+                )
                 item = replace(previous, **values, order=order, status=PageStatus.DRAFT)
             else:
                 item = PageItem(
@@ -168,6 +173,10 @@ class PlanningApplication:
                     body=str(row.get("body") or "") if "body" in fields else "",
                     visual_goal=str(row.get("visual_goal") or "") if "visual_goal" in fields else "",
                     template_id=str(row["template_id"]),
+                    feature_points=(
+                        tuple(FeaturePoint.from_dict(value) for value in row.get("feature_points") or ())
+                        if "feature_points" in fields else ()
+                    ),
                     heading_level=1 if row["page_type"] == PageType.HERO.value else 2,
                     status=PageStatus.DRAFT,
                 )
@@ -198,6 +207,7 @@ class PlanningApplication:
                 "template_name": template.get("name", ""),
                 "scene_prompt_hint": template.get("scene_prompt_hint", ""),
                 "composition_instruction": template.get("composition_instruction", ""),
+                "feature_slots": list(template.get("feature_slots") or []),
             }
 
         if current:

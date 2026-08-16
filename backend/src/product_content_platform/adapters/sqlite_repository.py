@@ -14,6 +14,7 @@ from product_content_platform.domain import (
     BatchItem,
     BatchItemStatus,
     BatchStatus,
+    FeaturePoint,
     PageItem,
     PagePlan,
     PlanningRun,
@@ -97,6 +98,7 @@ class SQLitePlatformRepository:
                 "body": item.body,
                 "visual_goal": item.visual_goal,
                 "template_id": item.template_id,
+                "feature_points": [point.to_dict() for point in item.feature_points],
                 "heading_level": item.heading_level,
                 "status": item.status.value,
             }
@@ -143,6 +145,7 @@ class SQLitePlatformRepository:
                 body=item["body"],
                 visual_goal=item["visual_goal"],
                 template_id=item["template_id"],
+                feature_points=tuple(FeaturePoint.from_dict(value) for value in item.get("feature_points") or ()),
                 heading_level=int(item.get("heading_level", 1)),
                 status=PageStatus(item.get("status", "draft")),
             )

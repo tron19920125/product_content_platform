@@ -58,6 +58,7 @@ export type PageItem = {
   body: string;
   visual_goal: string;
   template_id: string;
+  feature_points: FeaturePoint[];
   heading_level?: 1 | 2 | 3 | 4 | 5;
   status: "draft" | "ready";
 };
@@ -80,9 +81,10 @@ export type PlanningSuggestionPage = {
   title: string;
   body: string;
   visual_goal: string;
+  feature_points: FeaturePoint[];
   fact_refs: string[];
   reasoning: string;
-  field_sources: Record<"title" | "body" | "visual_goal", "llm" | "deterministic">;
+  field_sources: Record<"title" | "body" | "visual_goal" | "feature_points", "llm" | "deterministic">;
 };
 
 export type PlanningRun = {
@@ -135,6 +137,22 @@ export type TemplateDefinition = {
     required: boolean;
     max_lines: number;
     default_style: Record<string, unknown>;
+  }>;
+  feature_slots: Array<{
+    id: string;
+    name: string;
+    box: [number, number, number, number];
+    layout: "row" | "column" | "grid";
+    columns: number;
+    min_items: number;
+    max_items: number;
+    icon_position: "top" | "left";
+    icon_scale: number;
+    item_gap: number;
+    icon_text_gap: number;
+    card_style: Record<string, unknown>;
+    title_style: Record<string, unknown>;
+    description_style: Record<string, unknown>;
   }>;
   text_box: [number, number, number, number];
   product_box: [number, number, number, number];
@@ -266,6 +284,14 @@ export type TypographySettings = {
   title_line_spacing?: number;
   body_line_spacing?: number;
   title_body_gap?: number;
+};
+
+export type FeaturePoint = {
+  id: string;
+  title: string;
+  description: string;
+  icon_concept: string;
+  fact_refs: string[];
 };
 
 export type FontAsset = {

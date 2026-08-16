@@ -360,8 +360,12 @@ td small { color: #89928c; margin-top: 4px; }
 .qa-choice .notice { width: 100%; margin: 0; }
 .qa-choice label { display: flex; align-items: center; gap: 6px; color: #4c5269; font-size: 13px; }
 .editor-add-text { margin: 6px 0 10px; color: #fff !important; background: #3c46a3 !important; }
+.editor-add-text.feature { margin-top: -5px; color: #24315f !important; background: #e7ebff !important; }
 .template-text-properties { display: grid; gap: 8px; padding: 8px; margin-bottom: 10px; border: 1px solid #e0e2ec; border-radius: 6px; background: #f8f8fb; }
 .template-text-properties label { display: grid; gap: 4px; }
+.template-feature-properties { display: grid; gap: 8px; padding: 8px; margin-bottom: 10px; border: 1px solid #cfd7f6; border-radius: 6px; background: #f5f7ff; }
+.template-feature-properties label { display: grid; gap: 4px; }
+.feature-count-inputs { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 5px; }.feature-count-inputs i { color: #7a839b; font-style: normal; }
 @media (max-width: 1100px) { .text-layout-workspace { grid-template-columns: 150px minmax(320px, 1fr); } .text-property-panel { grid-column: 1 / -1; width: 100%; min-height: 460px; } }
 .tool-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .tool-heading strong, .tool-heading small { display: block; }
@@ -557,6 +561,8 @@ td small { color: #89928c; margin-top: 4px; }
 .editable-region.title strong { color: #26362c; font-size: clamp(9px, 2vw, 27px); white-space: nowrap; }
 .editable-region.body { padding: 1.5%; color: #437fc1; background: #7eb5ed13; }
 .editable-region.body span { color: #435249; font-size: clamp(7px, 1vw, 14px); }
+.editable-region.feature { padding: 1.5%; color: #5967c6; background: #6d78d214; }
+.feature-slot-sample { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3%; color: #394264; }.feature-slot-sample i { display: grid; justify-items: center; gap: 3px; font-style: normal; }.feature-slot-sample b { font-size: clamp(8px, 1.4vw, 18px); }.feature-slot-sample em { font-size: clamp(5px, .7vw, 10px); font-style: normal; }
 .editable-region.allowed { z-index: 1; color: #4d9d65; background: #65aa7b10; }
 .editable-region.product { color: #256b3f; }
 .editor-product-shape { position: absolute; inset: 4%; overflow: hidden; border-radius: 7px; background: linear-gradient(145deg, #d8dfda, #718278); box-shadow: 0 8px 24px #223a2a45; }
@@ -641,6 +647,10 @@ td small { color: #89928c; margin-top: 4px; }
 .suggestion-fields > label { position: relative; display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid #e1e7e2; border-radius: 9px; background: #fafbfa; }
 .suggestion-fields > label.selected { border-color: #76a987; background: #f0f8f2; }.suggestion-fields > label > input { position: absolute; right: 8px; top: 8px; }
 .suggestion-fields > label > span { color: #6d7b72; font-size: 8px; font-weight: 800; }.suggestion-fields small, .suggestion-fields strong { display: grid; gap: 3px; font-size: 9px; line-height: 1.45; word-break: break-word; }.suggestion-fields small { color: #87928b; font-weight: 400; }.suggestion-fields b { color: #577062; font-size: 7px; }
+.planning-feature-value { display: grid; gap: 4px; }.planning-feature-value i { display: grid; gap: 1px; padding: 4px 5px; border-radius: 4px; background: #fff; font-style: normal; }.planning-feature-value i b { color: #29372f; font-size: 8px; }.planning-feature-value i em { color: #728078; font-size: 7px; font-style: normal; font-weight: 400; }
+.feature-point-editor { display: grid; gap: 7px; padding: 10px; border: 1px solid #d9dff6; border-radius: 7px; background: #f8f9ff; }.feature-point-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.feature-point-editor > header span { color: #27305b; font-size: 11px; font-weight: 750; }.feature-point-editor > header small { color: #79819b; font-size: 8px; }.feature-point-editor article { display: grid; grid-template-columns: 24px 1fr 24px; align-items: start; gap: 6px; }.feature-point-editor article > b { padding-top: 7px; color: #6974b5; font-size: 9px; }.feature-point-editor article > div { display: grid; grid-template-columns: .8fr 1fr 1fr; gap: 5px; }.feature-point-editor input { min-width: 0; padding: 6px 7px; border: 1px solid #d8dce8; border-radius: 5px; background: #fff; font-size: 9px; }.feature-point-editor article > button { border: 0; color: #a1535a; background: transparent; font-size: 16px; }
+.preview-feature-group { position: absolute; z-index: 3; display: grid; gap: 3%; }.preview-feature-group > span { display: grid; min-width: 0; place-items: center; align-content: center; gap: 3px; padding: 4%; border: 1px solid #ffffff66; border-radius: 6px; background: #ffffffaa; text-align: center; }.preview-feature-group i { color: #44527a; font-size: clamp(8px, 1vw, 15px); font-style: normal; }.preview-feature-group b { overflow: hidden; max-width: 100%; color: #26322b; font-size: clamp(5px, .7vw, 10px); text-overflow: ellipsis; white-space: nowrap; }.preview-feature-group em { overflow: hidden; max-width: 100%; color: #6a746d; font-size: clamp(4px, .55vw, 8px); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.mini-box.feature { color: #5666c8; border-color: #7885d6; background: #e9ecff8c; }
 .suggestion-page details summary, .candidate-history summary { color: #4b6e58; cursor: pointer; font-size: 8px; }.suggestion-page details p { color: #7c8981; font-size: 8px; }
 .planning-suggestion footer { align-items: center; padding-top: 4px; }
 .candidate-edit-panel { display: grid; gap: 10px; margin: 12px 0; padding: 12px; border: 1px solid #b8d2bf; border-radius: 11px; background: #f5faf6; }

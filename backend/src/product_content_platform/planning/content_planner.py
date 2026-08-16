@@ -91,6 +91,7 @@ class ContentPlanner:
                     "template_name": item.get("template_name", ""),
                     "scene_prompt_hint": item.get("scene_prompt_hint", ""),
                     "composition_instruction": item.get("composition_instruction", ""),
+                    "feature_slots": item.get("feature_slots", []),
                 }
                 for item in template_specs
             ],
@@ -102,6 +103,15 @@ class ContentPlanner:
                     "title": "简洁中文标题，建议 4-16 字",
                     "body": "中文正文，建议 12-60 字",
                     "visual_goal": "只描述场景、材质、光线、商品角度和效果，不包含要生成进底图的营销文字",
+                    "feature_points": [
+                        {
+                            "id": "feature-1",
+                            "title": "可编辑卖点短标题",
+                            "description": "可编辑的一句说明",
+                            "icon_concept": "不含文字、数字或 Logo 的透明图标视觉概念",
+                            "fact_refs": ["该卖点实际使用的 verified_facts.id"],
+                        }
+                    ],
                     "fact_refs": ["该页文案实际使用的 verified_facts.id"],
                     "reasoning": "简述该页在整组内容中的职责",
                 }
@@ -127,6 +137,8 @@ class ContentPlanner:
                     "价格或功效。每个输入页面必须且只能返回一项，key 必须原样保留。标题和正文是后期排版文案；"
                     "visual_goal 用于指导无营销文字底图生成，必须说明与模板留白兼容的场景和商品表现，不得要求模型生成"
                     "标题、正文、标语、数字标签或水印。fact_refs 只能引用实际使用过的事实 id。所有自然语言使用中文，只返回有效 JSON。"
+                    "仅当页面包含 feature_slots 时返回 feature_points，数量必须符合预留区的 min_items/max_items；每个卖点必须有 fact_refs，"
+                    "icon_concept 只描述可独立生成的无文字透明图标，不得要求图标携带字符。"
                 ),
             },
             {"role": "user", "content": user_parts},
@@ -160,7 +172,14 @@ class ContentPlanner:
             title = self._clean(raw.get("title"), 40)
             body = self._clean(raw.get("body"), 160)
             visual_goal = self._clean(raw.get("visual_goal"), 500)
-            invented = sorted(self._numbers(f"{title} {body}") - allowed_numbers)
+            feature_points = self._normalize_feature_points(
+                raw.get("feature_points"), spec, known_fact_ids, allowed_numbers,
+                fallback_rows[key].get("feature_points") or [], warnings, key,
+            )
+            feature_copy = " ".join(
+                f"{item['title']} {item['description']}" for item in feature_points
+            )
+            invented = sorted(self._numbers(f"{title} {body} {feature_copy}") - allowed_numbers)
             if not title or invented:
                 warnings.append(f"{key} 含空标题或未确认数字 {', '.join(invented)}，已使用确定性文案")
                 normalized.append(fallback_rows[key])
@@ -172,9 +191,10 @@ class ContentPlanner:
                 "title": title,
                 "body": body,
                 "visual_goal": visual_goal or fallback_rows[key]["visual_goal"],
+                "feature_points": feature_points,
                 "fact_refs": [value for value in self._string_list(raw.get("fact_refs")) if value in known_fact_ids],
                 "reasoning": self._clean(raw.get("reasoning"), 200),
-                "field_sources": {"title": "llm", "body": "llm", "visual_goal": "llm"},
+                "field_sources": {"title": "llm", "body": "llm", "visual_goal": "llm", "feature_points": "llm"},
             })
         return {
             "pages": normalized,
@@ -206,9 +226,10 @@ class ContentPlanner:
             pages.append({
                 "key": spec["key"], "page_type": spec["page_type"], "template_id": spec["template_id"],
                 "title": title, "body": body, "visual_goal": visual_goal,
+                "feature_points": self._fallback_features(spec, facts),
                 "fact_refs": self._fallback_fact_refs(spec["page_type"], facts),
                 "reasoning": "确定性降级建议，确保在 LLM 不可用时仍可继续演示。",
-                "field_sources": {"title": "deterministic", "body": "deterministic", "visual_goal": "deterministic"},
+                "field_sources": {"title": "deterministic", "body": "deterministic", "visual_goal": "deterministic", "feature_points": "deterministic"},
             })
         return {
             "pages": pages,
@@ -227,6 +248,69 @@ class ContentPlanner:
         if page_type in {PageType.SELLING_POINT.value, PageType.FUNCTION.value}:
             return [value for value in ids if value.startswith("selling_point.")][:1]
         return [value for value in ids if value == "product.name"]
+
+    @classmethod
+    def _fallback_features(cls, spec: dict[str, Any], facts: list[dict[str, str]]) -> list[dict[str, Any]]:
+        slots = list(spec.get("feature_slots") or [])
+        if not slots:
+            return []
+        limit = max(1, min(6, int(slots[0].get("max_items", 3))))
+        candidates = [item for item in facts if item["id"].startswith("selling_point.")]
+        candidates.extend(item for item in facts if item["id"].startswith("parameter."))
+        result: list[dict[str, Any]] = []
+        for index, fact in enumerate(candidates[:limit], start=1):
+            is_parameter = fact["id"].startswith("parameter.")
+            title = f"{fact['label']} {fact['value']}" if is_parameter else fact["value"]
+            description = f"已确认的{fact['label']}信息" if is_parameter else f"围绕{fact['value']}呈现核心体验"
+            result.append({
+                "id": f"feature-{index}", "title": cls._clean(title, 40),
+                "description": cls._clean(description, 120),
+                "icon_concept": f"{fact['label']}的简洁线性图标，不含文字、数字或 Logo",
+                "fact_refs": [fact["id"]],
+            })
+        minimum = max(1, min(6, int(slots[0].get("min_items", 1))))
+        return result if len(result) >= minimum else []
+
+    @classmethod
+    def _normalize_feature_points(
+        cls,
+        value: Any,
+        spec: dict[str, Any],
+        known_fact_ids: set[str],
+        allowed_numbers: set[str],
+        fallback: list[dict[str, Any]],
+        warnings: list[str],
+        page_key: str,
+    ) -> list[dict[str, Any]]:
+        slots = list(spec.get("feature_slots") or [])
+        if not slots:
+            return []
+        slot = slots[0]
+        minimum = max(1, min(6, int(slot.get("min_items", 1))))
+        maximum = max(minimum, min(6, int(slot.get("max_items", 3))))
+        if not isinstance(value, list):
+            warnings.append(f"{page_key} 缺少图文卖点，已使用确定性卖点")
+            return list(fallback)
+        rows: list[dict[str, Any]] = []
+        for index, raw in enumerate(value[:maximum], start=1):
+            if not isinstance(raw, dict):
+                continue
+            title = cls._clean(raw.get("title"), 40)
+            description = cls._clean(raw.get("description"), 120)
+            icon_concept = cls._clean(raw.get("icon_concept"), 120)
+            fact_refs = [item for item in cls._string_list(raw.get("fact_refs")) if item in known_fact_ids]
+            invented = cls._numbers(f"{title} {description}") - allowed_numbers
+            if not title or not icon_concept or not fact_refs or invented:
+                continue
+            rows.append({
+                "id": cls._clean(raw.get("id"), 64) or f"feature-{index}",
+                "title": title, "description": description,
+                "icon_concept": icon_concept, "fact_refs": fact_refs,
+            })
+        if len(rows) < minimum:
+            warnings.append(f"{page_key} 的图文卖点缺少事实来源或数量不足，已使用确定性卖点")
+            return list(fallback)
+        return rows
 
     @staticmethod
     def _clean(value: Any, limit: int) -> str:

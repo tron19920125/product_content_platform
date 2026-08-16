@@ -22,6 +22,7 @@ TEMPLATES = [
     {
         "id": "feature", "name": "卖点", "page_types": ["selling_point", "function", "scene", "parameters"],
         "scene_prompt_hint": "材质展台", "composition_instruction": "左文右图",
+        "feature_slots": [{"id": "feature-band", "min_items": 2, "max_items": 3}],
     },
 ]
 
@@ -47,6 +48,34 @@ def test_planner_rejects_invented_numbers_and_falls_back() -> None:
     assert "未确认数字 36" in parsed["warnings"][0]
 
 
+def test_planner_feature_points_require_fact_refs_and_number_allowlist() -> None:
+    planner = ContentPlanner("azure")
+    profile = ProductProfile(
+        sku="WM-10", name="测试洗衣机", category="洗衣机",
+        selling_points=("精致衣物护理", "安静融入高端家居"), parameters={"容量": "10kg"},
+    )
+    specs = [{
+        "key": "feature-page", "page_type": "selling_point", "template_id": "feature",
+        "feature_slots": [{"id": "feature-band", "min_items": 3, "max_items": 3}],
+    }]
+    facts = planner._facts(profile)
+    fallback = planner._fallback(profile, specs, facts)
+    parsed = planner._parse({"pages": [{
+        "key": "feature-page", "title": "三重洗护体验", "body": "围绕真实卖点展开",
+        "visual_goal": "右侧商品，左下保持低细节留白",
+        "feature_points": [
+            {"id": "a", "title": "精致衣物护理", "description": "细致呵护", "icon_concept": "衣物防护线性图标", "fact_refs": ["selling_point.0"]},
+            {"id": "b", "title": "36 项程序", "description": "虚构数字", "icon_concept": "程序图标", "fact_refs": ["selling_point.1"]},
+            {"id": "c", "title": "10kg 容量", "description": "已确认容量", "icon_concept": "容量轮廓", "fact_refs": ["parameter.容量"]},
+        ],
+        "fact_refs": ["selling_point.0"], "reasoning": "展示三项卖点",
+    }]}, profile, specs, facts, fallback)
+    points = parsed["pages"][0]["feature_points"]
+    assert len(points) == 3
+    assert all("36" not in f"{point['title']} {point['description']}" for point in points)
+    assert all(point["fact_refs"] for point in points)
+
+
 def test_planning_run_applies_selected_fields_and_keeps_audit() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -65,6 +94,8 @@ def test_planning_run_applies_selected_fields_and_keeps_audit() -> None:
         first = completed.suggestion["pages"][0]
         plan = application.apply(project.id, run.id)
         assert plan.items[0].title == first["title"]
+        feature_page = next(item for item in plan.items if item.feature_points)
+        assert all(point.fact_refs for point in feature_page.feature_points)
 
         original_body = plan.items[0].body
         second = application.start(project.id, "library-square-2048", TEMPLATES)

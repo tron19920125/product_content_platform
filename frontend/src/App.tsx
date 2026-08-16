@@ -399,7 +399,7 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   function addPage() {
     if (!plan) return;
     const template = availableTemplates.find((item) => item.page_types.includes("selling_point")) ?? availableTemplates[0];
-    setPlan({ ...plan, confirmed: false, items: [...plan.items, { id: crypto.randomUUID(), order: plan.items.length + 1, page_type: "selling_point", title: "新页面标题", body: "请填写页面文案", visual_goal: "请填写视觉目标", template_id: template?.id ?? "split-left", heading_level: 2, status: "draft" }] });
+    setPlan({ ...plan, confirmed: false, items: [...plan.items, { id: crypto.randomUUID(), order: plan.items.length + 1, page_type: "selling_point", title: "新页面标题", body: "请填写页面文案", visual_goal: "请填写视觉目标", template_id: template?.id ?? "split-left", feature_points: [], heading_level: 2, status: "draft" }] });
   }
 
   function selectLayoutLibrary(libraryId: string) {
@@ -622,6 +622,19 @@ function PageEditor({ item, productImageUrl, templates, onChange, onMoveUp, onMo
       <Field label="页面标题"><input value={item.title} onChange={(event) => onChange({ title: event.target.value })} /></Field>
       <Field label="正文文案"><textarea rows={2} value={item.body} onChange={(event) => onChange({ body: event.target.value })} /></Field>
       <Field label="视觉目标"><textarea rows={2} value={item.visual_goal} onChange={(event) => onChange({ visual_goal: event.target.value })} /></Field>
+      {template?.feature_slots.length ? <div className="feature-point-editor">
+        <header><span>图文卖点组</span><small>{item.feature_points.length}/{template.feature_slots[0].max_items} 项 · 图标独立生成，文字可继续编辑</small></header>
+        {item.feature_points.map((point, index) => <article key={point.id}>
+          <b>{String(index + 1).padStart(2, "0")}</b>
+          <div>
+            <input aria-label={`卖点 ${index + 1} 标题`} value={point.title} onChange={(event) => onChange({ feature_points: item.feature_points.map((row) => row.id === point.id ? { ...row, title: event.target.value } : row) })}/>
+            <input aria-label={`卖点 ${index + 1} 说明`} value={point.description} onChange={(event) => onChange({ feature_points: item.feature_points.map((row) => row.id === point.id ? { ...row, description: event.target.value } : row) })}/>
+            <input aria-label={`卖点 ${index + 1} 图标概念`} value={point.icon_concept} onChange={(event) => onChange({ feature_points: item.feature_points.map((row) => row.id === point.id ? { ...row, icon_concept: event.target.value } : row) })}/>
+          </div>
+          <button type="button" aria-label={`删除卖点 ${index + 1}`} onClick={() => onChange({ feature_points: item.feature_points.filter((row) => row.id !== point.id) })}>×</button>
+        </article>)}
+        <button type="button" className="ghost-button mini" disabled={item.feature_points.length >= template.feature_slots[0].max_items} onClick={() => onChange({ feature_points: [...item.feature_points, { id: `feature-${crypto.randomUUID()}`, title: "新卖点", description: "填写一句简短说明", icon_concept: "简洁线性图标，不含文字或数字", fact_refs: [] }] })}>＋ 新增卖点</button>
+      </div> : null}
     </div>
   </article>;
 }
@@ -659,7 +672,8 @@ function TemplatePreview({ item, template, productImageUrl }: { item: PageItem; 
   const titleBox = template?.title_box ?? template?.text_box ?? [0.09, 0.07, 0.91, 0.18];
   const bodyBox = template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
   const productBox = template?.product_anchor_box ?? template?.product_box ?? [0.20, 0.32, 0.80, 0.94];
-  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><FittedPreviewText text={item.title} maxSize={18} weight={700}/></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><FittedPreviewText text={item.body} maxSize={12}/></div><div className="product-shape" style={regionStyle(productBox)}><img src={productImageUrl} alt="商品参考素材" /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
+  const featureSlot = template?.feature_slots[0];
+  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><FittedPreviewText text={item.title} maxSize={18} weight={700}/></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><FittedPreviewText text={item.body} maxSize={12}/></div>{featureSlot && <div className={`preview-feature-group ${featureSlot.icon_position}`} style={{ ...regionStyle(featureSlot.box), gridTemplateColumns: `repeat(${Math.min(featureSlot.columns, Math.max(1, item.feature_points.length))}, 1fr)` }}>{item.feature_points.map((point) => <span key={point.id}><i>◇</i><b>{point.title}</b><em>{point.description}</em></span>)}</div>}<div className="product-shape" style={regionStyle(productBox)}><img src={productImageUrl} alt="商品参考素材" /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
 }
 
 function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, mode = "production", onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; mode?: "production" | "review"; onRefresh: () => Promise<void> }) {

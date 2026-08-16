@@ -81,6 +81,51 @@ def _text_slots(values: Iterable[dict[str, Any]] | None, title_box: Box, body_bo
     return rows
 
 
+def _feature_slot(value: dict[str, Any], index: int) -> dict[str, Any]:
+    slot_id = str(value.get("id") or f"feature-group-{index + 1}").strip()
+    if not slot_id:
+        raise DomainValidationError(f"feature_slots[{index}].id 不能为空")
+    layout = str(value.get("layout") or "row").strip().lower()
+    if layout not in {"row", "column", "grid"}:
+        raise DomainValidationError(f"feature_slots[{index}].layout 无效")
+    icon_position = str(value.get("icon_position") or "top").strip().lower()
+    if icon_position not in {"top", "left"}:
+        raise DomainValidationError(f"feature_slots[{index}].icon_position 无效")
+    min_items = int(value.get("min_items", 2))
+    max_items = int(value.get("max_items", 3))
+    if not 1 <= min_items <= max_items <= 6:
+        raise DomainValidationError(f"feature_slots[{index}] 的数量范围必须位于 1-6")
+    columns = int(value.get("columns", min(3, max_items)))
+    if not 1 <= columns <= 6:
+        raise DomainValidationError(f"feature_slots[{index}].columns 必须位于 1-6")
+    return {
+        "id": slot_id,
+        "name": str(value.get("name") or "图文卖点组").strip() or "图文卖点组",
+        "box": _box(value.get("box") or [0.08, 0.55, 0.52, 0.88], f"feature_slots[{index}].box"),
+        "layout": layout,
+        "columns": columns,
+        "min_items": min_items,
+        "max_items": max_items,
+        "icon_position": icon_position,
+        "icon_scale": max(0.1, min(0.8, float(value.get("icon_scale", 0.28)))),
+        "item_gap": max(0.0, min(0.2, float(value.get("item_gap", 0.025)))),
+        "icon_text_gap": max(0.0, min(0.2, float(value.get("icon_text_gap", 0.012)))),
+        "card_style": dict(value.get("card_style") or {}),
+        "title_style": dict(value.get("title_style") or {}),
+        "description_style": dict(value.get("description_style") or {}),
+    }
+
+
+def _feature_slots(values: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    rows = [_feature_slot(dict(value), index) for index, value in enumerate(values or ())]
+    ids = [row["id"] for row in rows]
+    if len(ids) != len(set(ids)):
+        raise DomainValidationError("图文卖点预留区 id 不能重复")
+    if len(rows) > 3:
+        raise DomainValidationError("单个模板最多支持 3 个图文卖点预留区")
+    return rows
+
+
 def _legacy_text_boxes(slots: list[dict[str, Any]]) -> tuple[Box, Box]:
     headline = next((slot["box"] for slot in slots if slot["role"] == "headline"), slots[0]["box"])
     body = next((slot["box"] for slot in slots if slot["role"] == "body"), headline)
@@ -91,11 +136,26 @@ def _percent(value: float) -> int:
     return round(value * 100)
 
 
-def _composition_instruction(text_slots: list[dict[str, Any]], product_box: Box, product_anchor_box: Box) -> str:
+def _composition_instruction(
+    text_slots: list[dict[str, Any]], feature_slots: list[dict[str, Any]],
+    product_box: Box, product_anchor_box: Box,
+) -> str:
     text_box = _union_all(slot["box"] for slot in text_slots)
+    reservations = [slot["box"] for slot in text_slots] + [slot["box"] for slot in feature_slots]
+    reserved_box = _union_all(reservations)
+    feature_instruction = ""
+    if feature_slots:
+        areas = "；".join(
+            f"{slot['name']}位于横向 {_percent(slot['box'][0])}%-{_percent(slot['box'][2])}%、纵向 "
+            f"{_percent(slot['box'][1])}%-{_percent(slot['box'][3])}%"
+            for slot in feature_slots
+        )
+        feature_instruction = f"；{areas}，这些区域用于后期叠加透明图标与可编辑文案，底图中不得生成图标、文字或卡片占位符"
     return (
         f"在画面横向 {_percent(text_box[0])}%-{_percent(text_box[2])}%、纵向 "
         f"{_percent(text_box[1])}%-{_percent(text_box[3])}% 保持干净低细节留白；"
+        f"全部后期图层预留范围为横向 {_percent(reserved_box[0])}%-{_percent(reserved_box[2])}%、纵向 "
+        f"{_percent(reserved_box[1])}%-{_percent(reserved_box[3])}%{feature_instruction}；"
         f"商品视觉重心放在横向 {_percent(product_anchor_box[0])}%-{_percent(product_anchor_box[2])}%、纵向 "
         f"{_percent(product_anchor_box[1])}%-{_percent(product_anchor_box[3])}%，完整商品及延展结构不得超出横向 "
         f"{_percent(product_box[0])}%-{_percent(product_box[2])}%、纵向 {_percent(product_box[1])}%-{_percent(product_box[3])}%"
@@ -117,6 +177,7 @@ def _template(
     safe_area_box: Box,
     scene_prompt_hint: str,
     text_slots: list[dict[str, Any]] | None = None,
+    feature_slots: list[dict[str, Any]] | None = None,
     version: int = 1,
     status: str = "published",
     is_builtin: bool = True,
@@ -124,6 +185,7 @@ def _template(
 ) -> dict[str, Any]:
     timestamp = _now()
     normalized_slots = _text_slots(text_slots, title_box, body_box)
+    normalized_feature_slots = _feature_slots(feature_slots)
     title_box, body_box = _legacy_text_boxes(normalized_slots)
     return {
         "id": template_id,
@@ -137,10 +199,11 @@ def _template(
         "title_box": title_box,
         "body_box": body_box,
         "text_slots": normalized_slots,
+        "feature_slots": normalized_feature_slots,
         "text_box": _union_all(slot["box"] for slot in normalized_slots),
         "product_box": product_box,
         "product_anchor_box": product_anchor_box,
-        "composition_instruction": _composition_instruction(normalized_slots, product_box, product_anchor_box),
+        "composition_instruction": _composition_instruction(normalized_slots, normalized_feature_slots, product_box, product_anchor_box),
         "scene_prompt_hint": scene_prompt_hint,
         "typography": {
             "font_family": "system_sans",
@@ -361,6 +424,7 @@ class LayoutContentCatalog:
         title_box: list[float] | None = None,
         body_box: list[float] | None = None,
         text_slots: list[dict[str, Any]] | None = None,
+        feature_slots: list[dict[str, Any]] | None = None,
         product_box: list[float] | None = None,
         product_anchor_box: list[float] | None = None,
         safe_area_box: list[float] | None = None,
@@ -385,6 +449,7 @@ class LayoutContentCatalog:
             title_box=_box(title_box or (base or {}).get("title_box") or default_title, "title_box"),
             body_box=_box(body_box or (base or {}).get("body_box") or default_body, "body_box"),
             text_slots=text_slots if text_slots is not None else (base or {}).get("text_slots"),
+            feature_slots=feature_slots if feature_slots is not None else (base or {}).get("feature_slots"),
             product_box=_box(product_box or (base or {}).get("product_box") or default_product, "product_box"),
             product_anchor_box=_box(product_anchor_box or (base or {}).get("product_anchor_box") or default_anchor, "product_anchor_box"),
             safe_area_box=_box(safe_area_box or (base or {}).get("safe_area_box") or [.055, .045, .945, .955], "safe_area_box"),
@@ -410,6 +475,8 @@ class LayoutContentCatalog:
             item["text_slots"] = _text_slots(changes["text_slots"], item["title_box"], item["body_box"])
         elif "title_box" in changes or "body_box" in changes:
             item["text_slots"] = _text_slots(None, item["title_box"], item["body_box"])
+        if "feature_slots" in changes and changes["feature_slots"] is not None:
+            item["feature_slots"] = _feature_slots(changes["feature_slots"])
         if "name" in changes:
             clean_name = str(changes["name"]).strip()
             if not clean_name:
@@ -422,7 +489,9 @@ class LayoutContentCatalog:
         item["title_box"], item["body_box"] = _legacy_text_boxes(item["text_slots"])
         item["text_box"] = _union_all(slot["box"] for slot in item["text_slots"])
         item["safe_area"] = round(item["safe_area_box"][0], 4)
-        item["composition_instruction"] = _composition_instruction(item["text_slots"], item["product_box"], item["product_anchor_box"])
+        item["composition_instruction"] = _composition_instruction(
+            item["text_slots"], item.get("feature_slots") or [], item["product_box"], item["product_anchor_box"]
+        )
         item["updated_at"] = _now()
         self._validate_geometry(item)
         self._persist()
@@ -468,6 +537,8 @@ class LayoutContentCatalog:
         safe = item["safe_area_box"]
         if not all(_contains(safe, slot["box"]) for slot in item["text_slots"]):
             raise DomainValidationError("标题框和正文框必须位于安全区域内")
+        if not all(_contains(safe, slot["box"]) for slot in item.get("feature_slots") or []):
+            raise DomainValidationError("图文卖点预留区必须位于安全区域内")
         if not _contains(item["product_box"], item["product_anchor_box"]):
             raise DomainValidationError("商品核心区必须位于商品允许区域内")
 
@@ -525,6 +596,7 @@ class LayoutContentCatalog:
         product = _box(source.get("product_box") or [.45, .18, .94, .94], "product_box")
         anchor = _box(source.get("product_anchor_box") or product, "product_anchor_box")
         slots = _text_slots(source.get("text_slots"), title, body)
+        feature_slots = _feature_slots(source.get("feature_slots"))
         title, body = _legacy_text_boxes(slots)
         timestamp = str(source.get("created_at") or _now())
         return {
@@ -532,10 +604,11 @@ class LayoutContentCatalog:
             "template_key": str(source.get("template_key") or source["id"]),
             "library_id": library["id"],
             "width": library["width"], "height": library["height"], "size": library["size"],
-            "title_box": title, "body_box": body, "text_slots": slots, "text_box": _union_all(slot["box"] for slot in slots),
+            "title_box": title, "body_box": body, "text_slots": slots, "feature_slots": feature_slots,
+            "text_box": _union_all(slot["box"] for slot in slots),
             "safe_area_box": safe, "safe_area": round(safe[0], 4),
             "product_box": product, "product_anchor_box": anchor,
-            "composition_instruction": str(source.get("composition_instruction") or _composition_instruction(slots, product, anchor)),
+            "composition_instruction": str(source.get("composition_instruction") or _composition_instruction(slots, feature_slots, product, anchor)),
             "scene_prompt_hint": str(source.get("scene_prompt_hint") or "生成具有真实空间层次、自然光和克制陈设的高端商品场景"),
             "typography": dict(source.get("typography") or {}),
             "version": int(source.get("version", 1)), "status": str(source.get("status") or "published"),
@@ -558,6 +631,7 @@ class LayoutContentCatalog:
             "page_types": list(item["page_types"]),
             "title_box": list(item["title_box"]), "body_box": list(item["body_box"]), "text_box": list(item["text_box"]),
             "text_slots": deepcopy(item["text_slots"]),
+            "feature_slots": deepcopy(item.get("feature_slots") or []),
             "safe_area_box": list(item["safe_area_box"]), "product_box": list(item["product_box"]), "product_anchor_box": list(item["product_anchor_box"]),
         }
 

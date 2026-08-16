@@ -1,14 +1,22 @@
 import { useMemo, useState } from "react";
 
-import { PagePlan, PlanningRun } from "./api";
+import { FeaturePoint, PagePlan, PlanningRun } from "./api";
 
-type PlanningField = "title" | "body" | "visual_goal";
+type PlanningField = "title" | "body" | "visual_goal" | "feature_points";
 
 const FIELDS: Array<{ key: PlanningField; label: string }> = [
   { key: "title", label: "标题" },
   { key: "body", label: "正文" },
   { key: "visual_goal", label: "视觉目标" },
+  { key: "feature_points", label: "图文卖点组" },
 ];
+
+function PlanningValue({ value }: { value: string | FeaturePoint[] | undefined }) {
+  if (Array.isArray(value)) return value.length
+    ? <span className="planning-feature-value">{value.map((item) => <i key={item.id}><b>{item.title}</b><em>{item.description}</em></i>)}</span>
+    : <>（无图文卖点）</>;
+  return <>{value || "（空）"}</>;
+}
 
 export function PlanningSuggestionPanel({
   run,
@@ -66,8 +74,8 @@ export function PlanningSuggestionPanel({
             {FIELDS.map((field) => <label key={field.key} className={pageFields.includes(field.key) ? "selected" : ""}>
               <input type="checkbox" checked={pageFields.includes(field.key)} onChange={() => toggle(page.key, field.key)} />
               <span>{field.label}</span>
-              {current && <small className="before-value"><b>当前</b>{current[field.key] || "（空）"}</small>}
-              <strong><b>建议</b>{page[field.key] || "（空）"}</strong>
+              {current && <small className="before-value"><b>当前</b><PlanningValue value={current[field.key]} /></small>}
+              <strong><b>建议</b><PlanningValue value={page[field.key]} /></strong>
             </label>)}
           </div>
           {page.fact_refs.length > 0 && <details><summary>事实来源 {page.fact_refs.length} 项</summary><p>{page.fact_refs.join(" · ")}</p></details>}

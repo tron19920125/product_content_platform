@@ -170,8 +170,10 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(201, generated.status_code)
         plan = generated.json()
         self.assertEqual(5, len(plan["items"]))
+        self.assertTrue(all("feature_points" in item for item in plan["items"]))
         self.assertEqual([1, 2, 2, 2, 2], [item["heading_level"] for item in plan["items"]])
         plan["items"][0]["title"] = "确认后的主视觉"
+        plan["items"][0].pop("feature_points")
         confirmed = self.client.put(
             f"/api/projects/{project['id']}/plan",
             json={"items": plan["items"], "confirmed": True},

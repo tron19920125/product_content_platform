@@ -146,6 +146,45 @@ class Asset:
 
 
 @dataclass(frozen=True, slots=True)
+class FeaturePoint:
+    id: str
+    title: str
+    description: str = ""
+    icon_concept: str = ""
+    fact_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.id.strip() or not self.title.strip():
+            raise DomainValidationError("图文卖点必须包含 ID 和标题")
+        if len(self.title) > 40 or len(self.description) > 120 or len(self.icon_concept) > 120:
+            raise DomainValidationError("图文卖点文案或图标概念过长")
+        object.__setattr__(self, "id", self.id.strip())
+        object.__setattr__(self, "title", self.title.strip())
+        object.__setattr__(self, "description", self.description.strip())
+        object.__setattr__(self, "icon_concept", self.icon_concept.strip())
+        object.__setattr__(self, "fact_refs", tuple(dict.fromkeys(value.strip() for value in self.fact_refs if value.strip())))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "icon_concept": self.icon_concept,
+            "fact_refs": list(self.fact_refs),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> FeaturePoint:
+        return cls(
+            id=str(value.get("id") or ""),
+            title=str(value.get("title") or ""),
+            description=str(value.get("description") or ""),
+            icon_concept=str(value.get("icon_concept") or ""),
+            fact_refs=tuple(str(item) for item in value.get("fact_refs") or ()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PageItem:
     id: str
     order: int
@@ -154,12 +193,18 @@ class PageItem:
     body: str
     visual_goal: str
     template_id: str
+    feature_points: tuple[FeaturePoint, ...] = ()
     heading_level: int = 1
     status: PageStatus = PageStatus.DRAFT
 
     def __post_init__(self) -> None:
         if not 1 <= self.heading_level <= 5:
             raise DomainValidationError("标题层级必须为 1 至 5")
+        if len(self.feature_points) > 6:
+            raise DomainValidationError("单页最多支持 6 个图文卖点")
+        point_ids = [point.id for point in self.feature_points]
+        if len(point_ids) != len(set(point_ids)):
+            raise DomainValidationError("图文卖点 ID 不能重复")
 
 
 @dataclass(frozen=True, slots=True)

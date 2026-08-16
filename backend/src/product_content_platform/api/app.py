@@ -38,6 +38,7 @@ from product_content_platform.domain import (
     Candidate,
     DomainValidationError,
     EntityNotFoundError,
+    FeaturePoint,
     GenerationJob,
     PageItem,
     PagePlan,
@@ -119,11 +120,14 @@ class PageItemPayload(BaseModel):
     body: str = ""
     visual_goal: str = ""
     template_id: str = Field(min_length=1)
+    feature_points: list[dict[str, Any]] = Field(default_factory=list, max_length=6)
     heading_level: int = Field(default=1, ge=1, le=5)
     status: PageStatus = PageStatus.DRAFT
 
     def to_domain(self) -> PageItem:
-        return PageItem(**self.model_dump())
+        values = self.model_dump()
+        values["feature_points"] = tuple(FeaturePoint.from_dict(value) for value in values["feature_points"])
+        return PageItem(**values)
 
 
 class PagePlanUpdatePayload(BaseModel):
@@ -195,6 +199,7 @@ class TemplateDraftCreatePayload(BaseModel):
     title_box: list[float] | None = None
     body_box: list[float] | None = None
     text_slots: list[dict[str, Any]] | None = None
+    feature_slots: list[dict[str, Any]] | None = None
     product_box: list[float] | None = None
     product_anchor_box: list[float] | None = None
     safe_area_box: list[float] | None = None
@@ -209,6 +214,7 @@ class TemplateDraftUpdatePayload(BaseModel):
     title_box: list[float] | None = None
     body_box: list[float] | None = None
     text_slots: list[dict[str, Any]] | None = None
+    feature_slots: list[dict[str, Any]] | None = None
     product_box: list[float] | None = None
     product_anchor_box: list[float] | None = None
     safe_area_box: list[float] | None = None
@@ -1116,6 +1122,7 @@ def plan_to_dict(plan: PagePlan) -> dict[str, Any]:
                 "body": item.body,
                 "visual_goal": item.visual_goal,
                 "template_id": item.template_id,
+                "feature_points": [point.to_dict() for point in item.feature_points],
                 "heading_level": item.heading_level,
                 "status": item.status.value,
             }
