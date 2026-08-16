@@ -714,7 +714,7 @@ class LocalProductionEngine:
         for index, (group_id, item) in enumerate(items):
             safe_id = re.sub(r"[^A-Za-z0-9_-]+", "-", f"{group_id}-{item.id}").strip("-") or f"feature-{index + 1}"
             icon_path = icon_root / f"{safe_id}.png"
-            source = "generated"
+            source = str(provider_meta.get("provider") or "generated")
             degraded_reason = ""
             normalized = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
             if pack is not None:
@@ -1107,6 +1107,7 @@ class LocalProductionEngine:
         recipe: Recipe,
         prompt_version: PromptVersion,
         source_candidate: Candidate,
+        source_text_document: TextDocument | None,
         instruction: str,
         quality: str,
         reference_paths: list[Path],
@@ -1180,9 +1181,19 @@ class LocalProductionEngine:
             }
             generator_meta["product_bbox"] = list(product_bbox)
         report("compositing_text", 68, label="AI 重新规划并应用独立文字层")
-        edited_text_document = self._build_text_document(
-            candidate_id=f"candidate-edit-{uuid4()}", base_path=base_path,
-            page=page, instruction=page.visual_goal,
+        edited_document_id = f"candidate-edit-{uuid4()}"
+        edited_text_document = (
+            replace(
+                source_text_document,
+                candidate_id=edited_document_id,
+                version=1,
+                status="draft",
+            )
+            if source_text_document is not None
+            else self._build_text_document(
+                candidate_id=edited_document_id, base_path=base_path,
+                page=page, instruction=page.visual_goal,
+            )
         )
         compose_meta = self._compose_text_document(
             base_path=base_path, text_path=text_path, output_path=composed_path,
@@ -1718,12 +1729,27 @@ class LocalProductionEngine:
         body = next((item for item in rendered if item["role"] in {"body", "subheadline"}), None)
         primary = headline or body or (rendered[0] if rendered else None)
         sample_box = tuple(union_box) if union_box[2] > union_box[0] and union_box[3] > union_box[1] else (0, 0, width, height)
+        icon_rows = [
+            {
+                "group_id": group.id, "item_id": item.id, "title": item.title,
+                "concept": item.icon_concept, "path": item.icon_path, "source": item.icon_source,
+            }
+            for group in document.feature_groups
+            for item in group.items
+            if item.icon_path
+        ]
+        icon_sources = sorted({str(row["source"] or "unknown") for row in icon_rows})
         return {
             "canvas": [width, height], "safe_area": list(safe_area), "text_box": union_box,
             "content_box": content_union,
             "rendered_text_bbox": union_box, "product_bbox": list(product_bbox),
             "text_layers": rendered, "text_document_version": document.version,
             "feature_groups": rendered_feature_groups,
+            "icon_generation": {
+                "status": "degraded" if "builtin_fallback" in icon_sources else "completed" if icon_rows else "not_required",
+                "provider": icon_sources[0] if len(icon_sources) == 1 else "mixed" if icon_sources else "",
+                "background": "transparent", "icons": icon_rows,
+            },
             "icon_layer_path": self._relative(icon_layer_path) if rendered_feature_groups else "",
             "icon_layer_stored_separately": bool(rendered_feature_groups),
             "text_document_source": document.source, "text_document_reasoning": document.ai_reasoning,
@@ -2062,6 +2088,7 @@ class LocalProductionEngine:
                 }
                 combined_review = self._quality_toolkit.review_candidate(
                     output_path=output_path,
+                    visual_output_path=base_path if review_mode == "edit" else None,
                     reference_path=reference_paths[0] if reference_paths else None,
                     reference_paths=reference_paths,
                     prompt=prompt,
@@ -2235,6 +2262,8 @@ class LocalProductionEngine:
                 "post_composed": True,
                 "base_and_text_layer_are_separate_files": True,
                 "feature_icon_and_text_layers_are_separate_files": bool(page.feature_points),
+                "feature_cards_rendered_post_generation": bool(page.feature_points),
+                "feature_card_background_owner": "icon_layer" if page.feature_points else "not_applicable",
                 "copy_review_owner": "deterministic_ocr",
                 "product_composition_strategy": reference_strategy,
                 "reference_product_layer_is_exact_source": reference_strategy == "layered_product",

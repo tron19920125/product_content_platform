@@ -1153,6 +1153,7 @@ class ProductionApplication:
                     produced = [self._engine.edit_candidate(
                         project=project, page=page, recipe=recipe, prompt_version=prompt,
                         source_candidate=source_candidate,
+                        source_text_document=self._repository.get_text_document(source_candidate.id),
                         instruction=str(current.trace.get("instruction") or ""),
                         quality=str(current.trace.get("quality") or "high"),
                         reference_paths=reference_paths,

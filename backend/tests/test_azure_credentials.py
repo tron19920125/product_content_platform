@@ -278,6 +278,27 @@ class AzureCredentialTest(unittest.TestCase):
         self.assertEqual(2, urlopen.call_count)
         self.assertEqual(b"image-bytes", result_bytes)
 
+    def test_generation_can_disable_streaming_for_transparent_icon_pack(self) -> None:
+        response = _HttpResponse(
+            {"data": [{"b64_json": base64.b64encode(b"transparent-icon-pack").decode("ascii")}]}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"PCP_IMAGE_STREAMING": "true"}, clear=False):
+                with patch("urllib.request.urlopen", return_value=response) as urlopen:
+                    result = generate_image(
+                        prompt="three transparent icons",
+                        output_dir=Path(directory),
+                        api_key="test-key",
+                        endpoint="https://example.openai.azure.com/images/generations",
+                        background="transparent",
+                        stream=False,
+                    )
+                    result_bytes = result.image_path.read_bytes()
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertNotIn("stream", payload)
+        self.assertEqual("transparent", payload["background"])
+        self.assertEqual(b"transparent-icon-pack", result_bytes)
+
     def test_gpt_image_2_edit_omits_unsupported_input_fidelity(self) -> None:
         response = _HttpResponse(
             {"data": [{"b64_json": base64.b64encode(b"edited-image").decode("ascii")}]}

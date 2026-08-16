@@ -11,9 +11,52 @@ from PIL import Image
 
 from product_content_platform.adapters.base_image_generation import AzureImageGenerator
 from product_content_platform.domain import ProductProfile
+from product_content_platform.integrations.azure_image_client import AzureImageGenerationError
 
 
 class AzureImageGeneratorTest(unittest.TestCase):
+    def test_icon_pack_keys_white_background_when_deployment_rejects_native_transparency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider_image = root / "provider.png"
+            image = Image.new("RGB", (1024, 1024), "white")
+            for x in range(250, 775):
+                for y in range(350, 675):
+                    image.putpixel((x, y), (30, 80, 60))
+            image.save(provider_image)
+            output = root / "icon-pack.png"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "AZURE_OPENAI_API_KEY": "test-key",
+                        "AZURE_OPENAI_IMAGE_ENDPOINT": "https://example.test/images/generations",
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "product_content_platform.integrations.azure_credentials.token_provider_from_env",
+                    return_value=None,
+                ),
+                patch(
+                    "product_content_platform.integrations.azure_image_client.generate_image",
+                    side_effect=[
+                        AzureImageGenerationError('invalid_value: "background" Transparent background is not supported for this model.'),
+                        SimpleNamespace(image_path=provider_image, elapsed_seconds=1, usage={}),
+                    ],
+                ) as generation,
+            ):
+                metadata = AzureImageGenerator().generate_icon_pack(
+                    prompt="three coherent icons", concepts=["clean", "care", "energy"],
+                    output_path=output, size="1024x1024", quality="medium",
+                )
+            with Image.open(output) as generated:
+                alpha = generated.convert("RGBA").getchannel("A").getextrema()
+            self.assertEqual(2, generation.call_count)
+            self.assertIsNone(generation.call_args.kwargs.get("background"))
+            self.assertEqual("light_background_keyed", metadata["transparency_method"])
+            self.assertLess(alpha[0], 255)
+
     def test_model_edit_sends_all_selected_references_and_records_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

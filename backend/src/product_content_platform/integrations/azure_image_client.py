@@ -150,10 +150,11 @@ def generate_image(
     quality: str = "high",
     output_format: str = "png",
     background: str | None = None,
+    stream: bool | None = None,
     timeout: int = DEFAULT_IMAGE_TIMEOUT_SECONDS,
 ) -> GeneratedImage:
     resolved_token, resolved_key = _resolve_credentials(bearer_token, api_key, token_provider)
-    stream_response = _environment_flag("PCP_IMAGE_STREAMING", default=False)
+    stream_response = _environment_flag("PCP_IMAGE_STREAMING", default=False) if stream is None else stream
     request_payload = {
         "prompt": prompt,
         "size": size,

@@ -169,6 +169,7 @@ class ProductQualityToolkit:
         self,
         *,
         output_path: Path,
+        visual_output_path: Path | None = None,
         reference_path: Path | None,
         prompt: str,
         review_plan: dict[str, Any],
@@ -252,7 +253,7 @@ class ProductQualityToolkit:
                 self._review_evidence(
                     mode=mode,
                     user_prompt=prompt,
-                    generated_image_path=str(output_path),
+                    generated_image_path=str(visual_output_path or output_path),
                     reference_image_path=str(source_image_path or ""),
                     product_reference_image_path=str(reference_path or ""),
                     product_reference_image_paths=[str(path) for path in all_reference_paths],

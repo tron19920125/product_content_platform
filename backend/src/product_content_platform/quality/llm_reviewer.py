@@ -117,6 +117,13 @@ class ReviewEvidence:
                     "against the marketing-copy number allowlist. Obvious newly generated gibberish may be reported once "
                     "as a reference-consistency defect when supported by the reference image."
                 ),
+                "feature_layer_provenance": (
+                    "When generation.composition_provenance says the feature icon layer is stored separately, "
+                    "feature icons, cards, borders, and their copy are deterministic post-generation layers. "
+                    "Their presence in the final composed image is expected engineering evidence, not proof that "
+                    "the image model generated placeholders. Do not request another base-image view or create an "
+                    "issue solely to confirm this provenance; only report a visible layout or rendering defect."
+                ),
                 "product_replacement_scope": (
                     "For replace_product tasks, the source slice is the authority for product geometry, placement, "
                     "angle, perspective, occlusion, layout, text, background, and non-product content. The target "

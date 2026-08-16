@@ -149,6 +149,7 @@ class PageProductionEngine(Protocol):
         recipe: Recipe,
         prompt_version: PromptVersion,
         source_candidate: Candidate,
+        source_text_document: TextDocument | None,
         instruction: str,
         quality: str,
         reference_paths: list[Path],

@@ -563,6 +563,7 @@ class ProductionFlowTest(unittest.TestCase):
         first_row = before["pages"][0]
         source = first_row["candidates"][0]
         source_base = self.client.get(source["base_url"]).content
+        source_document = self.client.get(f"/api/candidates/{source['id']}/text-document").json()
         approved = self.client.post(
             f"/api/candidates/{source['id']}/review",
             json={"decision": "approved", "override_reason": "", "reviewer": "edit-test"},
@@ -592,6 +593,13 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertEqual("low", child["metadata"]["effective_generation"]["quality"])
         self.assertEqual(source_base, self.client.get(source["base_url"]).content)
         self.assertNotEqual(source["id"], child["id"])
+        child_document = self.client.get(f"/api/candidates/{child['id']}/text-document").json()
+        for source_layer, child_layer in zip(source_document["layers"], child_document["layers"], strict=True):
+            self.assertEqual(source_layer["content"], child_layer["content"])
+            self.assertEqual(source_layer["font_family"], child_layer["font_family"])
+            self.assertEqual(source_layer["font_size"], child_layer["font_size"])
+            self.assertEqual(source_layer["color"], child_layer["color"])
+        self.assertEqual(source_document["feature_groups"], child_document["feature_groups"])
         self.assertEqual({source["id"], child["id"]}, {item["id"] for item in first_after["history"] if item["id"] in {source["id"], child["id"]}})
         self.assertEqual("rejected", first_after["decision"]["decision"])
         self.assertTrue(all(row["decision"] is None for row in after["pages"][1:]))

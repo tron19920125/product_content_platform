@@ -386,24 +386,52 @@ class AzureImageGenerator:
         quality: str,
     ) -> dict[str, Any]:
         from product_content_platform.integrations.azure_credentials import token_provider_from_env
-        from product_content_platform.integrations.azure_image_client import default_generation_endpoint, generate_image
+        from product_content_platform.integrations.azure_image_client import (
+            AzureImageGenerationError,
+            default_generation_endpoint,
+            generate_image,
+        )
 
         width, height = validate_image_size(size)
         quality = validate_image_quality(quality)
         endpoint = os.environ.get("AZURE_OPENAI_IMAGE_ENDPOINT", "") or default_generation_endpoint()
         token_provider = token_provider_from_env(endpoint=endpoint)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = generate_image(
-            prompt=prompt, output_dir=output_path.parent,
-            bearer_token=os.environ.get("AZURE_OPENAI_BEARER_TOKEN", ""),
-            api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
-            token_provider=token_provider, endpoint=endpoint, quality=quality, size=size,
-            output_format="png", background="transparent",
-        )
+        generation_kwargs = {
+            "output_dir": output_path.parent,
+            "bearer_token": os.environ.get("AZURE_OPENAI_BEARER_TOKEN", ""),
+            "api_key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
+            "token_provider": token_provider, "endpoint": endpoint,
+            "quality": quality, "size": size, "output_format": "png", "stream": False,
+        }
+        transparency_method = "native"
+        try:
+            result = generate_image(prompt=prompt, background="transparent", **generation_kwargs)
+        except AzureImageGenerationError as exc:
+            detail = str(exc).casefold()
+            if "transparent background is not supported" not in detail and "param\": \"background" not in detail:
+                raise
+            transparency_method = "light_background_keyed"
+            result = generate_image(
+                prompt=(
+                    prompt
+                    + "\nRender the icon pack on one perfectly uniform pure white (#FFFFFF) background, "
+                    "with no shadows, glow, texture, gradients, transparency pattern, cards, or border."
+                ),
+                **generation_kwargs,
+            )
         shutil.copyfile(result.image_path, output_path)
-        with Image.open(output_path) as image:
-            actual = image.size
-            alpha = image.convert("RGBA").getchannel("A").getextrema()
+        with Image.open(output_path) as source:
+            image = source.convert("RGBA")
+        if transparency_method == "light_background_keyed":
+            foreground = _remove_connected_light_background(image)
+            transparent = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            fitted = ImageOps.contain(foreground, (width, height), Image.Resampling.LANCZOS)
+            transparent.alpha_composite(fitted, ((width - fitted.width) // 2, (height - fitted.height) // 2))
+            transparent.save(output_path, format="PNG")
+            image = transparent
+        actual = image.size
+        alpha = image.getchannel("A").getextrema()
         if actual != (width, height):
             raise RuntimeError(f"Azure 图标包尺寸不一致：请求 {width}x{height}，实际 {actual[0]}x{actual[1]}")
         if alpha[0] == 255:
@@ -413,6 +441,7 @@ class AzureImageGenerator:
             "usage": result.usage, "requested_size": size,
             "actual_size": f"{actual[0]}x{actual[1]}", "quality": quality,
             "background": "transparent", "icon_count": len(concepts),
+            "transparency_method": transparency_method,
         }
 
 
