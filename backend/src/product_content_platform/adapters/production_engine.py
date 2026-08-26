@@ -180,9 +180,29 @@ class LocalProductionEngine:
                 candidate_id=f"generation-{uuid4()}", base_path=base_path,
                 page=page, instruction=page.visual_goal,
             )
+            has_independent_features = any(
+                group.visible and group.visual_mode == "independent_icon"
+                for group in initial_text_document.feature_groups
+            )
+            has_integrated_features = any(
+                group.visible and group.visual_mode == "scene_integrated"
+                for group in initial_text_document.feature_groups
+            )
+            has_baked_features = any(
+                group.visible and group.visual_mode == "scene_baked"
+                for group in initial_text_document.feature_groups
+            )
             report(
-                "generating_icons", candidate_percent(.63),
-                label="正在生成图文卖点透明图标",
+                "preparing_feature_layers", candidate_percent(.69),
+                label=(
+                    "正在生成兼容模式的透明卖点图标"
+                    if has_independent_features
+                    else "卖点图形与文字已随主图一次生成，正在记录只读布局证据"
+                    if has_baked_features
+                    else "卖点视觉已随主图生成，正在绑定可编辑文案"
+                    if has_integrated_features
+                    else "正在准备可编辑文字图层"
+                ),
                 candidate_index=index, candidate_count=total_candidates,
             )
             initial_text_document, icon_generation = self._prepare_feature_icons(
@@ -611,6 +631,7 @@ class LocalProductionEngine:
                     }
                     slot_title_style = {**default_title_style, **dict(slot.get("title_style") or {})}
                     slot_description_style = {**default_description_style, **dict(slot.get("description_style") or {})}
+                    visual_mode = str(slot.get("visual_mode") or "scene_baked")
                     feature_groups.append(FeatureGroup(
                         id=str(slot.get("id") or f"feature-group-{group_index + 1}"),
                         name=str(slot.get("name") or "图文卖点组"), box=group_box,
@@ -620,11 +641,19 @@ class LocalProductionEngine:
                         icon_scale=float(slot.get("icon_scale") or .28),
                         item_gap=float(slot.get("item_gap") or .025),
                         icon_text_gap=float(slot.get("icon_text_gap") or .012),
-                        card_style=dict(slot.get("card_style") or {}), z_index=100 + group_index,
+                        visual_mode=visual_mode,
+                        card_style=dict(slot.get("card_style") or {}),
+                        locked=visual_mode in {"scene_baked", "scene_integrated"}, z_index=100 + group_index,
                         items=tuple(FeatureItem(
                             id=point.id, title=point.title, description=point.description,
                             icon_concept=point.icon_concept or point.title,
-                            fact_refs=point.fact_refs, icon_tint=str((slot.get("card_style") or {}).get("accent_color") or "#315D4A"),
+                            fact_refs=point.fact_refs,
+                            icon_source=(
+                                "base_baked" if visual_mode == "scene_baked"
+                                else "base_integrated" if visual_mode == "scene_integrated"
+                                else "pending"
+                            ),
+                            icon_tint=str((slot.get("card_style") or {}).get("accent_color") or "#315D4A"),
                             title_style=slot_title_style, description_style=slot_description_style,
                         ) for point in points),
                     ))
@@ -656,10 +685,37 @@ class LocalProductionEngine:
         document: TextDocument,
         output_root: Path,
     ) -> tuple[TextDocument, dict[str, Any]]:
-        """Generate one transparent icon pack, then persist auditable per-item PNG layers."""
-        items = [(group.id, item) for group in document.feature_groups if group.visible for item in group.items]
+        """Resolve feature visuals while preserving legacy independent-icon projects.
+
+        Scene-baked modules and scene-integrated visuals are already part of the
+        generated base image, so only their provenance is recorded here. Legacy
+        independent-icon groups still receive auditable transparent PNG layers.
+        """
+        integrated_items = [
+            (group.id, group.visual_mode, item) for group in document.feature_groups
+            if group.visible and group.visual_mode in {"scene_baked", "scene_integrated"} for item in group.items
+        ]
+        items = [
+            (group.id, item) for group in document.feature_groups
+            if group.visible and group.visual_mode == "independent_icon" for item in group.items
+        ]
         if not items:
-            return document, {"status": "not_required", "icons": []}
+            integrated_rows = [{
+                "group_id": group_id, "item_id": item.id, "title": item.title,
+                "concept": item.icon_concept, "path": "",
+                "source": "base_baked" if visual_mode == "scene_baked" else "base_integrated",
+                "degraded_reason": "",
+            } for group_id, visual_mode, item in integrated_items]
+            base_status = (
+                "base_baked" if integrated_rows and all(row["source"] == "base_baked" for row in integrated_rows)
+                else "base_integrated" if integrated_rows else "not_required"
+            )
+            return document, {
+                "status": base_status,
+                "provider": "main-image-model" if integrated_rows else "",
+                "background": "part-of-base-image" if integrated_rows else "transparent",
+                "icons": integrated_rows, "error": "",
+            }
         configured_size = os.environ.get("PCP_ICON_PACK_SIZE", "1024x1024")
         configured_quality = os.environ.get("PCP_ICON_QUALITY", "medium")
         try:
@@ -751,12 +807,19 @@ class LocalProductionEngine:
             **group.to_dict(),
             "items": [replacements.get((group.id, item.id), item).to_dict() for item in group.items],
         }) for group in document.feature_groups)
+        integrated_rows = [{
+            "group_id": group_id, "item_id": item.id, "title": item.title,
+            "concept": item.icon_concept, "path": "",
+            "source": "base_baked" if visual_mode == "scene_baked" else "base_integrated",
+            "degraded_reason": "",
+        } for group_id, visual_mode, item in integrated_items]
         metadata = {
             "status": "degraded" if any(row["source"] == "builtin_fallback" for row in icon_rows) else "completed",
             "provider": provider_meta.get("provider") or "builtin-icon-library",
             "pack_path": self._relative(pack_path) if pack_path.exists() else "",
             "pack_size": configured_size, "quality": configured_quality,
-            "background": "transparent", "prompt": prompt, "icons": icon_rows,
+            "background": "mixed" if integrated_rows else "transparent", "prompt": prompt,
+            "icons": [*integrated_rows, *icon_rows],
             "provider_metadata": provider_meta, "error": pack_error,
         }
         return replace(document, feature_groups=updated_groups), metadata
@@ -770,6 +833,8 @@ class LocalProductionEngine:
         instruction: str = "",
     ) -> TextDocument:
         group, item = self._feature_item(document, group_id, item_id)
+        if group.visual_mode in {"scene_baked", "scene_integrated"}:
+            raise ValueError("主图融合卖点需要通过图像调整重新生成，不能单独替换视觉元素")
         concept = item.icon_concept
         if instruction.strip():
             concept = f"{concept}; custom direction: {instruction.strip()}"
@@ -789,7 +854,9 @@ class LocalProductionEngine:
         item_id: str,
         content: bytes,
     ) -> TextDocument:
-        _, item = self._feature_item(document, group_id, item_id)
+        group, item = self._feature_item(document, group_id, item_id)
+        if group.visual_mode in {"scene_baked", "scene_integrated"}:
+            raise ValueError("主图融合卖点需要通过图像调整重新生成，不能上传独立贴图")
         if len(content) > 8 * 1024 * 1024:
             raise ValueError("替换图标不能超过 8MB")
         try:
@@ -1710,7 +1777,8 @@ class LocalProductionEngine:
         text_path.parent.mkdir(parents=True, exist_ok=True)
         layer_canvas.save(text_path, format="PNG")
         icon_layer_path = text_path.parent / "icon_layer.png"
-        if rendered_feature_groups:
+        has_icon_layer = icon_canvas.getchannel("A").getbbox() is not None
+        if has_icon_layer:
             icon_canvas.save(icon_layer_path, format="PNG")
         Image.alpha_composite(Image.alpha_composite(base, icon_canvas), layer_canvas).convert("RGB").save(output_path, format="PNG")
         boxes = [item["rendered_bbox"] for item in rendered]
@@ -1736,9 +1804,11 @@ class LocalProductionEngine:
             }
             for group in document.feature_groups
             for item in group.items
-            if item.icon_path
+            if item.icon_path or item.icon_source in {"base_baked", "base_integrated"}
         ]
         icon_sources = sorted({str(row["source"] or "unknown") for row in icon_rows})
+        base_only = bool(icon_rows) and set(icon_sources).issubset({"base_baked", "base_integrated"})
+        base_status = "base_baked" if icon_sources == ["base_baked"] else "base_integrated"
         return {
             "canvas": [width, height], "safe_area": list(safe_area), "text_box": union_box,
             "content_box": content_union,
@@ -1746,12 +1816,12 @@ class LocalProductionEngine:
             "text_layers": rendered, "text_document_version": document.version,
             "feature_groups": rendered_feature_groups,
             "icon_generation": {
-                "status": "degraded" if "builtin_fallback" in icon_sources else "completed" if icon_rows else "not_required",
-                "provider": icon_sources[0] if len(icon_sources) == 1 else "mixed" if icon_sources else "",
-                "background": "transparent", "icons": icon_rows,
+                "status": base_status if base_only else "degraded" if "builtin_fallback" in icon_sources else "completed" if icon_rows else "not_required",
+                "provider": "main-image-model" if base_only else icon_sources[0] if len(icon_sources) == 1 else "mixed" if icon_sources else "",
+                "background": "part-of-base-image" if base_only else "transparent", "icons": icon_rows,
             },
-            "icon_layer_path": self._relative(icon_layer_path) if rendered_feature_groups else "",
-            "icon_layer_stored_separately": bool(rendered_feature_groups),
+            "icon_layer_path": self._relative(icon_layer_path) if has_icon_layer else "",
+            "icon_layer_stored_separately": has_icon_layer,
             "text_document_source": document.source, "text_document_reasoning": document.ai_reasoning,
             "text_layer_stored_separately": True, "base_contains_post_layout_text": False,
             "font": ", ".join(dict.fromkeys(item["font_family"] for item in rendered)) or "none",
@@ -1810,12 +1880,12 @@ class LocalProductionEngine:
                 card_radius = max(0, round(min(cell_width, cell_height) * float(card_style.get("radius", .08))))
                 border_color = self._parse_hex_color(card_style.get("border_color"))
                 border_width = max(0, min(24, int(card_style.get("border_width", 0))))
-                if card_color and card_opacity:
+                if group.visual_mode == "independent_icon" and card_color and card_opacity:
                     ImageDraw.Draw(icon_canvas).rounded_rectangle(
                         cell, radius=card_radius, fill=(*card_color[:3], round(255 * card_opacity)),
                         outline=border_color if border_width else None, width=border_width,
                     )
-                elif border_color and border_width:
+                elif group.visual_mode == "independent_icon" and border_color and border_width:
                     ImageDraw.Draw(icon_canvas).rounded_rectangle(
                         cell, radius=card_radius, outline=border_color, width=border_width,
                     )
@@ -1841,7 +1911,8 @@ class LocalProductionEngine:
                     )
                     text_align = "center"
                 icon_box = (icon_x, icon_y, icon_x + icon_side, icon_y + icon_side)
-                self._place_feature_icon(icon_canvas, item, icon_box)
+                if group.visual_mode == "independent_icon":
+                    self._place_feature_icon(icon_canvas, item, icon_box)
                 available_height = max(1, text_box[3] - text_box[1])
                 if item.description:
                     title_height = max(1, round(available_height * .38))
@@ -1849,6 +1920,14 @@ class LocalProductionEngine:
                     description_box = (text_box[0], title_box[3], text_box[2], text_box[3])
                 else:
                     title_box, description_box = text_box, None
+                if group.visual_mode == "scene_baked":
+                    rendered_items.append({
+                        **item.to_dict(), "cell_box": list(cell), "icon_box": list(icon_box),
+                        "title_box": list(title_box),
+                        "description_box": list(description_box) if description_box else [],
+                        "render_owner": "base_image_model",
+                    })
+                    continue
                 title_layer = self._feature_text_layer(
                     item=item, group=group, kind="title", content=item.title, pixel_box=title_box,
                     width=width, height=height, fallback_align=text_align, z_index=group.z_index + index * 2,
@@ -1952,6 +2031,10 @@ class LocalProductionEngine:
         safe = tuple(compose_meta["safe_area"])
         rendered = tuple(compose_meta["rendered_text_bbox"])
         product = tuple(compose_meta["product_bbox"])
+        has_baked_features = any(
+            str(group.get("visual_mode") or "independent_icon") == "scene_baked"
+            for group in compose_meta.get("feature_groups") or []
+        )
         if not self._contains(safe, rendered):
             issues.append(self._issue("template_safe_area", "P0", "文字超出模板安全区", "recompose"))
         overlap = self._overlap_ratio(rendered, product)
@@ -2018,11 +2101,12 @@ class LocalProductionEngine:
         reference_similarity: float | None = None
         if self._quality_toolkit:
             canvas_width, canvas_height = compose_meta["canvas"]
+            ocr_region = compose_meta.get("content_box") if has_baked_features else rendered
             bbox = (
-                rendered[0] / canvas_width, rendered[1] / canvas_height,
-                rendered[2] / canvas_width, rendered[3] / canvas_height,
+                ocr_region[0] / canvas_width, ocr_region[1] / canvas_height,
+                ocr_region[2] / canvas_width, ocr_region[3] / canvas_height,
             )
-            reserved = compose_meta.get("content_box") or compose_meta["text_box"]
+            reserved = compose_meta["text_box"] if has_baked_features else compose_meta.get("content_box") or compose_meta["text_box"]
             reserved_bbox = (
                 reserved[0] / canvas_width, reserved[1] / canvas_height,
                 reserved[2] / canvas_width, reserved[3] / canvas_height,
@@ -2082,6 +2166,16 @@ class LocalProductionEngine:
                     "authoritative_title": page.title,
                     "authoritative_body": page.body,
                     "authoritative_feature_points": [point.to_dict() for point in page.feature_points],
+                    "feature_visual_modes": sorted({
+                        str(group.get("visual_mode") or "independent_icon")
+                        for group in compose_meta.get("feature_groups") or []
+                    }),
+                    "feature_visuals_generated_with_base": any(
+                        str(group.get("visual_mode") or "independent_icon") in {"scene_baked", "scene_integrated"}
+                        for group in compose_meta.get("feature_groups") or []
+                    ),
+                    "feature_copy_generated_with_base": has_baked_features,
+                    "feature_copy_remains_editable": bool(page.feature_points) and not has_baked_features,
                     "product_layer_file": generator_meta.get("product_layer_file", ""),
                     "reference_strategy": generator_meta.get("reference_strategy", ""),
                     "product_generated_by_model": generator_meta.get("product_generated_by_model", False),
@@ -2133,11 +2227,16 @@ class LocalProductionEngine:
                 )
 
             for text_issue in text_review.get("issues", []):
+                expected = str(text_issue.get("expected") or "")
+                baked_copy_issue = has_baked_features and expected in {
+                    part for point in page.feature_points
+                    for part in (point.title, point.description) if part.strip()
+                }
                 issues.append(self._issue(
                     text_issue.get("code", "ocr_text_issue"),
                     text_issue.get("severity", "P1"),
                     text_issue.get("message", "文字审查未通过"),
-                    "recompose",
+                    "regenerate" if baked_copy_issue else "recompose",
                 ))
             for review_issue in llm_review.get("issues", []):
                 category = review_issue.get("code", "multimodal_review")
@@ -2145,7 +2244,7 @@ class LocalProductionEngine:
                     f"llm_{category}",
                     self._llm_issue_severity(category, review_issue.get("severity", "P2")),
                     review_issue.get("message", "多模态审查需人工确认"),
-                    self._llm_repair_type(category),
+                    "regenerate" if has_baked_features and category == "text_accuracy" else self._llm_repair_type(category),
                 ))
 
         severities = {item["severity"] for item in issues}
@@ -2182,6 +2281,16 @@ class LocalProductionEngine:
                     "authoritative_title": page.title,
                     "authoritative_body": page.body,
                     "authoritative_feature_points": [point.to_dict() for point in page.feature_points],
+                    "feature_visual_modes": sorted({
+                        str(group.get("visual_mode") or "independent_icon")
+                        for group in compose_meta.get("feature_groups") or []
+                    }),
+                    "feature_visuals_generated_with_base": any(
+                        str(group.get("visual_mode") or "independent_icon") in {"scene_baked", "scene_integrated"}
+                        for group in compose_meta.get("feature_groups") or []
+                    ),
+                    "feature_copy_generated_with_base": has_baked_features,
+                    "feature_copy_remains_editable": bool(page.feature_points) and not has_baked_features,
                 },
                 "product_facts": {
                     "found_numbers": found_numbers,
@@ -2212,7 +2321,21 @@ class LocalProductionEngine:
         reference_strategy: str = "model_edit",
     ) -> dict[str, Any]:
         """Build production QA from structured facts instead of re-interpreting copy with an LLM."""
-        layout_instruction = self._layout_spec(page.template_id)["instruction"]
+        template = self._layout_spec(page.template_id)
+        layout_instruction = template["instruction"]
+        baked_features = bool(page.feature_points) and any(
+            str(slot.get("visual_mode") or "scene_baked") == "scene_baked"
+            for slot in template.get("feature_slots") or []
+        )
+        integrated_features = bool(page.feature_points) and any(
+            str(slot.get("visual_mode") or "scene_baked") == "scene_integrated"
+            for slot in template.get("feature_slots") or []
+        )
+        feature_mode = (
+            "scene_baked" if baked_features else
+            "scene_integrated" if integrated_features else
+            "independent_icon" if page.feature_points else "not_applicable"
+        )
         reference_requirement = (
             "综合全部商品外观图和局部细节图判断同一商品身份：允许按视觉目标生成新角度、透视、"
             "环境光影和效果，但商品轮廓、比例、颜色、材质、门体、把手、控制面板及关键结构应保持一致"
@@ -2232,12 +2355,26 @@ class LocalProductionEngine:
             ],
             "must_not_appear": [
                 "商品主体、门体、机身边缘或关键结构不得被裁切或被后期文字遮挡",
-                "预留文字区不得出现由生图模型生成的标题、正文、占位符、水印或装饰性伪文字",
+                (
+                    "标题和正文预留区不得出现由生图模型生成的标题、正文、占位符、水印或装饰性伪文字；"
+                    "卖点预留区只允许出现规划中确认的卖点标题与说明，不得新增其他文字"
+                    if baked_features else
+                    "预留文字区不得出现由生图模型生成的标题、正文、占位符、水印或装饰性伪文字"
+                ),
                 "商品及其开门、把手等延展结构不得进入左上文字留白区",
             ],
             "must_preserve": [
                 "参考商品本体已有的品牌标识和物理面板信息允许保留，并只按参考一致性检查；"
                 "它们不是后期营销文案，也不参与营销文案数字白名单检查",
+                (
+                    "卖点区域内的图形、卖点标题和卖点说明由主图模型在一次生成中完成，属于预期底图内容；"
+                    "必须按 authoritative_copy.feature_points 核对文字和位置，不得要求后期文字层或独立图标层证据"
+                    if baked_features else
+                    "卖点区域内的无文字视觉符号由主图模型按模板位置生成并与场景融合；它们属于预期底图内容。"
+                    "卖点标题和说明仍由后期可编辑文字层排版，不得把无文字视觉符号误判为异常贴图"
+                    if integrated_features else
+                    "卖点图标和文字由后期独立图层合成，不得误判为生图模型生成的占位内容"
+                ),
             ],
             "review_checks": [
                 "检查商品比例、透视、门体、控制面板和关键结构是否自然稳定",
@@ -2256,15 +2393,24 @@ class LocalProductionEngine:
                     "title": page.title, "body": page.body,
                     "feature_points": [point.to_dict() for point in page.feature_points],
                 }, ensure_ascii=False),
-                "policy": "逐字匹配原文，不添加或删除任何标点；由 OCR 和独立文字层确定性校验",
+                "policy": (
+                    "标题与正文由独立文字层确定性校验；卖点标题与说明由 OCR 核对主图中的生成结果。"
+                    "全部文案逐字匹配原文，不添加或删除任何标点"
+                    if baked_features else
+                    "逐字匹配原文，不添加或删除任何标点；由 OCR 和独立文字层确定性校验"
+                ),
             },
             "composition_evidence": {
                 "post_composed": True,
                 "base_and_text_layer_are_separate_files": True,
-                "feature_icon_and_text_layers_are_separate_files": bool(page.feature_points),
-                "feature_cards_rendered_post_generation": bool(page.feature_points),
-                "feature_card_background_owner": "icon_layer" if page.feature_points else "not_applicable",
-                "copy_review_owner": "deterministic_ocr",
+                "feature_visual_mode": feature_mode,
+                "feature_visuals_generated_with_base": baked_features or integrated_features,
+                "feature_copy_generated_with_base": baked_features,
+                "feature_copy_remains_editable": bool(page.feature_points) and not baked_features,
+                "feature_icon_and_text_layers_are_separate_files": bool(page.feature_points) and not baked_features and not integrated_features,
+                "feature_cards_rendered_post_generation": bool(page.feature_points) and not baked_features and not integrated_features,
+                "feature_card_background_owner": "base_image" if baked_features or integrated_features else "icon_layer" if page.feature_points else "not_applicable",
+                "copy_review_owner": "ocr_for_baked_features_and_text_layer_for_page_copy" if baked_features else "deterministic_ocr",
                 "product_composition_strategy": reference_strategy,
                 "reference_product_layer_is_exact_source": reference_strategy == "layered_product",
                 "product_generated_by_model": reference_strategy == "model_edit" and bool(reference_paths),
@@ -2549,6 +2695,88 @@ class LocalProductionEngine:
             return "P2"
         return normalized
 
+    @staticmethod
+    def _feature_visual_instruction(page: PageItem, template: dict[str, Any]) -> str:
+        """Bind feature modules to template cells, including baked copy when requested."""
+        instructions: list[str] = []
+        for slot in template.get("feature_slots") or []:
+            visual_mode = str(slot.get("visual_mode") or "scene_baked")
+            if visual_mode not in {"scene_baked", "scene_integrated"}:
+                continue
+            maximum = max(1, int(slot.get("max_items") or 3))
+            points = page.feature_points[:maximum]
+            if not points:
+                continue
+            x1, y1, x2, y2 = (float(value) for value in slot["box"])
+            count = len(points)
+            layout = str(slot.get("layout") or "row")
+            columns = count if layout == "row" else 1 if layout == "column" else min(int(slot.get("columns") or count), count)
+            rows = (count + columns - 1) // columns
+            cell_width = (x2 - x1) / columns
+            cell_height = (y2 - y1) / rows
+            icon_position = str(slot.get("icon_position") or "top")
+            marker_rows: list[str] = []
+            for index, point in enumerate(points):
+                column, row = index % columns, index // columns
+                cell_x1 = x1 + column * cell_width
+                cell_y1 = y1 + row * cell_height
+                cell_box = (
+                    cell_x1, cell_y1,
+                    min(x2, cell_x1 + cell_width), min(y2, cell_y1 + cell_height),
+                )
+                if icon_position == "left":
+                    marker_box = (
+                        cell_x1 + cell_width * .05, cell_y1 + cell_height * .23,
+                        cell_x1 + cell_width * .35, cell_y1 + cell_height * .77,
+                    )
+                    copy_area = "在视觉符号右侧保留连续低细节区域供后期文字排版"
+                else:
+                    marker_box = (
+                        cell_x1 + cell_width * .28, cell_y1 + cell_height * .05,
+                        cell_x1 + cell_width * .72, cell_y1 + cell_height * .38,
+                    )
+                    copy_area = "在视觉符号下方保留连续低细节区域供后期文字排版"
+                concept = re.sub(r"[\r\n]+", " ", point.icon_concept).strip() or "premium functional visual motif"
+                if visual_mode == "scene_baked":
+                    marker_rows.append(
+                        f"卖点 {index + 1} 的完整模块严格位于横向 {round(cell_box[0] * 100)}%-{round(cell_box[2] * 100)}%、"
+                        f"纵向 {round(cell_box[1] * 100)}%-{round(cell_box[3] * 100)}%。视觉语义为“{concept}”；"
+                        f"模块中必须清晰、逐字写出简体中文标题“{point.title.strip()}”"
+                        + (f"和说明“{point.description.strip()}”" if point.description.strip() else "，不写说明")
+                        + f"。图形位置为{('文字左侧' if icon_position == 'left' else '文字上方')}，所有内容不得越出该单元格。"
+                    )
+                else:
+                    marker_rows.append(
+                        f"视觉符号 {index + 1} 位于横向 {round(marker_box[0] * 100)}%-{round(marker_box[2] * 100)}%、"
+                        f"纵向 {round(marker_box[1] * 100)}%-{round(marker_box[3] * 100)}%，只表达“{concept}”的视觉语义，{copy_area}。"
+                    )
+            if visual_mode == "scene_baked":
+                title_size = (slot.get("title_style") or {}).get("font_size")
+                description_size = (slot.get("description_style") or {}).get("font_size")
+                size_hint = (
+                    f"模板字号参考：标题 {title_size}px、说明 {description_size}px；按最终画布等比例理解。"
+                    if title_size or description_size else
+                    "标题应明显大于说明，优先保证中文清晰可读。"
+                )
+                instructions.append(
+                    f"在“{slot.get('name') or '卖点区域'}”内一次生成恰好 {count} 个完整图文卖点模块。"
+                    "每个模块的图形、标题、说明必须和主场景同时生成，不能使用后贴 PNG、悬浮 UI 或突兀白卡；"
+                    "可以使用与环境一致的材质嵌饰、浮雕、光影符号或精致信息标识，所有模块的材质、透视、光向、阴影和字体风格一致。"
+                    f"{size_hint}只允许写出下列指定卖点文字，禁止新增字母、数字、Logo、伪文字、型号或其他说明：\n"
+                    + "\n".join(marker_rows)
+                )
+            else:
+                instructions.append(
+                    f"在“{slot.get('name') or '卖点区域'}”内生成恰好 {count} 个同一视觉体系的非文字卖点视觉元素。"
+                    "它们必须成为场景本身的一部分，例如材质嵌饰、浮雕、光影装置或与环境一致的功能可视化，"
+                    "不能像后贴的 App 图标、独立 PNG、白色卡片或悬浮 UI。所有元素风格、材质、透视、光向和阴影一致。"
+                    "严禁生成标题、说明、字母、数字、Logo、伪文字、卡片边框和文字占位线；以下概念仅用于视觉语义，不得写进画面：\n"
+                    + "\n".join(marker_rows)
+                )
+        if not instructions:
+            return ""
+        return "\n\n卖点模块生成要求（优先级高于全局无文字规则）：\n" + "\n".join(instructions)
+
     def _bind_generation_prompt(
         self,
         body: str,
@@ -2559,6 +2787,11 @@ class LocalProductionEngine:
     ) -> str:
         template = self._layout_spec(page.template_id)
         layout_instruction = template["instruction"]
+        feature_visual_instruction = self._feature_visual_instruction(page, template)
+        has_baked_features = any(
+            str(slot.get("visual_mode") or "scene_baked") == "scene_baked"
+            for slot in template.get("feature_slots") or []
+        ) and bool(page.feature_points)
         values = {
             "product_name": profile.name,
             "sku": profile.sku,
@@ -2594,24 +2827,44 @@ class LocalProductionEngine:
                 "投影、遮挡和环境反射自然一致。"
             )
         )
+        text_guardrail = (
+            "标题和正文预留区域内严禁出现标题、正文、标语、字母、数字、Logo、水印、文本框、占位符、横线或类似字符的图形。"
+            "画面仅允许在卖点模块预留区写出卖点模块生成要求中逐字指定的标题和说明；该区域之外不得新增任何文字。"
+            if has_baked_features else
+            "预留文字区域内严禁出现标题、正文、标语、字母、数字、Logo、水印、文本框、占位符、横线或类似字符的图形；"
+            "画面其他区域也不得新增文字。"
+        )
         guardrails = (
             f"构图约束：{layout_instruction}。"
             "预留文字区域必须保持背景简洁、低细节、低对比，不放置商品主体或关键物体。"
             f"{product_guardrail}"
-            "这是纯视觉底图：预留文字区域内严禁出现标题、正文、标语、字母、数字、Logo、水印、"
-            "文本框、占位符、横线或类似字符的图形；画面其他区域也不得新增文字。"
+            f"{text_guardrail}"
             "参考图中商品本体已有的品牌标识和物理面板信息应保持原样；不要把留白区画成边框。"
         )
-        return f"{result.strip()}\n\n{guardrails}"
+        return f"{result.strip()}\n\n{guardrails}{feature_visual_instruction}"
 
     def _content_review_prompt(self, profile: ProductProfile, page: PageItem) -> str:
-        layout_instruction = self._layout_spec(page.template_id)["instruction"]
-        exact_copy = json.dumps({"title": page.title, "body": page.body}, ensure_ascii=False)
+        template = self._layout_spec(page.template_id)
+        layout_instruction = template["instruction"]
+        baked_features = bool(page.feature_points) and any(
+            str(slot.get("visual_mode") or "scene_baked") == "scene_baked"
+            for slot in template.get("feature_slots") or []
+        )
+        exact_copy = json.dumps({
+            "title": page.title,
+            "body": page.body,
+            "feature_points": [point.to_dict() for point in page.feature_points],
+        }, ensure_ascii=False)
         return (
             f"为{profile.name}制作电商详情页。最终文案以此 JSON 为唯一依据：{exact_copy}。"
             "JSON 字符串结束后的句号只是说明文字的分隔符，不属于文案；不得推断、补充或删除标点。"
             f"视觉目标：{page.visual_goal}。模板：{page.template_id}。构图要求：{layout_instruction}。"
-            "底图不得自带文字；标题和正文必须只由后期文字层放入预留区域。"
+            + (
+                "标题和正文必须只由后期文字层放入各自预留区域；卖点预留区中的图形、卖点标题和说明由主图模型一次生成，"
+                "必须逐字核对 JSON 中的 feature_points，且不得在其他区域生成额外文字。"
+                if baked_features else
+                "底图不得自带文字；标题、正文和卖点文案必须只由后期文字层放入预留区域。"
+            )
         )
 
     def _bind_candidate_edit_prompt(
@@ -2622,6 +2875,18 @@ class LocalProductionEngine:
         template: dict[str, Any],
     ) -> str:
         layout_instruction = str(template.get("instruction") or "")
+        feature_instruction = self._feature_visual_instruction(page, template)
+        baked_features = bool(page.feature_points) and any(
+            str(slot.get("visual_mode") or "scene_baked") == "scene_baked"
+            for slot in template.get("feature_slots") or []
+        )
+        copy_rule = (
+            "标题和正文仍由系统后期文字层重新排版，不得生成；卖点预留区必须保留或重新生成指定的完整图文卖点模块，"
+            "只允许出现卖点模块要求中的准确文字，其他区域不得生成营销文字、标语、数字标签、水印、文本框、占位符或伪文字。"
+            if baked_features else
+            "输出仍是纯视觉底图：不得生成营销标题、正文、标语、数字标签、水印、文本框、占位符或伪文字；"
+            "最终标题与正文由系统后期文字层重新排版。"
+        )
         return (
             "任务类型：基于输入候选底图的局部编辑。输入的第一张图是当前候选的无营销文字 base.png，"
             "它定义现有商品、角度、构图、背景、光影与空间关系；其余图片是同一商品的外观和细节参考。\n"
@@ -2630,8 +2895,7 @@ class LocalProductionEngine:
             f"模板构图约束：{layout_instruction}。页面视觉目标：{page.visual_goal}。\n"
             "只修改用户明确要求的视觉内容；未点名的商品身份、数量、轮廓、比例、品牌标识、主要结构、"
             "镜头、透视、背景、光向、材质、构图和非目标区域必须尽量保持。不要复制粘贴商品图层，"
-            "应由图像编辑模型在原底图中完成自然一致的修改。输出仍是纯视觉底图：不得生成营销标题、"
-            "正文、标语、数字标签、水印、文本框、占位符或伪文字；最终标题与正文由系统后期文字层重新排版。"
+            f"应由图像编辑模型在原底图中完成自然一致的修改。{copy_rule}{feature_instruction}"
         )
 
     def _relative(self, path: Path) -> str:

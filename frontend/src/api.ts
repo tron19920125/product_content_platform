@@ -147,6 +147,7 @@ export type TemplateDefinition = {
     min_items: number;
     max_items: number;
     icon_position: "top" | "left";
+    visual_mode: "scene_baked" | "scene_integrated" | "independent_icon";
     icon_scale: number;
     item_gap: number;
     icon_text_gap: number;
@@ -385,6 +386,7 @@ export type FeatureGroup = {
   layout: "row" | "column" | "grid";
   columns: number;
   icon_position: "top" | "left";
+  visual_mode: "scene_baked" | "scene_integrated" | "independent_icon";
   icon_scale: number;
   item_gap: number;
   icon_text_gap: number;

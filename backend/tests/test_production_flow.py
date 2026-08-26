@@ -87,8 +87,13 @@ class ProductionFlowTest(unittest.TestCase):
         self.assertTrue(all(row["job"]["trace"]["reference_count"] == 1 for row in snapshot["pages"]))
         self.assertTrue(all(row["job"]["trace"]["progress"] == 100 for row in snapshot["pages"]))
         self.assertTrue(all(
-            {"generating_background", "compositing_product", "compositing_text", "finalizing"}
+            {"generating_background", "compositing_product", "compositing_text", "preparing_feature_layers", "finalizing"}
             <= {event["stage"] for event in row["job"]["trace"]["stage_history"]}
+            for row in snapshot["pages"]
+        ))
+        self.assertTrue(all(
+            [event["progress"] for event in row["job"]["trace"]["stage_history"]]
+            == sorted(event["progress"] for event in row["job"]["trace"]["stage_history"])
             for row in snapshot["pages"]
         ))
         self.assertTrue(all(

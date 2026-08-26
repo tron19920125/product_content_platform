@@ -124,6 +124,23 @@ class ReviewEvidence:
                     "the image model generated placeholders. Do not request another base-image view or create an "
                     "issue solely to confirm this provenance; only report a visible layout or rendering defect."
                 ),
+                "integrated_feature_visuals": (
+                    "When generation.composition_provenance.feature_visuals_generated_with_base is true, the "
+                    "non-text feature motifs in the reserved feature area are intentionally generated as part of "
+                    "the base scene so their material, perspective, lighting, and shadows feel native. Editable "
+                    "feature titles and descriptions remain deterministic text layers. Do not call the non-text "
+                    "motifs unexpected placeholders or pasted icons; only report actual gibberish, text collision, "
+                    "or a clearly broken visual integration."
+                ),
+                "baked_feature_modules": (
+                    "When generation.composition_provenance.feature_copy_generated_with_base is true, each reserved "
+                    "feature cell intentionally contains a complete image-model-generated module: its scene-integrated "
+                    "visual, exact feature title, and exact feature description. This copy is not a post-generation text "
+                    "layer and is not expected to remain editable. Treat only authoritative_feature_points as allowed "
+                    "text in those cells; OCR owns exact-copy verification. Do not flag the expected feature copy as "
+                    "forbidden base-image text or demand text-layer provenance. Report supported missing, garbled, extra, "
+                    "or visibly misaligned feature content, and recommend regeneration rather than recomposition."
+                ),
                 "product_replacement_scope": (
                     "For replace_product tasks, the source slice is the authority for product geometry, placement, "
                     "angle, perspective, occlusion, layout, text, background, and non-product content. The target "

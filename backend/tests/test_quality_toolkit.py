@@ -125,6 +125,22 @@ class ProductQualityToolkitTest(unittest.TestCase):
         self.assertEqual("pass", result.status)
         self.assertEqual([], result.issues)
 
+    def test_required_copy_ignores_interleaved_ocr_outside_copy_region(self) -> None:
+        result = review_text_ocr(
+            [
+                OcrLine(text="从深层洁净到轻柔呵护，让每一次洗", confidence=.99, bbox=(.08, .16, .40, .21)),
+                OcrLine(text="littleSwan", confidence=.99, bbox=(.62, .20, .70, .23)),
+                OcrLine(text="护更从容。", confidence=.99, bbox=(.16, .22, .30, .26)),
+            ],
+            TextReviewSpec(
+                required_text=["从深层洁净到轻柔呵护，让每一次洗护更从容。"],
+                expected_text_region=(.05, .05, .50, .35),
+            ),
+        )
+
+        self.assertEqual("pass", result.status)
+        self.assertEqual([], result.issues)
+
     def test_number_allowlist_still_rejects_unapproved_copy_number_inside_region(self) -> None:
         result = review_text_ocr(
             [OcrLine(text="专业呵护 36", confidence=.99, bbox=(.08, .17, .35, .21))],

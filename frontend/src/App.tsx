@@ -317,12 +317,35 @@ function ProjectWorkspace({ projectId, onBack, onChanged }: { projectId: string;
   }, [hasActiveProduction, production, project?.status, projectId, onChanged]);
 
   useEffect(() => {
-    if (!hasActivePlanning || !planningRun) return;
-    const timer = window.setTimeout(() => {
-      void api.getPlanningRun(projectId, planningRun.id).then(setPlanningRun).catch((reason) => setError(reason instanceof Error ? reason.message : "规划进度刷新失败"));
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [hasActivePlanning, planningRun?.id, planningRun?.status, projectId]);
+    if (!planningRun || !["queued", "running"].includes(planningRun.status)) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const runId = planningRun.id;
+
+    async function poll() {
+      try {
+        const next = await api.getPlanningRun(projectId, runId);
+        if (cancelled) return;
+        setPlanningRun(next);
+        setError("");
+        if (["queued", "running"].includes(next.status)) {
+          timer = window.setTimeout(() => void poll(), 900);
+        } else if (next.status === "completed") {
+          setMessage("AI 内容规划已完成；请选择需要采用的页面和字段。");
+        }
+      } catch (reason) {
+        if (cancelled) return;
+        setError(reason instanceof Error ? `${reason.message}，正在自动重试` : "规划进度刷新失败，正在自动重试");
+        timer = window.setTimeout(() => void poll(), 1800);
+      }
+    }
+
+    timer = window.setTimeout(() => void poll(), 900);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [planningRun?.id, planningRun?.status, projectId]);
 
   async function generatePlan() {
     setBusy("generate"); setError(""); setMessage("");
@@ -603,27 +626,44 @@ function PlanningWorkbench({ plan, productImageUrl, selectedPageId, templates, l
   onDeletePage: (index: number) => void;
 }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [railOpen, setRailOpen] = useState(plan.items.length > 1);
+  const [drawer, setDrawer] = useState<"content" | "settings" | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const selectedIndex = Math.max(0, plan.items.findIndex((item) => item.id === selectedPageId));
   const selected = plan.items[selectedIndex] ?? plan.items[0];
-  return <div className="planning-workbench">
-    <aside className="planning-page-rail"><header><strong>内容页</strong><span>{plan.items.length}</span></header>{plan.items.map((item, index) => <div key={item.id} draggable={!disabled} className={`${selected?.id === item.id ? "active" : ""} ${dragIndex === index ? "dragging" : ""}`} onDragStart={() => setDragIndex(index)} onDragEnd={() => setDragIndex(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (dragIndex !== null) onReorderPage(dragIndex, index); setDragIndex(null); }}><button className="planning-page-select" onClick={() => onSelectPage(item.id)}><Icon name="grip"/><span className="page-number">{String(item.order).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{pageTypeLabel(item.page_type)} · H{item.heading_level}</small></span><StatusBadge status={item.status}/></button><span className="keyboard-sort"><button aria-label={`上移${item.title}`} disabled={index === 0 || disabled} onClick={() => onMovePage(index, -1)}>↑</button><button aria-label={`下移${item.title}`} disabled={index === plan.items.length - 1 || disabled} onClick={() => onMovePage(index, 1)}>↓</button></span></div>)}</aside>
-    <div className="planning-page-canvas">{selected && <PageEditor item={selected} productImageUrl={productImageUrl} templates={templates} onChange={(patch) => onChangePage(selectedIndex, patch)} onMoveUp={() => onMovePage(selectedIndex, -1)} onMoveDown={() => onMovePage(selectedIndex, 1)} onDelete={() => onDeletePage(selectedIndex)} first={selectedIndex === 0} last={selectedIndex === plan.items.length - 1}/>}</div>
-    <aside className="planning-inspector"><section><h4>页面设置</h4><p><span>页码</span><strong>{selectedIndex + 1}/{plan.items.length}</strong></p><p><span>规划版本</span><strong>V{plan.version}</strong></p><p><span>可用配方</span><strong>{recipeCount} 套</strong></p></section><section><h4>版式库</h4><label><span>当前规格</span><select value={activeLibraryId} disabled={disabled} onChange={(event) => onSelectLibrary(event.target.value)}>{libraries.map((library) => <option key={library.id} value={library.id}>{library.name}</option>)}</select></label><small>{activeLibrary?.size} · {activeLibrary?.template_count} 个模板</small></section><section><h4>流程提示</h4><div className={`planning-status ${plan.confirmed ? "success" : "warning"}`}><Icon name={plan.confirmed ? "check" : "info"}/><div><strong>{plan.confirmed ? "规划已确认" : "当前为草稿"}</strong><p>{plan.confirmed ? "可以前往图片生产；再次修改会恢复为草稿。" : "确认后才会开放图片生产。"}</p></div></div></section></aside>
+  const selectedTemplate = templates.find((row) => row.id === selected?.template_id) ?? templates[0];
+  return <div className={`planning-workbench canvas-first ${railOpen ? "rail-open" : "rail-closed"}`}>
+    {railOpen && <aside className="planning-page-rail"><header><strong>内容页</strong><span>{plan.items.length}</span></header>{plan.items.map((item, index) => <div key={item.id} draggable={!disabled} className={`${selected?.id === item.id ? "active" : ""} ${dragIndex === index ? "dragging" : ""}`} onDragStart={() => setDragIndex(index)} onDragEnd={() => setDragIndex(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (dragIndex !== null) onReorderPage(dragIndex, index); setDragIndex(null); }}><button className="planning-page-select" onClick={() => onSelectPage(item.id)}><Icon name="grip"/><span className="page-number">{String(item.order).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{pageTypeLabel(item.page_type)} · H{item.heading_level}</small></span><StatusBadge status={item.status}/></button><span className="keyboard-sort"><button aria-label={`上移${item.title}`} disabled={index === 0 || disabled} onClick={() => onMovePage(index, -1)}>↑</button><button aria-label={`下移${item.title}`} disabled={index === plan.items.length - 1 || disabled} onClick={() => onMovePage(index, 1)}>↓</button></span></div>)}</aside>}
+    <section className="planning-stage">
+      <header className="planning-stage-toolbar">
+        <button type="button" className={railOpen ? "active" : ""} aria-expanded={railOpen} onClick={() => setRailOpen((value) => !value)}><Icon name="layers"/><span>{plan.items.length} 个页面</span></button>
+        <div><strong>{selected?.title}</strong><small>{selectedTemplate?.size ?? activeLibrary?.size} · {selectedTemplate?.name ?? selected?.template_id}</small></div>
+        <span className="planning-stage-actions"><button type="button" className={drawer === "content" ? "active" : ""} aria-expanded={drawer === "content"} onClick={() => setDrawer((value) => value === "content" ? null : "content")}><Icon name="edit"/>编辑内容</button><button type="button" className={drawer === "settings" ? "active" : ""} aria-expanded={drawer === "settings"} onClick={() => setDrawer((value) => value === "settings" ? null : "settings")}><Icon name="settings"/>页面设置</button><button type="button" aria-label="放大预览设计页面" onClick={() => setPreviewOpen(true)}><Icon name="preview"/>放大预览</button></span>
+      </header>
+      <div className="planning-page-canvas">{selected && <PageEditor item={selected} productImageUrl={productImageUrl} templates={templates} fieldsOpen={drawer === "content"} onCloseFields={() => setDrawer(null)} onChange={(patch) => onChangePage(selectedIndex, patch)} onMoveUp={() => onMovePage(selectedIndex, -1)} onMoveDown={() => onMovePage(selectedIndex, 1)} onDelete={() => onDeletePage(selectedIndex)} first={selectedIndex === 0} last={selectedIndex === plan.items.length - 1}/>}</div>
+    </section>
+    {drawer === "settings" && <aside className="planning-side-drawer planning-settings-drawer"><header><div><strong>页面设置</strong><small>规格、流程与当前规划信息</small></div><button type="button" aria-label="关闭页面设置" onClick={() => setDrawer(null)}>×</button></header><section><p><span>页码</span><strong>{selectedIndex + 1}/{plan.items.length}</strong></p><p><span>规划版本</span><strong>V{plan.version}</strong></p><p><span>可用配方</span><strong>{recipeCount} 套</strong></p></section><section><h4>版式库</h4><label><span>当前规格</span><select value={activeLibraryId} disabled={disabled} onChange={(event) => onSelectLibrary(event.target.value)}>{libraries.map((library) => <option key={library.id} value={library.id}>{library.name}</option>)}</select></label><small>{activeLibrary?.size} · {activeLibrary?.template_count} 个模板</small></section><section><h4>流程提示</h4><div className={`planning-status ${plan.confirmed ? "success" : "warning"}`}><Icon name={plan.confirmed ? "check" : "info"}/><div><strong>{plan.confirmed ? "规划已确认" : "当前为草稿"}</strong><p>{plan.confirmed ? "可以前往图片生产；再次修改会恢复为草稿。" : "确认后才会开放图片生产。"}</p></div></div></section></aside>}
+    {previewOpen && selected && <div className="planning-preview-backdrop" role="presentation" onMouseDown={() => setPreviewOpen(false)}><section className="planning-preview-dialog" role="dialog" aria-modal="true" aria-label="设计页面放大预览" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>{selected.title}</strong><small>{selectedTemplate?.size} · 按真实比例展示</small></div><button type="button" aria-label="关闭放大预览" onClick={() => setPreviewOpen(false)}>×</button></header><div><TemplatePreview item={selected} template={selectedTemplate} productImageUrl={productImageUrl}/></div></section></div>}
   </div>;
 }
 
-function PageEditor({ item, productImageUrl, templates, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; productImageUrl: string; templates: TemplateDefinition[]; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
+function PageEditor({ item, productImageUrl, templates, fieldsOpen, onCloseFields, onChange, onMoveUp, onMoveDown, onDelete, first, last }: { item: PageItem; productImageUrl: string; templates: TemplateDefinition[]; fieldsOpen: boolean; onCloseFields: () => void; onChange: (patch: Partial<PageItem>) => void; onMoveUp: () => void; onMoveDown: () => void; onDelete: () => void; first: boolean; last: boolean }) {
   const template = templates.find((row) => row.id === item.template_id) ?? templates[0];
   const compatible = templates.filter((row) => row.page_types.includes(item.page_type));
-  return <article className="page-editor">
+  const featureMode = template?.feature_slots[0]?.visual_mode ?? "scene_baked";
+  const bakedFeatures = featureMode === "scene_baked";
+  const integratedFeatures = featureMode === "scene_integrated";
+  return <article className="page-editor planning-canvas-editor">
     <TemplatePreview item={item} template={template} productImageUrl={productImageUrl} />
-    <div className="page-fields">
+    {fieldsOpen && <aside className="page-fields planning-side-drawer planning-content-drawer"><header><div><strong>内容与版式</strong><small>修改会实时反映在中央设计页面</small></div><button type="button" aria-label="关闭内容编辑" onClick={onCloseFields}>×</button></header>
       <div className="page-meta"><span>第 {item.order} 页 · {pageTypeLabel(item.page_type)}</span><div className="page-tools"><select aria-label="标题层级" value={item.heading_level} onChange={(event) => onChange({ heading_level: Number(event.target.value) as PageItem["heading_level"] })}><option value="1">H1</option><option value="2">H2</option><option value="3">H3</option><option value="4">H4</option><option value="5">H5</option></select><select value={item.page_type} onChange={(event) => { const pageType = event.target.value as PageItem["page_type"]; const nextTemplate = templates.find((row) => row.page_types.includes(pageType)); onChange({ page_type: pageType, template_id: nextTemplate?.id ?? item.template_id }); }}><option value="hero">主视觉</option><option value="selling_point">核心卖点</option><option value="function">功能说明</option><option value="scene">场景</option><option value="parameters">参数</option></select><select value={item.template_id} onChange={(event) => onChange({ template_id: event.target.value })}>{compatible.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select><button title="上移" disabled={first} onClick={onMoveUp}>↑</button><button title="下移" disabled={last} onClick={onMoveDown}>↓</button><button title="删除" disabled={first && last} onClick={onDelete}>×</button></div></div>
       <Field label="页面标题"><input value={item.title} onChange={(event) => onChange({ title: event.target.value })} /></Field>
       <Field label="正文文案"><textarea rows={2} value={item.body} onChange={(event) => onChange({ body: event.target.value })} /></Field>
       <Field label="视觉目标"><textarea rows={2} value={item.visual_goal} onChange={(event) => onChange({ visual_goal: event.target.value })} /></Field>
       {template?.feature_slots.length ? <div className="feature-point-editor">
-        <header><span>图文卖点组</span><small>{item.feature_points.length}/{template.feature_slots[0].max_items} 项 · 图标独立生成，文字可继续编辑</small></header>
+        <header><span>图文卖点组</span><small>{item.feature_points.length}/{template.feature_slots[0].max_items} 项 · {bakedFeatures ? "图形与文字随主图生成" : integratedFeatures ? "视觉随主图生成，文字可编辑" : "独立图标与可编辑文字"}</small></header>
+        {bakedFeatures && <p className="feature-generation-note baked"><Icon name="image"/><span><strong>整组随主图生成</strong>AI 会把这里确认的图形概念、标题和说明，按模板位置与大小一次生成进场景。生成后不能单独改字；需要先修改规划，再重新生成本页。</span></p>}
+        {integratedFeatures && <p className="feature-generation-note"><Icon name="image"/><span><strong>兼容模式：主图融合视觉</strong>模型只生成无文字图形、材质和光影，标题与说明仍由平台后期排版。</span></p>}
         {item.feature_points.map((point, index) => <article key={point.id}>
           <b>{String(index + 1).padStart(2, "0")}</b>
           <div>
@@ -635,7 +675,7 @@ function PageEditor({ item, productImageUrl, templates, onChange, onMoveUp, onMo
         </article>)}
         <button type="button" className="ghost-button mini" disabled={item.feature_points.length >= template.feature_slots[0].max_items} onClick={() => onChange({ feature_points: [...item.feature_points, { id: `feature-${crypto.randomUUID()}`, title: "新卖点", description: "填写一句简短说明", icon_concept: "简洁线性图标，不含文字或数字", fact_refs: [] }] })}>＋ 新增卖点</button>
       </div> : null}
-    </div>
+    </aside>}
   </article>;
 }
 
@@ -673,7 +713,8 @@ function TemplatePreview({ item, template, productImageUrl }: { item: PageItem; 
   const bodyBox = template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
   const productBox = template?.product_anchor_box ?? template?.product_box ?? [0.20, 0.32, 0.80, 0.94];
   const featureSlot = template?.feature_slots[0];
-  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><FittedPreviewText text={item.title} maxSize={18} weight={700}/></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><FittedPreviewText text={item.body} maxSize={12}/></div>{featureSlot && <div className={`preview-feature-group ${featureSlot.icon_position}`} style={{ ...regionStyle(featureSlot.box), gridTemplateColumns: `repeat(${Math.min(featureSlot.columns, Math.max(1, item.feature_points.length))}, 1fr)` }}>{item.feature_points.map((point) => <span key={point.id}><i>◇</i><b>{point.title}</b><em>{point.description}</em></span>)}</div>}<div className="product-shape" style={regionStyle(productBox)}><img src={productImageUrl} alt="商品参考素材" /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
+  const featureMode = featureSlot?.visual_mode ?? "scene_baked";
+  return <div className={`template-preview ${template?.layout ?? "center"}`} style={{ aspectRatio: `${template?.width ?? 2048} / ${template?.height ?? 2048}` }}><div className="preview-environment"><i /><b /><em /></div><div className="preview-copy preview-title" style={regionStyle(titleBox)}><FittedPreviewText text={item.title} maxSize={18} weight={700}/></div><div className="preview-copy preview-body" style={regionStyle(bodyBox)}><FittedPreviewText text={item.body} maxSize={12}/></div>{featureSlot && <div className={`preview-feature-group ${featureSlot.icon_position} ${featureMode.replace("_", "-")}`} style={{ ...regionStyle(featureSlot.box), gridTemplateColumns: `repeat(${Math.min(featureSlot.columns, Math.max(1, item.feature_points.length))}, 1fr)` }}>{item.feature_points.map((point) => <span key={point.id}><i aria-hidden="true">{featureMode === "scene_integrated" ? "" : "◇"}</i><b>{point.title}</b><em>{point.description}</em></span>)}</div>}<div className="product-shape" style={regionStyle(productBox)}><img src={productImageUrl} alt="商品参考素材" /></div><small>{template?.size ?? "2048x2048"} · {template?.name ?? item.template_id}</small></div>;
 }
 
 function ProductionPanel({ projectId, recipes, referenceAssets, snapshot, mode = "production", onRefresh }: { projectId: string; recipes: Recipe[]; referenceAssets: Asset[]; snapshot: ProductionSnapshot | null; mode?: "production" | "review"; onRefresh: () => Promise<void> }) {
@@ -830,7 +871,7 @@ function ReviewWorkbench({ projectId, pages, selectedPage, selectedCandidate, se
       <div className="review-filmstrip"><div><strong>同页候选</strong><span>{selectedPage.candidates.length}</span></div>{selectedPage.candidates.map((candidate) => <button key={candidate.id} className={selectedCandidateId === candidate.id ? "active" : ""} onClick={() => onSelectCandidate(candidate.id)}><img src={api.resolveUrl(candidate.composed_url)} alt={`候选 ${candidate.candidate_index}`} /><span>候选 {candidate.candidate_index}</span></button>)}</div>
       {selectedCandidate && !selectedCandidate.qa && <div className="qa-choice"><div className="notice info"><b>尚未执行质检</b><span>可以现在执行自动质检，也可以明确跳过并由人工确认。</span></div><button className="secondary" disabled={busy} onClick={() => void runQa()}>{busy ? "质检中…" : "手动执行质检"}</button><label><input type="checkbox" checked={skipQa} onChange={(event) => setSkipQa(event.target.checked)}/>跳过自动质检，以人工判断确认</label></div>}
     </div>
-    <aside className="review-inspector"><section><h3>质检概览</h3><div className="qa-overview"><strong>{issues.length}</strong><span>总问题</span><div>{["P0", "P1", "P2", "P3"].map((severity) => <p key={severity}><i className={`severity-dot ${severity.toLowerCase()}`}/>{severity}<b>{issues.filter((issue) => issue.severity === severity).length}</b></p>)}</div></div></section><section><div className="inspector-heading"><h3>问题列表</h3><span>{issues.length}</span></div>{issues.length ? <div className="review-issues">{issues.map((issue, index) => <article key={`${issue.code}-${index}`} className={`severity-${issue.severity.toLowerCase()} ${index === 0 ? "selected" : ""}`}><header><b>{issue.severity}</b><strong>{issue.message}</strong><span>#{index + 1}</span></header><p>{issue.repair || selectedCandidate?.qa?.suggested_fix || "请人工检查并修正后重新提交。"}</p><button>查看标注</button></article>)}</div> : <div className="qa-pass-state"><Icon name="check"/><strong>未发现阻塞问题</strong></div>}</section><section><h3>审核操作</h3>{blocking && <div className="notice warning">存在高风险问题；通过前需要填写覆盖理由。</div>}<textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={blocking ? "填写高风险问题覆盖理由" : "填写审核备注（驳回时必填）"}/>{error && <div className="notice error">{error}</div>}<div className="review-actions"><button className="secondary danger" disabled={busy || disabled || !reason.trim()} onClick={() => void review("rejected")}>驳回</button><button className="primary" disabled={busy || disabled || (blocking && !reason.trim())} onClick={() => void review("approved")}>通过</button></div><div className="review-tools"><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowTypography((value) => !value); setShowEdit(false); }}>文字重排</button><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowEdit((value) => !value); setShowTypography(false); }}>图像调整</button></div>{selectedCandidate && showTypography && <TypographyEditor projectId={projectId} pageId={selectedPage.page.id} candidate={selectedCandidate} onCancel={() => setShowTypography(false)} onComplete={async () => { setShowTypography(false); await onRecomposed(); }}/>} {selectedCandidate && showEdit && <CandidateEditPanel candidate={selectedCandidate} disabled={busy || disabled} onCancel={() => setShowEdit(false)} onSubmitted={async () => { setShowEdit(false); await onRecomposed(); }}/>}</section><section className="audit-section"><h3>审核记录</h3><p><span className="audit-dot"/><strong>{selectedPage.decision ? statusLabel(selectedPage.decision.decision) : "等待审核"}</strong><small>{selectedPage.decision?.override_reason || "当前候选尚未形成最终审核决策。"}</small></p></section></aside>
+    <aside className="review-inspector"><section><h3>质检概览</h3><div className="qa-overview"><strong>{issues.length}</strong><span>总问题</span><div>{["P0", "P1", "P2", "P3"].map((severity) => <p key={severity}><i className={`severity-dot ${severity.toLowerCase()}`}/>{severity}<b>{issues.filter((issue) => issue.severity === severity).length}</b></p>)}</div></div></section><section><div className="inspector-heading"><h3>问题列表</h3><span>{issues.length}</span></div>{issues.length ? <div className="review-issues">{issues.map((issue, index) => <article key={`${issue.code}-${index}`} className={`severity-${issue.severity.toLowerCase()} ${index === 0 ? "selected" : ""}`}><header><b>{issue.severity}</b><strong>{issue.message}</strong><span>#{index + 1}</span></header><p>{issue.repair || selectedCandidate?.qa?.suggested_fix || "请人工检查并修正后重新提交。"}</p><button>查看标注</button></article>)}</div> : <div className="qa-pass-state"><Icon name="check"/><strong>未发现阻塞问题</strong></div>}</section><section><h3>审核操作</h3>{blocking && <div className="notice warning">存在高风险问题；通过前需要填写覆盖理由。</div>}<textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={blocking ? "填写高风险问题覆盖理由" : "填写审核备注（驳回时必填）"}/>{error && <div className="notice error">{error}</div>}<div className="review-actions"><button className="secondary danger" disabled={busy || disabled || !reason.trim()} onClick={() => void review("rejected")}>驳回</button><button className="primary" disabled={busy || disabled || (blocking && !reason.trim())} onClick={() => void review("approved")}>通过</button></div><div className="review-tools"><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowTypography((value) => !value); setShowEdit(false); }}>文字重排</button><button className="ghost-button" disabled={!selectedCandidate || busy} onClick={() => { setShowEdit((value) => !value); setShowTypography(false); }}>图像调整</button></div>{selectedCandidate && showTypography && <TypographyEditor projectId={projectId} pageId={selectedPage.page.id} candidate={selectedCandidate} onCancel={() => setShowTypography(false)} onComplete={async () => { setShowTypography(false); await onRecomposed(); }}/>} {selectedCandidate && showEdit && <CandidateEditPanel candidate={selectedCandidate} disabled={busy || disabled} onCancel={() => setShowEdit(false)} onSubmitted={async () => { setShowEdit(false); await onRecomposed(); }}/>}</section><section className="audit-section"><h3>审核记录</h3><p><span className="audit-dot"/><strong>{selectedPage.decision ? statusLabel(selectedPage.decision.decision) : "等待审核"}</strong><small>{selectedPage.decision?.override_reason || (selectedPage.decision?.decision === "approved" ? "已按正常质检流程确认通过。" : "当前候选尚未形成最终审核决策。")}</small></p></section></aside>
   </section>;
 }
 
@@ -898,6 +939,7 @@ function jobStageLabel(stage: string) {
     generating_background: "Azure 正在生成无商品场景底图",
     compositing_product: "合成参考商品图层",
     compositing_text: "执行确定性文字排版",
+    preparing_feature_layers: "准备卖点视觉证据与可编辑文字层",
     checking_base_text: "OCR 检查底图留白区",
     checking_reference: "核对参考商品与布局",
     ocr_output: "OCR 校验最终营销文案",

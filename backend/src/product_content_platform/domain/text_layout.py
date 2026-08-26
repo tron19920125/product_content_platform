@@ -15,6 +15,7 @@ VERTICAL_ALIGNMENTS = {"top", "center", "bottom"}
 FONT_STYLES = {"normal", "italic"}
 FEATURE_LAYOUTS = {"row", "column", "grid"}
 FEATURE_ICON_POSITIONS = {"top", "left"}
+FEATURE_VISUAL_MODES = {"scene_baked", "scene_integrated", "independent_icon"}
 
 
 def _box(value: Any) -> tuple[float, float, float, float]:
@@ -195,6 +196,7 @@ class FeatureGroup:
     icon_scale: float = .28
     item_gap: float = .025
     icon_text_gap: float = .012
+    visual_mode: str = "independent_icon"
     card_style: dict[str, Any] = field(default_factory=dict)
     visible: bool = True
     locked: bool = False
@@ -205,6 +207,8 @@ class FeatureGroup:
             raise DomainValidationError("图文卖点组必须包含 ID 和名称")
         if self.layout not in FEATURE_LAYOUTS or self.icon_position not in FEATURE_ICON_POSITIONS:
             raise DomainValidationError("图文卖点组布局方式无效")
+        if self.visual_mode not in FEATURE_VISUAL_MODES:
+            raise DomainValidationError("图文卖点组视觉生成方式无效")
         if not 1 <= self.columns <= 6 or not .1 <= self.icon_scale <= .75:
             raise DomainValidationError("图文卖点组列数或图标比例超出支持范围")
         if not 0 <= self.item_gap <= .2 or not 0 <= self.icon_text_gap <= .2:
@@ -226,6 +230,7 @@ class FeatureGroup:
             icon_scale=float(value.get("icon_scale") if value.get("icon_scale") is not None else .28),
             item_gap=float(value.get("item_gap") if value.get("item_gap") is not None else .025),
             icon_text_gap=float(value.get("icon_text_gap") if value.get("icon_text_gap") is not None else .012),
+            visual_mode=str(value.get("visual_mode") or "independent_icon"),
             card_style=dict(value.get("card_style") or {}),
             visible=bool(value.get("visible", True)), locked=bool(value.get("locked", False)),
             z_index=int(value.get("z_index") if value.get("z_index") is not None else 100),
@@ -237,7 +242,8 @@ class FeatureGroup:
             "items": [item.to_dict() for item in self.items], "layout": self.layout,
             "columns": self.columns, "icon_position": self.icon_position,
             "icon_scale": self.icon_scale, "item_gap": self.item_gap,
-            "icon_text_gap": self.icon_text_gap, "card_style": dict(self.card_style),
+            "icon_text_gap": self.icon_text_gap, "visual_mode": self.visual_mode,
+            "card_style": dict(self.card_style),
             "visible": self.visible, "locked": self.locked, "z_index": self.z_index,
         }
 

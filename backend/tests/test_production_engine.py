@@ -114,7 +114,7 @@ class ProductionEngineTest(unittest.TestCase):
                 "feature_slots": [{
                     "id": "feature-band", "name": "核心功能", "box": [.06, .52, .48, .86],
                     "layout": "row", "columns": 3, "max_items": 3,
-                    "icon_position": "top", "icon_scale": .3,
+                    "icon_position": "top", "visual_mode": "independent_icon", "icon_scale": .3,
                 }],
             }
             engine = LocalProductionEngine(
@@ -152,6 +152,141 @@ class ProductionEngineTest(unittest.TestCase):
             with Image.open(engine.resolve(composition["icon_layer_path"])) as icon_layer:
                 self.assertEqual("RGBA", icon_layer.mode)
                 self.assertEqual(0, icon_layer.getchannel("A").getextrema()[0])
+
+    def test_feature_visuals_are_generated_with_base_while_copy_remains_editable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_path = root / "base.png"
+            Image.new("RGB", (1536, 1024), "#F5F2EA").save(base_path)
+            template = {
+                "id": "integrated-feature-demo", "size": "1536x1024",
+                "text_box": [.06, .08, .46, .32], "title_box": [.06, .08, .46, .18],
+                "body_box": [.06, .20, .46, .32], "product_box": [.54, .12, .94, .92],
+                "product_anchor_box": [.58, .16, .90, .88],
+                "feature_slots": [{
+                    "id": "feature-band", "name": "融合功能视觉", "box": [.06, .52, .48, .86],
+                    "layout": "row", "columns": 3, "max_items": 3,
+                    "icon_position": "top", "visual_mode": "scene_integrated", "icon_scale": .3,
+                }],
+            }
+            engine = LocalProductionEngine(
+                root / "production", LocalBaseImageGenerator(), QualityStub(),
+                template_resolver=lambda _template_id: template,
+            )
+            page = PageItem(
+                id="feature-page", order=1, page_type=PageType.FUNCTION,
+                title="三重专业护理", body="看得见的洁净与安心", visual_goal="高端功能展示",
+                template_id="integrated-feature-demo", status=PageStatus.READY,
+                feature_points=(
+                    FeaturePoint("clean", "深层洁净", "减少残留", "water vortex light sculpture", ("selling_point:深层洁净",)),
+                    FeaturePoint("care", "轻柔呵护", "保护衣物", "soft fabric shield relief", ("selling_point:轻柔呵护",)),
+                    FeaturePoint("energy", "节能省心", "高效运行", "energy leaf material inlay", ("selling_point:节能省心",)),
+                ),
+            )
+
+            prompt = engine._bind_generation_prompt(
+                "Create a premium ecommerce scene for {{product_name}}. {{composition_instruction}}",
+                ProductProfile(sku="X11", name="X11洗衣机", category="洗衣机"), page,
+            )
+            document = engine._build_text_document(
+                candidate_id="candidate-integrated", base_path=base_path, page=page,
+            )
+            candidate_root = root / "production" / "candidate"
+            prepared, visual_meta = engine._prepare_feature_icons(document=document, output_root=candidate_root)
+            composition = engine._compose_text_document(
+                base_path=base_path, text_path=candidate_root / "text_layer.png",
+                output_path=candidate_root / "composed.png", document=prepared,
+                product_bbox=(830, 160, 1400, 900),
+            )
+
+            group = prepared.feature_groups[0]
+            self.assertEqual("scene_integrated", group.visual_mode)
+            self.assertTrue(group.locked)
+            self.assertTrue(all(item.icon_source == "base_integrated" and not item.icon_path for item in group.items))
+            self.assertEqual("base_integrated", visual_meta["status"])
+            self.assertEqual("base_integrated", composition["icon_generation"]["status"])
+            self.assertFalse(composition["icon_layer_stored_separately"])
+            self.assertFalse(composition["icon_layer_path"])
+            self.assertIn("water vortex light sculpture", prompt)
+            self.assertIn("不能像后贴的 App 图标", prompt)
+            self.assertNotIn("深层洁净", prompt)
+            self.assertNotIn("减少残留", prompt)
+            with self.assertRaisesRegex(ValueError, "通过图像调整重新生成"):
+                engine.regenerate_feature_icon(
+                    document=prepared, group_id=group.id, item_id=group.items[0].id,
+                )
+            with self.assertRaisesRegex(ValueError, "不能上传独立贴图"):
+                engine.replace_feature_icon(
+                    document=prepared, group_id=group.id, item_id=group.items[0].id,
+                    content=b"not-used-for-integrated-mode",
+                )
+
+    def test_complete_feature_modules_are_baked_into_base_without_overlay_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_path = root / "base.png"
+            Image.new("RGB", (1536, 1024), "#F5F2EA").save(base_path)
+            template = {
+                "id": "baked-feature-demo", "size": "1536x1024",
+                "instruction": "左侧卖点，右侧商品",
+                "text_box": [.06, .08, .46, .32], "title_box": [.06, .08, .46, .18],
+                "body_box": [.06, .20, .46, .32], "product_box": [.54, .12, .94, .92],
+                "product_anchor_box": [.58, .16, .90, .88],
+                "feature_slots": [{
+                    "id": "feature-band", "name": "完整卖点模块", "box": [.06, .52, .48, .86],
+                    "layout": "row", "columns": 3, "max_items": 3,
+                    "icon_position": "top", "visual_mode": "scene_baked", "icon_scale": .3,
+                    "title_style": {"font_size": 48}, "description_style": {"font_size": 28},
+                }],
+            }
+            engine = LocalProductionEngine(
+                root / "production", LocalBaseImageGenerator(), QualityStub(),
+                template_resolver=lambda _template_id: template,
+            )
+            page = PageItem(
+                id="feature-page", order=1, page_type=PageType.FUNCTION,
+                title="三重专业护理", body="看得见的洁净与安心", visual_goal="高端功能展示",
+                template_id="baked-feature-demo", status=PageStatus.READY,
+                feature_points=(
+                    FeaturePoint("clean", "深层洁净", "减少残留", "water vortex light sculpture", ("selling_point:深层洁净",)),
+                    FeaturePoint("care", "轻柔呵护", "保护衣物", "soft fabric shield relief", ("selling_point:轻柔呵护",)),
+                    FeaturePoint("energy", "节能省心", "高效运行", "energy leaf material inlay", ("selling_point:节能省心",)),
+                ),
+            )
+            profile = ProductProfile(sku="X11", name="X11洗衣机", category="洗衣机")
+
+            prompt = engine._bind_generation_prompt(
+                "Create a premium ecommerce scene for {{product_name}}. {{composition_instruction}}",
+                profile, page,
+            )
+            document = engine._build_text_document(
+                candidate_id="candidate-baked", base_path=base_path, page=page,
+            )
+            candidate_root = root / "production" / "candidate"
+            prepared, visual_meta = engine._prepare_feature_icons(document=document, output_root=candidate_root)
+            composition = engine._compose_text_document(
+                base_path=base_path, text_path=candidate_root / "text_layer.png",
+                output_path=candidate_root / "composed.png", document=prepared,
+                product_bbox=(830, 160, 1400, 900),
+            )
+            review_plan = engine._build_review_plan(profile, page, [], reference_strategy="model_edit")
+
+            group = prepared.feature_groups[0]
+            self.assertEqual("scene_baked", group.visual_mode)
+            self.assertTrue(group.locked)
+            self.assertTrue(all(item.icon_source == "base_baked" and not item.icon_path for item in group.items))
+            self.assertEqual("base_baked", visual_meta["status"])
+            self.assertEqual("base_baked", composition["icon_generation"]["status"])
+            self.assertFalse(composition["icon_layer_stored_separately"])
+            self.assertFalse(any(layer.get("source") == "feature_group" for layer in composition["text_layers"]))
+            self.assertTrue(all(item["render_owner"] == "base_image_model" for item in composition["feature_groups"][0]["items"]))
+            self.assertIn("标题“深层洁净”", prompt)
+            self.assertIn("说明“减少残留”", prompt)
+            self.assertIn("横向 6%-20%", prompt)
+            self.assertNotIn("三重专业护理", prompt)
+            self.assertNotIn("看得见的洁净与安心", prompt)
+            self.assertTrue(review_plan["composition_evidence"]["feature_copy_generated_with_base"])
+            self.assertFalse(review_plan["composition_evidence"]["feature_copy_remains_editable"])
 
     @unittest.skipUnless(os.name == "nt", "Windows Chinese font discovery")
     def test_windows_composition_font_supports_distinct_chinese_glyphs(self) -> None:

@@ -126,10 +126,16 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
     extracted_text = "\n".join(line.text for line in lines)
     normalized_text = normalize_text(extracted_text)
     issues: list[dict[str, Any]] = []
+    relevant_lines = lines
+    if spec.expected_text_region is not None:
+        relevant_lines = [
+            line for line in lines
+            if line.bbox is None or bbox_center_inside_region(line.bbox, spec.expected_text_region)
+        ]
+    normalized_required_source = normalize_required_text("\n".join(line.text for line in relevant_lines))
 
     for expected in spec.required_text:
         normalized_expected = normalize_required_text(expected)
-        normalized_required_source = normalize_required_text(extracted_text)
         if normalized_expected not in normalized_required_source:
             issues.append(
                 {
@@ -141,7 +147,7 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
             )
         elif spec.expected_text_region is not None:
             matching_lines = [
-                line for line in lines
+                line for line in relevant_lines
                 if normalized_expected in normalize_required_text(line.text)
             ]
             for line in matching_lines:
@@ -180,13 +186,7 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
     # Numeric fact checks belong to the post-composed copy area. Numbers printed
     # on the photographed product (for example a timer on an appliance panel)
     # are product/reference evidence, not marketing-copy facts.
-    number_lines = lines
-    if spec.expected_text_region is not None:
-        number_lines = [
-            line
-            for line in lines
-            if line.bbox is None or bbox_center_inside_region(line.bbox, spec.expected_text_region)
-        ]
+    number_lines = relevant_lines
     extracted_numbers = extract_numbers("\n".join(line.text for line in number_lines))
     if spec.strict_number_allowlist:
         allowed = {normalize_number(item) for item in spec.number_allowlist}

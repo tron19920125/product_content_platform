@@ -91,7 +91,8 @@ class LayoutContentCatalogTest(unittest.TestCase):
                 }],
             )
             self.assertEqual("feature-band", draft["feature_slots"][0]["id"])
-            self.assertIn("后期叠加透明图标", draft["composition_instruction"])
+            self.assertEqual("scene_baked", draft["feature_slots"][0]["visual_mode"])
+            self.assertIn("一次生成完整卖点模块", draft["composition_instruction"])
 
             restored = LayoutContentCatalog(storage).template(draft["id"])
             self.assertEqual(3, restored["feature_slots"][0]["max_items"])

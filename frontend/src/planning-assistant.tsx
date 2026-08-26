@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { FeaturePoint, PagePlan, PlanningRun } from "./api";
 
@@ -92,9 +92,24 @@ export function PlanningSuggestionPanel({
 export function PlanningRunProgress({ run }: { run: PlanningRun }) {
   const completed = run.status === "completed";
   const failed = run.status === "failed";
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (completed || failed) return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [completed, failed, run.id]);
+  const startedAt = Date.parse(run.created_at);
+  const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((clock - startedAt) / 1000)) : 0;
   return <div className={`planning-run-progress ${failed ? "failed" : ""}`} role="status" aria-live="polite">
     <span className={completed || failed ? "progress-status-dot" : "spinner"} aria-hidden="true" />
-    <div><strong>{failed ? "AI 内容规划失败" : completed ? "AI 内容规划已完成" : run.status === "queued" ? "AI 规划已进入队列" : "LLM 正在规划每页文案"}</strong><small>{failed ? run.error : "正在读取商品事实、参考图和模板约束，生成标题、正文与视觉目标。"}</small></div>
+    <div><strong>{failed ? "AI 内容规划失败" : completed ? "AI 内容规划已完成" : run.status === "queued" ? "AI 规划已进入队列" : "LLM 正在规划每页文案"}</strong><small>{failed ? run.error : `正在读取商品事实、参考图和模板约束，生成标题、正文与视觉目标 · 已等待 ${formatElapsed(elapsedSeconds)}`}</small></div>
     {!completed && !failed && <div className="indeterminate-track"><i /></div>}
   </div>;
+}
+
+function formatElapsed(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}分${String(seconds).padStart(2, "0")}秒` : `${seconds}秒`;
 }

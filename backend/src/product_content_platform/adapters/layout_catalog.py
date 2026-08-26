@@ -91,6 +91,9 @@ def _feature_slot(value: dict[str, Any], index: int) -> dict[str, Any]:
     icon_position = str(value.get("icon_position") or "top").strip().lower()
     if icon_position not in {"top", "left"}:
         raise DomainValidationError(f"feature_slots[{index}].icon_position 无效")
+    visual_mode = str(value.get("visual_mode") or "scene_baked").strip().lower()
+    if visual_mode not in {"scene_baked", "scene_integrated", "independent_icon"}:
+        raise DomainValidationError(f"feature_slots[{index}].visual_mode 无效")
     min_items = int(value.get("min_items", 2))
     max_items = int(value.get("max_items", 3))
     if not 1 <= min_items <= max_items <= 6:
@@ -107,6 +110,7 @@ def _feature_slot(value: dict[str, Any], index: int) -> dict[str, Any]:
         "min_items": min_items,
         "max_items": max_items,
         "icon_position": icon_position,
+        "visual_mode": visual_mode,
         "icon_scale": max(0.1, min(0.8, float(value.get("icon_scale", 0.28)))),
         "item_gap": max(0.0, min(0.2, float(value.get("item_gap", 0.025)))),
         "icon_text_gap": max(0.0, min(0.2, float(value.get("icon_text_gap", 0.012)))),
@@ -145,12 +149,20 @@ def _composition_instruction(
     reserved_box = _union_all(reservations)
     feature_instruction = ""
     if feature_slots:
-        areas = "；".join(
-            f"{slot['name']}位于横向 {_percent(slot['box'][0])}%-{_percent(slot['box'][2])}%、纵向 "
-            f"{_percent(slot['box'][1])}%-{_percent(slot['box'][3])}%"
-            for slot in feature_slots
-        )
-        feature_instruction = f"；{areas}，这些区域用于后期叠加透明图标与可编辑文案，底图中不得生成图标、文字或卡片占位符"
+        area_rows = []
+        for slot in feature_slots:
+            area = (
+                f"{slot['name']}位于横向 {_percent(slot['box'][0])}%-{_percent(slot['box'][2])}%、纵向 "
+                f"{_percent(slot['box'][1])}%-{_percent(slot['box'][3])}%"
+            )
+            if slot.get("visual_mode") == "scene_baked":
+                area += "，用于主图内一次生成完整卖点模块，包括与场景融合的图形和规划中确认的卖点文字；不得在后期重复叠加卖点文字"
+            elif slot.get("visual_mode") == "scene_integrated":
+                area += "，用于主图内生成无文字、与场景材质和光影融合的卖点视觉符号，并在符号旁保留低细节文字空间"
+            else:
+                area += "，用于后期叠加透明图标与可编辑文案，底图中不得生成图标、文字或卡片占位符"
+            area_rows.append(area)
+        feature_instruction = "；" + "；".join(area_rows)
     return (
         f"在画面横向 {_percent(text_box[0])}%-{_percent(text_box[2])}%、纵向 "
         f"{_percent(text_box[1])}%-{_percent(text_box[3])}% 保持干净低细节留白；"
@@ -309,9 +321,10 @@ _DEFAULT_TEMPLATES: tuple[dict[str, Any], ...] = (
         title_box=[.06, .08, .40, .20], body_box=[.06, .22, .38, .36],
         product_box=[.47, .24, .96, .94], product_anchor_box=[.58, .34, .90, .92], safe_area_box=[.035, .06, .965, .94],
         feature_slots=[{
-            "id": "feature-band", "name": "三项核心卖点", "box": [.06, .46, .34, .82],
+            "id": "feature-band", "name": "三项核心卖点", "box": [.04, .50, .43, .88],
             "layout": "row", "columns": 3, "min_items": 3, "max_items": 3,
-            "icon_position": "top", "icon_scale": .30, "item_gap": .012,
+            "icon_position": "top", "visual_mode": "scene_baked",
+            "icon_scale": .30, "item_gap": .012,
             "icon_text_gap": .012,
             "card_style": {"background_color": "#F7F3EA", "background_opacity": .72, "radius": .08},
             "title_style": {"font_family": "noto-sans-sc", "font_weight": 700, "color": "#244A3A"},
