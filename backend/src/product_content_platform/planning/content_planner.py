@@ -108,7 +108,7 @@ class ContentPlanner:
                             "id": "feature-1",
                             "title": "可编辑卖点短标题",
                             "description": "可编辑的一句说明",
-                            "icon_concept": "不含文字、数字或 Logo 的透明图标视觉概念",
+                            "icon_concept": "不含文字、数字或 Logo 的高辨识度电商卖点视觉概念",
                             "fact_refs": ["该卖点实际使用的 verified_facts.id"],
                         }
                     ],
@@ -138,7 +138,9 @@ class ContentPlanner:
                     "visual_goal 用于指导无营销文字底图生成，必须说明与模板留白兼容的场景和商品表现，不得要求模型生成"
                     "标题、正文、标语、数字标签或水印。fact_refs 只能引用实际使用过的事实 id。所有自然语言使用中文，只返回有效 JSON。"
                     "仅当页面包含 feature_slots 时返回 feature_points，数量必须符合预留区的 min_items/max_items；每个卖点必须有 fact_refs，"
-                    "icon_concept 只描述可独立生成的无文字透明图标，不得要求图标携带字符。"
+                    "icon_concept 只描述随主场景原生生成的无文字卖点视觉符号，不得要求图标携带字符。"
+                    "视觉符号必须使用实色或半实色主体、清晰轮廓和足够的明暗或色彩对比，缩小到整图 25% 时仍可辨识；"
+                    "不得描述透明 PNG、白色半透明玻璃图标、微弱浮雕、纤细线稿或容易融入背景的装饰光效。"
                 ),
             },
             {"role": "user", "content": user_parts},
@@ -265,7 +267,10 @@ class ContentPlanner:
             result.append({
                 "id": f"feature-{index}", "title": cls._clean(title, 40),
                 "description": cls._clean(description, 120),
-                "icon_concept": f"{fact['label']}的简洁线性图标，不含文字、数字或 Logo",
+                "icon_concept": (
+                    f"体现{fact['label']}的高辨识度实色电商卖点视觉符号，"
+                    "使用清晰轮廓和强对比，不含文字、数字或 Logo"
+                ),
                 "fact_refs": [fact["id"]],
             })
         minimum = max(1, min(6, int(slots[0].get("min_items", 1))))

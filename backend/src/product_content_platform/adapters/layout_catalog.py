@@ -92,7 +92,9 @@ def _feature_slot(value: dict[str, Any], index: int) -> dict[str, Any]:
     if icon_position not in {"top", "left"}:
         raise DomainValidationError(f"feature_slots[{index}].icon_position 无效")
     visual_mode = str(value.get("visual_mode") or "scene_baked").strip().lower()
-    if visual_mode not in {"scene_baked", "scene_integrated", "independent_icon"}:
+    if visual_mode == "independent_icon":
+        visual_mode = "scene_baked"
+    if visual_mode not in {"scene_baked", "scene_integrated"}:
         raise DomainValidationError(f"feature_slots[{index}].visual_mode 无效")
     min_items = int(value.get("min_items", 2))
     max_items = int(value.get("max_items", 3))
@@ -132,7 +134,10 @@ def _feature_slots(values: Iterable[dict[str, Any]] | None) -> list[dict[str, An
 
 def _legacy_text_boxes(slots: list[dict[str, Any]]) -> tuple[Box, Box]:
     headline = next((slot["box"] for slot in slots if slot["role"] == "headline"), slots[0]["box"])
-    body = next((slot["box"] for slot in slots if slot["role"] == "body"), headline)
+    body = next(
+        (slot["box"] for slot in slots if slot["role"] == "body"),
+        next((slot["box"] for slot in slots if slot["role"] != "headline"), headline),
+    )
     return list(headline), list(body)
 
 
@@ -159,8 +164,6 @@ def _composition_instruction(
                 area += "，用于主图内一次生成完整卖点模块，包括与场景融合的图形和规划中确认的卖点文字；不得在后期重复叠加卖点文字"
             elif slot.get("visual_mode") == "scene_integrated":
                 area += "，用于主图内生成无文字、与场景材质和光影融合的卖点视觉符号，并在符号旁保留低细节文字空间"
-            else:
-                area += "，用于后期叠加透明图标与可编辑文案，底图中不得生成图标、文字或卡片占位符"
             area_rows.append(area)
         feature_instruction = "；" + "；".join(area_rows)
     return (

@@ -30,6 +30,7 @@ from product_content_platform.application import (
     ProductionApplication,
     ProjectInput,
 )
+from product_content_platform.application.planning import select_template_pages
 from product_content_platform.domain import (
     Asset,
     AssetUsage,
@@ -299,12 +300,6 @@ class TextDocumentApplyPayload(BaseModel):
     version: int = Field(ge=1)
 
 
-class FeatureIconRegeneratePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    instruction: str = Field(default="", max_length=500)
-
-
 class RecipeCandidatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -502,16 +497,15 @@ def create_app(
             library_id = payload.layout_library_id if payload else "library-square-2048"
             catalog.library(library_id)
             library_templates = catalog.templates(library_id=library_id)
-            template_ids: dict[PageType, str] = {}
-            for page_type in PageType:
-                matching = next((item for item in library_templates if page_type.value in item["page_types"]), None)
-                if matching is None:
-                    matching = library_templates[0] if library_templates else None
-                if matching is not None:
-                    template_ids[page_type] = matching["id"]
-            if not template_ids:
+            template_pages = [
+                (page_type, template["id"])
+                for page_type, template in select_template_pages(library_templates)
+            ]
+            if not template_pages:
                 raise DomainValidationError("版式库中没有已发布模板")
-            return plan_to_dict(platform.generate_plan(project_id, library_id, template_ids))
+            return plan_to_dict(platform.generate_plan(
+                project_id, library_id, template_pages=template_pages
+            ))
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -848,47 +842,6 @@ def create_app(
     def apply_text_document(candidate_id: str, payload: TextDocumentApplyPayload) -> dict[str, Any]:
         try:
             return candidate_to_dict(production.apply_text_document(candidate_id, payload.version))
-        except DomainValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except EntityNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.get("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon")
-    def get_feature_icon(candidate_id: str, group_id: str, item_id: str) -> FileResponse:
-        try:
-            return FileResponse(
-                production.feature_icon_file(candidate_id, group_id, item_id), media_type="image/png"
-            )
-        except EntityNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.post("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon/regenerate")
-    def regenerate_feature_icon(
-        candidate_id: str,
-        group_id: str,
-        item_id: str,
-        payload: FeatureIconRegeneratePayload,
-    ) -> dict[str, Any]:
-        try:
-            return production.regenerate_feature_icon(
-                candidate_id, group_id, item_id, payload.instruction
-            ).to_dict()
-        except DomainValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except EntityNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.post("/api/candidates/{candidate_id}/feature-groups/{group_id}/items/{item_id}/icon/replace")
-    async def replace_feature_icon(
-        candidate_id: str,
-        group_id: str,
-        item_id: str,
-        request: Request,
-    ) -> dict[str, Any]:
-        try:
-            return production.replace_feature_icon(
-                candidate_id, group_id, item_id, await request.body()
-            ).to_dict()
         except DomainValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EntityNotFoundError as exc:
@@ -1293,10 +1246,6 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "metadata": candidate.metadata,
         "base_url": f"/api/candidates/{candidate.id}/files/base",
         "text_layer_url": f"/api/candidates/{candidate.id}/files/text",
-        "icon_layer_url": (
-            f"/api/candidates/{candidate.id}/files/icons"
-            if (candidate.metadata.get("composition") or {}).get("icon_layer_path") else ""
-        ),
         "composed_url": f"/api/candidates/{candidate.id}/files/composed",
         "background_url": (
             f"/api/candidates/{candidate.id}/files/background"

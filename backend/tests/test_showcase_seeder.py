@@ -94,11 +94,11 @@ class ShowcaseSeederTest(unittest.TestCase):
                 feature_document = feature_document_response.json()
                 self.assertEqual(1, len(feature_document["feature_groups"]))
                 self.assertEqual(3, len(feature_document["feature_groups"][0]["items"]))
+                self.assertEqual("scene_baked", feature_document["feature_groups"][0]["visual_mode"])
                 feature_icon = client.get(
                     f"/api/candidates/{feature_candidate_id}/feature-groups/feature-band/items/deep-clean/icon"
                 )
-                self.assertEqual(200, feature_icon.status_code)
-                self.assertGreater(len(feature_icon.content), 1_000)
+                self.assertEqual(404, feature_icon.status_code)
 
                 feature_export = client.post(
                     "/api/projects/showcase-landscape-feature-3840/export"
@@ -107,8 +107,8 @@ class ShowcaseSeederTest(unittest.TestCase):
                 feature_archive = root / "exports" / feature_export.json()["file_name"]
                 with ZipFile(feature_archive) as archive:
                     exported_names = set(archive.namelist())
-                self.assertTrue(any(name.endswith("icon_layer.png") for name in exported_names))
-                self.assertTrue(any("icons/feature-band-deep-clean.png" in name for name in exported_names))
+                self.assertFalse(any(name.endswith("icon_layer.png") for name in exported_names))
+                self.assertFalse(any("/icons/" in name for name in exported_names))
                 self.assertTrue(any(name.endswith("project_summary.json") for name in exported_names))
 
                 jobs = client.get(

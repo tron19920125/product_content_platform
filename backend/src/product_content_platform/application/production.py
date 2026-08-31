@@ -641,61 +641,6 @@ class ProductionApplication:
         self._repository.save_text_document(document)
         return document
 
-    def regenerate_feature_icon(
-        self,
-        candidate_id: str,
-        group_id: str,
-        item_id: str,
-        instruction: str = "",
-    ) -> TextDocument:
-        candidate = self._repository.get_candidate(candidate_id)
-        if candidate is None:
-            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
-        current = self.get_text_document(candidate_id)
-        try:
-            updated = self._engine.regenerate_feature_icon(
-                document=current, group_id=group_id, item_id=item_id, instruction=instruction,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            raise DomainValidationError(str(exc)) from exc
-        saved = replace(updated, version=current.version + 1, source="manual")
-        self._repository.save_text_document(saved)
-        return saved
-
-    def replace_feature_icon(
-        self,
-        candidate_id: str,
-        group_id: str,
-        item_id: str,
-        content: bytes,
-    ) -> TextDocument:
-        candidate = self._repository.get_candidate(candidate_id)
-        if candidate is None:
-            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
-        current = self.get_text_document(candidate_id)
-        try:
-            updated = self._engine.replace_feature_icon(
-                document=current, group_id=group_id, item_id=item_id, content=content,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            raise DomainValidationError(str(exc)) from exc
-        saved = replace(updated, version=current.version + 1, source="manual")
-        self._repository.save_text_document(saved)
-        return saved
-
-    def feature_icon_file(self, candidate_id: str, group_id: str, item_id: str) -> Path:
-        candidate = self._repository.get_candidate(candidate_id)
-        if candidate is None:
-            raise EntityNotFoundError(f"候选不存在: {candidate_id}")
-        current = self.get_text_document(candidate_id)
-        try:
-            path = self._engine.resolve_feature_icon(current, group_id, item_id)
-        except (ValueError, FileNotFoundError) as exc:
-            raise EntityNotFoundError("图文卖点图标不存在") from exc
-        if not path.exists():
-            raise EntityNotFoundError("图文卖点图标文件不存在")
-        return path
-
     def apply_text_document(self, candidate_id: str, version: int) -> Candidate:
         source = self._repository.get_candidate(candidate_id)
         if source is None:
@@ -796,7 +741,6 @@ class ProductionApplication:
             "base": candidate.base_path,
             "text": candidate.text_layer_path,
             "composed": candidate.composed_path,
-            "icons": str((candidate.metadata.get("composition") or {}).get("icon_layer_path") or ""),
         }.get(kind)
         if relative_path == "":
             relative_path = None
@@ -1273,32 +1217,7 @@ class ProductionApplication:
             files[f"{page_dir}/text_layer.png"] = self._engine.resolve(candidate.text_layer_path)
             layer_files = ["base.png", "text_layer.png", "final.png"]
             composition = candidate.metadata.get("composition") or {}
-            icon_layer_path = str(composition.get("icon_layer_path") or "")
-            if icon_layer_path:
-                resolved_icon_layer = self._engine.resolve(icon_layer_path)
-                if resolved_icon_layer.exists():
-                    files[f"{page_dir}/icon_layer.png"] = resolved_icon_layer
-                    layer_files.insert(-1, "icon_layer.png")
             icon_generation = composition.get("icon_generation") or {}
-            icon_rows = list(icon_generation.get("icons") or [])
-            icon_rows.extend(
-                item
-                for group in (composition.get("feature_groups") or [])
-                if isinstance(group, dict)
-                for item in (group.get("items") or [])
-                if isinstance(item, dict)
-            )
-            exported_icon_paths: set[str] = set()
-            for icon in icon_rows:
-                icon_path = str(icon.get("path") or "") if isinstance(icon, dict) else ""
-                icon_path = icon_path or (str(icon.get("icon_path") or "") if isinstance(icon, dict) else "")
-                if not icon_path or icon_path in exported_icon_paths:
-                    continue
-                resolved_icon = self._engine.resolve(icon_path)
-                if resolved_icon.exists():
-                    icon_name = Path(icon_path).name
-                    files[f"{page_dir}/icons/{icon_name}"] = resolved_icon
-                    exported_icon_paths.add(icon_path)
             generator = candidate.metadata.get("generator") or {}
             for kind in ("background", "product_layer"):
                 file_name = str(generator.get(f"{kind}_file") or "")

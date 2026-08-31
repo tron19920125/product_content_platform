@@ -203,6 +203,7 @@ class PlatformApplication:
         project_id: str,
         layout_library_id: str = "library-square-2048",
         template_ids: dict[PageType, str] | None = None,
+        template_pages: Iterable[tuple[PageType, str]] | None = None,
     ) -> PagePlan:
         project = self.get_project(project_id)
         profile = project.profile
@@ -220,12 +221,19 @@ class PlatformApplication:
             PageType.PARAMETERS: "data-grid",
         }
         selected_template_ids = {**default_template_ids, **(template_ids or {})}
+        copy_by_type = {
+            PageType.HERO: (profile.name, first_point, "清晰呈现商品全貌与品牌气质"),
+            PageType.SELLING_POINT: (first_point, f"围绕{first_point}说明核心价值", "突出一个核心部件或使用效果"),
+            PageType.FUNCTION: (second_point, f"围绕{second_point}说明功能体验", "通过细节或功能场景解释卖点"),
+            PageType.SCENE: ("融入理想生活", f"让{profile.name}自然融入目标用户的生活空间", "完整生活场景，商品主体清晰可见"),
+            PageType.PARAMETERS: ("关键参数", parameters, "结构化展示已确认的商品事实"),
+        }
+        selected_pages = list(template_pages) if template_pages is not None else [
+            (page_type, selected_template_ids[page_type]) for page_type in PageType
+        ]
         page_specs = [
-            (PageType.HERO, profile.name, first_point, "清晰呈现商品全貌与品牌气质", selected_template_ids[PageType.HERO], 1),
-            (PageType.SELLING_POINT, first_point, f"围绕{first_point}说明核心价值", "突出一个核心部件或使用效果", selected_template_ids[PageType.SELLING_POINT], 2),
-            (PageType.FUNCTION, second_point, f"围绕{second_point}说明功能体验", "通过细节或功能场景解释卖点", selected_template_ids[PageType.FUNCTION], 2),
-            (PageType.SCENE, "融入理想生活", f"让{profile.name}自然融入目标用户的生活空间", "完整生活场景，商品主体清晰可见", selected_template_ids[PageType.SCENE], 2),
-            (PageType.PARAMETERS, "关键参数", parameters, "结构化展示已确认的商品事实", selected_template_ids[PageType.PARAMETERS], 2),
+            (page_type, *copy_by_type[page_type], template_id, 1 if page_type is PageType.HERO else 2)
+            for page_type, template_id in selected_pages
         ]
         existing = self._repository.get_plan(project_id)
         plan = PagePlan(

@@ -147,7 +147,7 @@ export type TemplateDefinition = {
     min_items: number;
     max_items: number;
     icon_position: "top" | "left";
-    visual_mode: "scene_baked" | "scene_integrated" | "independent_icon";
+    visual_mode: "scene_baked" | "scene_integrated";
     icon_scale: number;
     item_gap: number;
     icon_text_gap: number;
@@ -265,7 +265,6 @@ export type Candidate = {
   metadata?: Record<string, unknown>;
   base_url: string;
   text_layer_url: string;
-  icon_layer_url?: string;
   composed_url: string;
   background_url?: string;
   product_layer_url?: string;
@@ -386,7 +385,7 @@ export type FeatureGroup = {
   layout: "row" | "column" | "grid";
   columns: number;
   icon_position: "top" | "left";
-  visual_mode: "scene_baked" | "scene_integrated" | "independent_icon";
+  visual_mode: "scene_baked" | "scene_integrated";
   icon_scale: number;
   item_gap: number;
   icon_text_gap: number;
@@ -564,17 +563,6 @@ export const api = {
     request<TextDocument>(`/candidates/${candidateId}/text-document`, { method: "PUT", body: JSON.stringify({ base_version: document.version, layers: document.layers, feature_groups: document.feature_groups }) }),
   aiLayoutTextDocument: (candidateId: string, instruction = "") =>
     request<TextDocument>(`/candidates/${candidateId}/text-document/ai-layout`, { method: "POST", body: JSON.stringify({ instruction }) }),
-  featureIconUrl: (candidateId: string, groupId: string, itemId: string, version = 0) =>
-    `${API_BASE}/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon?v=${version}`,
-  regenerateFeatureIcon: (candidateId: string, groupId: string, itemId: string, instruction = "") =>
-    request<TextDocument>(`/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon/regenerate`, { method: "POST", body: JSON.stringify({ instruction }) }),
-  replaceFeatureIcon: async (candidateId: string, groupId: string, itemId: string, file: File) => {
-    const response = await fetch(`${API_BASE}/candidates/${candidateId}/feature-groups/${encodeURIComponent(groupId)}/items/${encodeURIComponent(itemId)}/icon/replace`, {
-      method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file,
-    });
-    if (!response.ok) throw await responseError(response);
-    return response.json() as Promise<TextDocument>;
-  },
   applyTextDocument: (candidateId: string, version: number) =>
     request<Candidate>(`/candidates/${candidateId}/text-document/apply`, { method: "POST", body: JSON.stringify({ version }) }),
   runCandidateQa: (candidateId: string) => request<QAResult>(`/candidates/${candidateId}/qa`, { method: "POST" }),

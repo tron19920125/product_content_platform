@@ -77,7 +77,6 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
-  const [featureInstruction, setFeatureInstruction] = useState("");
   const [sourceSize, setSourceSize] = useState<[number, number] | null>(null);
   const [stageSize, setStageSize] = useState<[number, number]>([0, 0]);
   const fontLoadStarted = useRef(new Set<string>());
@@ -227,29 +226,6 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
     setTextDocument({ ...saved, layers: saved.layers.map(styleDefaults) }); setDirty(false); return saved;
   }
 
-  async function regenerateSelectedIcon() {
-    if (!selectedGroup || !selectedFeature) return;
-    setBusy("icon"); setError(""); setFeedback("");
-    try {
-      if (dirty) await saveDocument();
-      const next = await api.regenerateFeatureIcon(candidate.id, selectedGroup.id, selectedFeature.id, featureInstruction);
-      setTextDocument({ ...next, layers: next.layers.map(styleDefaults), feature_groups: next.feature_groups ?? [] });
-      setDirty(false); setFeatureInstruction("");
-      setFeedback(`“${selectedFeature.title}”图标已生成新版本，可继续调整后应用。`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "图标重新生成失败"); } finally { setBusy(""); }
-  }
-
-  async function replaceSelectedIcon(file: File | undefined) {
-    if (!file || !selectedGroup || !selectedFeature) return;
-    setBusy("icon"); setError(""); setFeedback("");
-    try {
-      if (dirty) await saveDocument();
-      const next = await api.replaceFeatureIcon(candidate.id, selectedGroup.id, selectedFeature.id, file);
-      setTextDocument({ ...next, layers: next.layers.map(styleDefaults), feature_groups: next.feature_groups ?? [] });
-      setDirty(false); setFeedback(`“${selectedFeature.title}”图标已替换。`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "图标替换失败"); } finally { setBusy(""); }
-  }
-
   async function perform(action: "save" | "ai" | "apply") {
     setBusy(action); setError(""); setFeedback("");
     try {
@@ -289,13 +265,13 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
           <div className="feature-fact-note integrated-note"><strong>{selectedGroup.name}</strong>图形、卖点标题和说明已经作为主图内容一次生成，不会在这里重复叠加文字层。若要修改内容，请回到内容规划编辑并重新生成本页；若要修改位置或大小，请在版式中心创建模板新版本后重新生成。</div>
           <p className="feature-fact-note"><strong>本次规划内容</strong>{selectedGroup.items.map((item) => `${item.title}${item.description ? `｜${item.description}` : ""}`).join("；")}</p>
         </> : selectedFeature && selectedGroup ? <>
-          <header><strong>卖点项属性</strong><span className="feature-source-tag">{selectedFeature.icon_source === "base_integrated" ? "主图融合视觉" : selectedFeature.icon_source === "generated" || selectedFeature.icon_source.includes("azure") ? "AI 图标" : selectedFeature.icon_source === "user_upload" ? "上传图标" : "平台图标"}</span></header>
+          <header><strong>卖点项属性</strong><span className="feature-source-tag">主图融合视觉</span></header>
           <label><span>卖点标题</span><input value={selectedFeature.title} maxLength={80} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { title: event.target.value })}/></label>
           <label><span>卖点说明</span><textarea rows={3} value={selectedFeature.description} maxLength={240} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { description: event.target.value })}/></label>
-          <label><span>{selectedGroup.visual_mode === "scene_integrated" ? "视觉语义（下次重新生图时生效）" : "图标语义"}</span><input value={selectedFeature.icon_concept} maxLength={160} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { icon_concept: event.target.value })}/></label>
+          <label><span>视觉语义（下次重新生图时生效）</span><input value={selectedFeature.icon_concept} maxLength={160} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { icon_concept: event.target.value })}/></label>
           <div className="property-row"><label><span>标题字号</span><input type="number" min="8" max="1024" value={Number(selectedFeature.title_style.font_size ?? 48)} onChange={(event) => updateFeatureStyle(selectedGroup.id, selectedFeature.id, "title_style", { font_size: Number(event.target.value) })}/></label><label><span>标题颜色</span><input type="color" value={String(selectedFeature.title_style.color ?? selectedFeature.icon_tint)} onChange={(event) => updateFeatureStyle(selectedGroup.id, selectedFeature.id, "title_style", { color: event.target.value.toUpperCase() })}/></label></div>
           <div className="property-row"><label><span>说明字号</span><input type="number" min="8" max="1024" value={Number(selectedFeature.description_style.font_size ?? 30)} onChange={(event) => updateFeatureStyle(selectedGroup.id, selectedFeature.id, "description_style", { font_size: Number(event.target.value) })}/></label><label><span>说明颜色</span><input type="color" value={String(selectedFeature.description_style.color ?? selectedFeature.icon_tint)} onChange={(event) => updateFeatureStyle(selectedGroup.id, selectedFeature.id, "description_style", { color: event.target.value.toUpperCase() })}/></label></div>
-          {selectedGroup.visual_mode === "scene_integrated" ? <p className="feature-fact-note integrated-note"><strong>视觉已融入主图</strong>图形的材质、透视、光影和阴影由主图模型一次生成，不再单独贴图。这里可以直接修改标题和说明；若要改变图形语义或位置，请回到图片调整重新生成底图。</p> : <><div className="property-row"><label><span>图标缩放</span><input type="number" min="0.25" max="2" step="0.05" value={selectedFeature.icon_scale} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { icon_scale: Number(event.target.value) })}/></label><label><span>主题色</span><input type="color" value={selectedFeature.icon_tint} onChange={(event) => updateFeatureItem(selectedGroup.id, selectedFeature.id, { icon_tint: event.target.value.toUpperCase() })}/></label></div><div className="feature-icon-actions"><label><span>重新生成要求（可选）</span><input value={featureInstruction} maxLength={500} onChange={(event) => setFeatureInstruction(event.target.value)} placeholder="例如：更简洁的盾牌线性图标"/></label><button type="button" className="secondary" disabled={!!busy} onClick={() => void regenerateSelectedIcon()}>{busy === "icon" ? "处理中…" : "重新生成图标"}</button><label className="upload-icon-button"><span>上传替换（透明 PNG/WebP）</span><input type="file" accept="image/png,image/webp" disabled={!!busy} onChange={(event) => { void replaceSelectedIcon(event.target.files?.[0]); event.currentTarget.value = ""; }}/></label></div></>}
+          <p className="feature-fact-note integrated-note"><strong>视觉已融入主图</strong>图形的材质、透视、光影和阴影由主图模型一次生成，不使用透明 PNG 或后期贴图。这里可以直接修改标题和说明；若要改变图形语义，请重新生成本页。</p>
           <p className="feature-fact-note"><strong>事实依据</strong>{selectedFeature.fact_refs.length ? selectedFeature.fact_refs.join("；") : "未关联事实，质检时需人工确认。"}</p>
         </> : selectedGroup ? <>
           <header><strong>卖点组属性</strong><span>{selectedGroup.visual_mode === "scene_integrated" ? "主图融合" : `${selectedGroup.items.length} 项`}</span></header>
@@ -336,12 +312,8 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
         {group.items.map((item) => {
           const titleStyle = item.title_style ?? {}; const descriptionStyle = item.description_style ?? {};
           const selectedItem = selectedId === `feature:${group.id}:${item.id}`;
-          return <button type="button" key={item.id} className={`editable-feature-item ${selectedItem ? "selected" : ""} icon-${group.icon_position}`} style={{ flexDirection: group.icon_position === "left" ? "row" : "column", color: String(titleStyle.color ?? item.icon_tint), backgroundColor: group.visual_mode === "scene_integrated" ? "transparent" : String(group.card_style?.background_color ?? "transparent") }} onPointerDown={(event) => { event.stopPropagation(); setSelectedId(`feature:${group.id}:${item.id}`); setInspectorView("properties"); }}>
-            {group.visual_mode === "scene_integrated" ? (
-              <i className="integrated-feature-spacer" aria-hidden="true" style={{ width: `${Math.max(12, group.icon_scale * item.icon_scale * 100)}%`, minHeight: `${Math.max(20, group.icon_scale * item.icon_scale * 100)}%` }}/>
-            ) : (
-              <img src={api.featureIconUrl(candidate.id, group.id, item.id, textDocument.version)} alt="" draggable={false} style={{ width: `${Math.max(12, group.icon_scale * item.icon_scale * 100)}%`, maxHeight: `${Math.max(20, group.icon_scale * item.icon_scale * 100)}%`, objectFit: "contain" }}/>
-            )}
+          return <button type="button" key={item.id} className={`editable-feature-item ${selectedItem ? "selected" : ""} icon-${group.icon_position}`} style={{ flexDirection: group.icon_position === "left" ? "row" : "column", color: String(titleStyle.color ?? item.icon_tint), backgroundColor: "transparent" }} onPointerDown={(event) => { event.stopPropagation(); setSelectedId(`feature:${group.id}:${item.id}`); setInspectorView("properties"); }}>
+            <i className="integrated-feature-spacer" aria-hidden="true" style={{ width: `${Math.max(12, group.icon_scale * item.icon_scale * 100)}%`, minHeight: `${Math.max(20, group.icon_scale * item.icon_scale * 100)}%` }}/>
             <span><strong style={{ fontFamily: fontFamilies[String(titleStyle.font_family ?? "noto-sans-sc")], fontWeight: Number(titleStyle.font_weight ?? 700), fontSize: `${Math.max(4, Number(titleStyle.font_size ?? 48) * stageScale)}px`, color: String(titleStyle.color ?? item.icon_tint), lineHeight: Number(titleStyle.line_height ?? 1.12) }}>{item.title}</strong>{item.description ? <small style={{ fontFamily: fontFamilies[String(descriptionStyle.font_family ?? "noto-sans-sc")], fontWeight: Number(descriptionStyle.font_weight ?? 400), fontSize: `${Math.max(4, Number(descriptionStyle.font_size ?? 30) * stageScale)}px`, color: String(descriptionStyle.color ?? item.icon_tint), lineHeight: Number(descriptionStyle.line_height ?? 1.35) }}>{item.description}</small> : null}</span>
           </button>;
         })}
@@ -349,7 +321,7 @@ export function TextLayoutEditor({ candidate, onComplete, onCancel }: Props) {
       </div>;
     })}</>, stageRef.current) : null}
     {textDocument.ai_reasoning && <p className="tool-note"><strong>AI 初排说明：</strong>{textDocument.ai_reasoning}</p>}
-    {busy && <div className="inline-working" role="status"><span className="spinner" />{{ loading: "加载中", save: "保存版本中", ai: "AI 正在初排", apply: "正在确定性渲染页面图层", icon: "正在生成或替换图标" }[busy]}…</div>}
+    {busy && <div className="inline-working" role="status"><span className="spinner" />{{ loading: "加载中", save: "保存版本中", ai: "AI 正在初排", apply: "正在确定性渲染页面图层" }[busy]}…</div>}
     {feedback && <div className="notice success" role="status">{feedback}</div>}
     {error && <div className="notice error">{error}</div>}
     <div className="tool-actions"><span>页面图层文档 v{textDocument.version}{dirty ? " · 有未保存修改" : " · 已保存"}</span><button type="button" className="ghost-button" disabled={!!busy || !dirty} onClick={() => void perform("save")}>保存草稿</button><button type="button" className="primary" disabled={!!busy} onClick={() => void perform("apply")}>{busy === "apply" ? "应用中…" : "应用页面图层"}</button></div>

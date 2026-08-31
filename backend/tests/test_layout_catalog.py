@@ -103,6 +103,22 @@ class LayoutContentCatalogTest(unittest.TestCase):
                     feature_slots=[{"id": "bad", "box": [.02, .02, .20, .20], "min_items": 4, "max_items": 2}],
                 )
 
+    def test_custom_text_slot_is_used_as_legacy_body_box(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = LayoutContentCatalog(Path(directory) / "templates.json")
+            draft = catalog.create_template_draft(
+                library_id="library-square-2048",
+                name="标题与自定义正文",
+                page_types=["hero"],
+                text_slots=[
+                    {"id": "headline", "role": "headline", "name": "标题", "box": [.10, .08, .45, .18]},
+                    {"id": "custom-copy", "role": "custom", "name": "自定义文案", "box": [.10, .62, .45, .78]},
+                ],
+            )
+
+            self.assertEqual([.10, .08, .45, .18], draft["title_box"])
+            self.assertEqual([.10, .62, .45, .78], draft["body_box"])
+
 
 if __name__ == "__main__":
     unittest.main()

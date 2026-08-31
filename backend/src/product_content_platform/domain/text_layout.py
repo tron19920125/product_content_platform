@@ -15,7 +15,7 @@ VERTICAL_ALIGNMENTS = {"top", "center", "bottom"}
 FONT_STYLES = {"normal", "italic"}
 FEATURE_LAYOUTS = {"row", "column", "grid"}
 FEATURE_ICON_POSITIONS = {"top", "left"}
-FEATURE_VISUAL_MODES = {"scene_baked", "scene_integrated", "independent_icon"}
+FEATURE_VISUAL_MODES = {"scene_baked", "scene_integrated"}
 
 
 def _box(value: Any) -> tuple[float, float, float, float]:
@@ -196,7 +196,7 @@ class FeatureGroup:
     icon_scale: float = .28
     item_gap: float = .025
     icon_text_gap: float = .012
-    visual_mode: str = "independent_icon"
+    visual_mode: str = "scene_baked"
     card_style: dict[str, Any] = field(default_factory=dict)
     visible: bool = True
     locked: bool = False
@@ -221,6 +221,12 @@ class FeatureGroup:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> FeatureGroup:
+        visual_mode = str(value.get("visual_mode") or "scene_baked")
+        if visual_mode == "independent_icon":
+            # One-way compatibility for documents created before feature visuals
+            # became part of the generated scene. New documents never expose or
+            # persist the legacy transparent-PNG mode.
+            visual_mode = "scene_baked"
         return cls(
             id=str(value.get("id") or ""), name=str(value.get("name") or "图文卖点组"),
             box=_box(value.get("box")),
@@ -230,7 +236,7 @@ class FeatureGroup:
             icon_scale=float(value.get("icon_scale") if value.get("icon_scale") is not None else .28),
             item_gap=float(value.get("item_gap") if value.get("item_gap") is not None else .025),
             icon_text_gap=float(value.get("icon_text_gap") if value.get("icon_text_gap") is not None else .012),
-            visual_mode=str(value.get("visual_mode") or "independent_icon"),
+            visual_mode=visual_mode,
             card_style=dict(value.get("card_style") or {}),
             visible=bool(value.get("visible", True)), locked=bool(value.get("locked", False)),
             z_index=int(value.get("z_index") if value.get("z_index") is not None else 100),

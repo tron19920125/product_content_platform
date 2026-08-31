@@ -129,8 +129,9 @@ class ReviewEvidence:
                     "non-text feature motifs in the reserved feature area are intentionally generated as part of "
                     "the base scene so their material, perspective, lighting, and shadows feel native. Editable "
                     "feature titles and descriptions remain deterministic text layers. Do not call the non-text "
-                    "motifs unexpected placeholders or pasted icons; only report actual gibberish, text collision, "
-                    "or a clearly broken visual integration."
+                    "motifs unexpected placeholders or pasted icons. Do report visual_quality when a motif is missing, "
+                    "too small, nearly transparent, too close to the local background luminance, or not recognizable "
+                    "at a 25% ecommerce-thumbnail scale. Native integration must not make a feature motif disappear."
                 ),
                 "baked_feature_modules": (
                     "When generation.composition_provenance.feature_copy_generated_with_base is true, each reserved "
@@ -139,7 +140,11 @@ class ReviewEvidence:
                     "layer and is not expected to remain editable. Treat only authoritative_feature_points as allowed "
                     "text in those cells; OCR owns exact-copy verification. Do not flag the expected feature copy as "
                     "forbidden base-image text or demand text-layer provenance. Report supported missing, garbled, extra, "
-                    "or visibly misaligned feature content, and recommend regeneration rather than recomposition."
+                    "or visibly misaligned feature content. Independently judge the visual salience of every feature motif: "
+                    "each motif must have a clear silhouette, substantial solid or semi-solid area, strong local contrast, "
+                    "and remain recognizable at a 25% ecommerce-thumbnail scale. A missing or nearly invisible motif is "
+                    "a visual_quality P1 fail and requires regeneration; a visible but weak or inconsistent motif is P2. "
+                    "Recommend regeneration rather than recomposition."
                 ),
                 "product_replacement_scope": (
                     "For replace_product tasks, the source slice is the authority for product geometry, placement, "
@@ -765,6 +770,8 @@ def _issue_from_review_item(item: dict[str, Any], index: int) -> dict[str, Any]:
         "expected": item.get("expected", ""),
         "observed": item.get("observed", ""),
         "evidence": item.get("evidence", ""),
+        "requirement_id": item.get("requirement_id", ""),
+        "result": item.get("result", "review"),
         "review_item_index": index,
     }
 

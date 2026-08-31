@@ -76,6 +76,26 @@ def test_planner_feature_points_require_fact_refs_and_number_allowlist() -> None
     assert all(point["fact_refs"] for point in points)
 
 
+def test_planner_requires_prominent_native_feature_motifs() -> None:
+    planner = ContentPlanner("local")
+    profile = ProductProfile(
+        sku="WM-11", name="测试洗衣机", category="洗衣机",
+        selling_points=("精致衣物护理",), parameters={},
+    )
+
+    messages = planner._messages(profile, [{
+        "key": "feature-page", "page_type": "selling_point", "template_id": "feature",
+        "template_name": "卖点", "scene_prompt_hint": "材质展台",
+        "composition_instruction": "左文右图", "feature_slots": TEMPLATES[1]["feature_slots"],
+    }], planner._facts(profile), [])
+    system_prompt = messages[0]["content"]
+
+    assert "缩小到整图 25% 时仍可辨识" in system_prompt
+    assert "实色或半实色主体" in system_prompt
+    assert "不得描述透明 PNG" in system_prompt
+    assert "白色半透明玻璃图标" in system_prompt
+
+
 def test_planning_run_applies_selected_fields_and_keeps_audit() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)

@@ -110,6 +110,49 @@ def bbox_center_inside_region(bbox: BBox, region: BBox) -> bool:
     return rx1 <= center_x <= rx2 and ry1 <= center_y <= ry2
 
 
+def required_text_found(expected: str, lines: list[OcrLine]) -> bool:
+    """Match exact copy even when multi-column OCR interleaves wrapped lines."""
+    normalized_expected = normalize_required_text(expected)
+    if not normalized_expected:
+        return True
+    if normalized_expected in normalize_required_text("\n".join(line.text for line in lines)):
+        return True
+
+    positioned = [line for line in lines if line.bbox and normalize_required_text(line.text)]
+    for first in positioned:
+        first_text = normalize_required_text(first.text)
+        if not normalized_expected.startswith(first_text):
+            continue
+        combined = first_text
+        current = first
+        while combined != normalized_expected:
+            remaining = normalized_expected[len(combined):]
+            candidates = [
+                line for line in positioned
+                if line is not current
+                and line.bbox is not None
+                and current.bbox is not None
+                and line.bbox[1] >= current.bbox[1]
+                and remaining.startswith(normalize_required_text(line.text))
+                and _same_ocr_column(current.bbox, line.bbox)
+            ]
+            if not candidates:
+                break
+            current = min(candidates, key=lambda line: (line.bbox or (0, 0, 0, 0))[1])
+            combined += normalize_required_text(current.text)
+        if combined == normalized_expected:
+            return True
+    return False
+
+
+def _same_ocr_column(first: BBox, second: BBox) -> bool:
+    overlap = max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+    narrower = max(1e-6, min(first[2] - first[0], second[2] - second[0]))
+    first_center = (first[0] + first[2]) / 2
+    second_center = (second[0] + second[2]) / 2
+    return overlap / narrower >= .35 or abs(first_center - second_center) <= .035
+
+
 def extract_numbers(text: str) -> list[str]:
     normalized = unicodedata.normalize("NFKC", text)
     numbers = []
@@ -136,7 +179,7 @@ def review_text_ocr(lines: list[OcrLine], spec: TextReviewSpec) -> TextReviewRes
 
     for expected in spec.required_text:
         normalized_expected = normalize_required_text(expected)
-        if normalized_expected not in normalized_required_source:
+        if normalized_expected not in normalized_required_source and not required_text_found(expected, relevant_lines):
             issues.append(
                 {
                     "code": "missing_required_text",

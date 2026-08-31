@@ -25,6 +25,38 @@ from .platform import PlatformApplication
 from .ports import PlatformRepository
 
 
+def select_template_pages(templates: list[dict[str, Any]]) -> list[tuple[PageType, dict[str, Any]]]:
+    """Select one planning page per current template while preserving library order."""
+    latest: list[dict[str, Any]] = []
+    positions: dict[str, int] = {}
+    for template in templates:
+        key = str(template.get("template_key") or template.get("id") or "")
+        if not key:
+            continue
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(latest)
+            latest.append(template)
+        elif int(template.get("version", 1)) >= int(latest[position].get("version", 1)):
+            latest[position] = template
+
+    used: set[PageType] = set()
+    result: list[tuple[PageType, dict[str, Any]]] = []
+    for template in latest:
+        supported: list[PageType] = []
+        for value in template.get("page_types") or []:
+            try:
+                supported.append(PageType(str(value)))
+            except ValueError:
+                continue
+        if not supported:
+            continue
+        page_type = next((value for value in supported if value not in used), supported[0])
+        used.add(page_type)
+        result.append((page_type, template))
+    return result
+
+
 class PlanningApplication:
     def __init__(
         self,
@@ -220,11 +252,7 @@ class PlanningApplication:
                 if template:
                     result.append(spec(page.id, page.page_type, template))
             return result
-        result = []
-        for index, page_type in enumerate(PageType, start=1):
-            template = next((item for item in templates if page_type.value in item.get("page_types", [])), None)
-            if template is None and templates:
-                template = templates[0]
-            if template:
-                result.append(spec(f"page-{index}-{page_type.value}", page_type, template))
-        return result
+        return [
+            spec(f"page-{index}-{page_type.value}", page_type, template)
+            for index, (page_type, template) in enumerate(select_template_pages(templates), start=1)
+        ]

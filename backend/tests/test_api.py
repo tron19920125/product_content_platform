@@ -210,6 +210,34 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(422, rejected.status_code)
         self.assertIn("不属于当前版式库", rejected.json()["detail"])
 
+    def test_plan_mirrors_the_actual_templates_in_a_custom_library(self) -> None:
+        library = self.client.post("/api/layout-libraries", json={
+            "name": "单页自定义版式", "size": "1024x1024",
+        }).json()
+        draft = self.client.post(f"/api/layout-libraries/{library['id']}/templates", json={
+            "name": "单页主视觉",
+            "page_types": ["hero", "selling_point", "function", "scene", "parameters"],
+            "text_slots": [
+                {"id": "headline", "role": "headline", "name": "标题", "box": [.10, .08, .44, .18]},
+                {"id": "custom-copy", "role": "custom", "name": "自定义文案", "box": [.10, .62, .44, .78]},
+            ],
+        }).json()
+        template = self.client.post(f"/api/templates/{draft['id']}/publish").json()
+        project = self.client.post("/api/projects", json={
+            "project_name": "单页项目", "profile": self.profile_payload("ONE-PAGE"),
+        }).json()
+
+        generated = self.client.post(
+            f"/api/projects/{project['id']}/plan",
+            json={"layout_library_id": library["id"]},
+        )
+
+        self.assertEqual(201, generated.status_code, generated.text)
+        plan = generated.json()
+        self.assertEqual(1, len(plan["items"]))
+        self.assertEqual(template["id"], plan["items"][0]["template_id"])
+        self.assertEqual("hero", plan["items"][0]["page_type"])
+
     def test_import_batch_from_csv(self) -> None:
         content = (
             "SKU,商品名称,品类,型号,卖点,参数\n"

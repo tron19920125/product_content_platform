@@ -101,7 +101,7 @@ class FontRenderingTests(unittest.TestCase):
 
 
 class ProductionEngineTest(unittest.TestCase):
-    def test_feature_group_generates_transparent_icons_and_separate_layers(self) -> None:
+    def test_legacy_independent_feature_group_migrates_to_native_baked_visuals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base_path = root / "base.png"
@@ -136,22 +136,20 @@ class ProductionEngineTest(unittest.TestCase):
                 candidate_id="candidate-feature", base_path=base_path, page=page,
             )
             candidate_root = root / "production" / "candidate"
-            prepared, icon_meta = engine._prepare_feature_icons(document=document, output_root=candidate_root)
+            prepared, visual_meta = engine._prepare_feature_icons(document=document, output_root=candidate_root)
             composition = engine._compose_text_document(
                 base_path=base_path, text_path=candidate_root / "text_layer.png",
                 output_path=candidate_root / "composed.png", document=prepared,
                 product_bbox=(830, 160, 1400, 900),
             )
 
-            self.assertEqual(1, len(prepared.feature_groups))
-            self.assertEqual(3, len(prepared.feature_groups[0].items))
-            self.assertEqual("completed", icon_meta["status"])
-            self.assertTrue(all(Path(engine.resolve(item.icon_path)).exists() for item in prepared.feature_groups[0].items))
-            self.assertTrue(Path(engine.resolve(composition["icon_layer_path"])).exists())
-            self.assertEqual(3, len(composition["feature_groups"][0]["items"]))
-            with Image.open(engine.resolve(composition["icon_layer_path"])) as icon_layer:
-                self.assertEqual("RGBA", icon_layer.mode)
-                self.assertEqual(0, icon_layer.getchannel("A").getextrema()[0])
+            group = prepared.feature_groups[0]
+            self.assertEqual("scene_baked", group.visual_mode)
+            self.assertEqual("base_baked", visual_meta["status"])
+            self.assertTrue(all(item.icon_source == "base_baked" and not item.icon_path for item in group.items))
+            self.assertFalse(composition["icon_layer_stored_separately"])
+            self.assertFalse(composition["icon_layer_path"])
+            self.assertFalse(any(layer.get("source") == "feature_group" for layer in composition["text_layers"]))
 
     def test_feature_visuals_are_generated_with_base_while_copy_remains_editable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -211,15 +209,6 @@ class ProductionEngineTest(unittest.TestCase):
             self.assertIn("不能像后贴的 App 图标", prompt)
             self.assertNotIn("深层洁净", prompt)
             self.assertNotIn("减少残留", prompt)
-            with self.assertRaisesRegex(ValueError, "通过图像调整重新生成"):
-                engine.regenerate_feature_icon(
-                    document=prepared, group_id=group.id, item_id=group.items[0].id,
-                )
-            with self.assertRaisesRegex(ValueError, "不能上传独立贴图"):
-                engine.replace_feature_icon(
-                    document=prepared, group_id=group.id, item_id=group.items[0].id,
-                    content=b"not-used-for-integrated-mode",
-                )
 
     def test_complete_feature_modules_are_baked_into_base_without_overlay_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -248,7 +237,7 @@ class ProductionEngineTest(unittest.TestCase):
                 title="三重专业护理", body="看得见的洁净与安心", visual_goal="高端功能展示",
                 template_id="baked-feature-demo", status=PageStatus.READY,
                 feature_points=(
-                    FeaturePoint("clean", "深层洁净", "减少残留", "water vortex light sculpture", ("selling_point:深层洁净",)),
+                    FeaturePoint("clean", "深层洁净", "减少残留", "", ("selling_point:深层洁净",)),
                     FeaturePoint("care", "轻柔呵护", "保护衣物", "soft fabric shield relief", ("selling_point:轻柔呵护",)),
                     FeaturePoint("energy", "节能省心", "高效运行", "energy leaf material inlay", ("selling_point:节能省心",)),
                 ),
@@ -282,7 +271,11 @@ class ProductionEngineTest(unittest.TestCase):
             self.assertTrue(all(item["render_owner"] == "base_image_model" for item in composition["feature_groups"][0]["items"]))
             self.assertIn("标题“深层洁净”", prompt)
             self.assertIn("说明“减少残留”", prompt)
+            self.assertIn("以深层洁净为语义的高辨识度电商卖点视觉符号", prompt)
             self.assertIn("横向 6%-20%", prompt)
+            self.assertIn("填满该图形区的 75%-90%", prompt)
+            self.assertIn("缩小到 25%", prompt)
+            self.assertIn("严禁白色半透明玻璃图标", prompt)
             self.assertNotIn("三重专业护理", prompt)
             self.assertNotIn("看得见的洁净与安心", prompt)
             self.assertTrue(review_plan["composition_evidence"]["feature_copy_generated_with_base"])
@@ -443,9 +436,32 @@ class ProductionEngineTest(unittest.TestCase):
 
     def test_subjective_llm_findings_cannot_become_release_blockers(self) -> None:
         self.assertEqual("P2", LocalProductionEngine._llm_issue_severity("layout_position", "P1"))
-        self.assertEqual("P2", LocalProductionEngine._llm_issue_severity("visual_quality", "P0"))
+        self.assertEqual("P2", LocalProductionEngine._llm_issue_severity("visual_quality", "P1"))
         self.assertEqual("P1", LocalProductionEngine._llm_issue_severity("reference_consistency", "P1"))
         self.assertEqual("P1", LocalProductionEngine._llm_issue_severity("text_accuracy", "P1"))
+
+    def test_feature_salience_guard_rejects_faint_motifs_and_accepts_bold_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            faint = root / "faint.png"
+            bold = root / "bold.png"
+            Image.new("RGB", (400, 200), "#E7D9C8").save(faint)
+            bold_image = Image.new("RGB", (400, 200), "#E7D9C8")
+            bold_draw = ImageDraw.Draw(bold_image)
+            bold_draw.ellipse((30, 25, 170, 165), fill="#163A6B", outline="#FFFFFF", width=8)
+            bold_image.save(bold)
+            groups = [{
+                "id": "feature-band", "visible": True, "visual_mode": "scene_baked",
+                "items": [{"id": "clean", "title": "深层洁净", "icon_box": [20, 20, 180, 180]}],
+            }]
+
+            faint_result = LocalProductionEngine._feature_salience_evidence(faint, groups)
+            bold_result = LocalProductionEngine._feature_salience_evidence(bold, groups)
+
+            self.assertEqual("fail", faint_result[0]["status"])
+            self.assertEqual("pass", bold_result[0]["status"])
+            self.assertLess(faint_result[0]["salient_pixel_ratio"], .012)
+            self.assertGreater(bold_result[0]["salient_pixel_ratio"], .035)
 
     def test_generation_prompt_removes_copy_without_leaving_empty_parentheses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

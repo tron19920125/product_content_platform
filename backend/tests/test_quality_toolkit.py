@@ -141,6 +141,25 @@ class ProductQualityToolkitTest(unittest.TestCase):
         self.assertEqual("pass", result.status)
         self.assertEqual([], result.issues)
 
+    def test_required_feature_copy_reconstructs_wrapped_lines_without_crossing_columns(self) -> None:
+        result = review_text_ocr(
+            [
+                OcrLine(text="精致衣物", confidence=.99, bbox=(.06, .62, .18, .66)),
+                OcrLine(text="安静融入", confidence=.99, bbox=(.23, .62, .35, .66)),
+                OcrLine(text="自然光真", confidence=.99, bbox=(.40, .62, .52, .66)),
+                OcrLine(text="护理", confidence=.99, bbox=(.06, .67, .13, .71)),
+                OcrLine(text="高端家居", confidence=.99, bbox=(.23, .67, .35, .71)),
+                OcrLine(text="实质感", confidence=.99, bbox=(.40, .67, .50, .71)),
+            ],
+            TextReviewSpec(
+                required_text=["精致衣物护理", "安静融入高端家居", "自然光真实质感"],
+                expected_text_region=(.03, .55, .55, .80),
+            ),
+        )
+
+        self.assertEqual("pass", result.status)
+        self.assertEqual([], result.issues)
+
     def test_number_allowlist_still_rejects_unapproved_copy_number_inside_region(self) -> None:
         result = review_text_ocr(
             [OcrLine(text="专业呵护 36", confidence=.99, bbox=(.08, .17, .35, .21))],

@@ -709,8 +709,10 @@ function FittedPreviewText({ text, maxSize, weight = 400 }: { text: string; maxS
 }
 
 function TemplatePreview({ item, template, productImageUrl }: { item: PageItem; template?: TemplateDefinition; productImageUrl: string }) {
-  const titleBox = template?.title_box ?? template?.text_box ?? [0.09, 0.07, 0.91, 0.18];
-  const bodyBox = template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
+  const headlineSlot = template?.text_slots.find((slot) => slot.role === "headline") ?? template?.text_slots[0];
+  const bodySlot = template?.text_slots.find((slot) => slot.role === "body") ?? template?.text_slots.find((slot) => slot.role !== "headline");
+  const titleBox = headlineSlot?.box ?? template?.title_box ?? template?.text_box ?? [0.09, 0.07, 0.91, 0.18];
+  const bodyBox = bodySlot?.box ?? template?.body_box ?? template?.text_box ?? [0.09, 0.19, 0.91, 0.29];
   const productBox = template?.product_anchor_box ?? template?.product_box ?? [0.20, 0.32, 0.80, 0.94];
   const featureSlot = template?.feature_slots[0];
   const featureMode = featureSlot?.visual_mode ?? "scene_baked";
