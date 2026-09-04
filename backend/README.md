@@ -1,21 +1,15 @@
 # Backend
 
-后端采用 Python 和 FastAPI，已建立以下模块：
+当前重构版的独立后端位于 `src/product_content_platform/studio/`，由 `scripts/start_studio.sh` 启动。
 
-- `domain`：项目、商品档案、页面计划、配方、批次、候选和质检结果；
-- `application`：内容策划、生成、质检、审核、导出和批量调度；
-- `adapters`：原 MVP、模型、OCR、数据库和本地文件存储适配器；
-- `api`：本地 Web 接口；
-- `worker`：生成、OCR、质检、合成和导出任务执行。
+它以 FastAPI、SQLite 和本地文件为基础，统一管理五个创作工具的草稿、按候选拆分的任务、版本、AI 底图质检、一次低分修复、素材/作品快照与 30 天回收站。新模块不调用旧平台的项目、模板、配方、审批或 Azure 适配器。
 
-主要资源边界：
+核心路由：
 
 - `GET /api/health`
-- `/api/projects`：项目、档案、复制、素材和页面规划；
-- `/api/projects/{id}/production`：整套生产、单页重生成、仅重排、审核和导出；
-- `/api/prompts` 与 `/api/recipes`：版本、草稿和发布；
-- `/api/batches`：多SKU导入、生产、暂停/继续、失败重试和批量导出；
-- `/api/jobs`：任务查询和排队任务恢复；
-- `/api/candidates`：候选文件与人工决策。
+- `/api/studio/drafts` 与 `/api/studio/history`
+- `/api/studio/assets` 与 `/api/studio/library`
+- `/api/studio/drafts/{id}/generate` 与 `/api/studio/execution/*`
+- `/api/studio/versions/*` 与 `/api/studio/reviews/*`
 
-项目和批次通过应用模块访问，不直接依赖 FastAPI 或 SQLite。生产流程通过深模块接口隔离图片模型、质检实现、文件存储和压缩导出。
+生图和质检执行器通过持久化队列边界接入，不能改写已提交的输入快照或重置修复次数。

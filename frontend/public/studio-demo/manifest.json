@@ -1,0 +1,211 @@
+{
+  "version": 1,
+  "title": "日常洗护 · 暖木生活",
+  "description": "使用本地商品参考，由 Codex 生图与文案能力制作。无需现场生成即可浏览；示例回放不冒充实时模型调用。",
+  "reference": {
+    "file": "laundry-product.jpg",
+    "name": "深色滚筒洗衣机 · 原始参考",
+    "width": 800,
+    "height": 800
+  },
+  "items": [
+    {
+      "id": "laundry-marketing",
+      "title": "让洗护，回归从容",
+      "subtitle": "营销主图 · 原生中文文案",
+      "file": "laundry-marketing.png",
+      "width": 1254,
+      "height": 1254,
+      "purpose": "marketing",
+      "tool": "marketing_main_image",
+      "tags": [
+        "营销主图",
+        "暖木",
+        "图文生成"
+      ],
+      "review": {
+        "status": "completed",
+        "product": 88,
+        "copywriting": 100,
+        "layout": 94,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "示例成图实测为 1254×1254，保留原始像素，不冒充原生 2K。细小面板文字仍需业务核对。",
+        "findings": [
+          {
+            "kind": "uncertain",
+            "message": "产品面板小字受像素与反光影响，无法逐字确认。",
+            "evidence": "参考与成图顶部控制面板的小字。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: ads-marketing. Asset type: native Chinese e-commerce marketing main image for a local product-content studio demo. Input image 1 is the EXACT product identity reference: a graphite-black front-loading washing machine with a LEFT open round glass door, a brushed central dial and display on the upper right, visible right side. Preserve this geometry, color, open-door direction, controls, drum and existing product label; do not invent specifications. Create ONE polished square 2048x2048 advertising image, not a collage. Scene: quiet contemporary warm-white laundry room, pale oak, soft daylight, restrained premium home-appliance photography. Full product large at lower/right center with its door visible, nothing blocking controls or drum. Editorial generous whitespace above. Render exact Chinese headline '让洗护，回归从容' and smaller subheading '日常洗护的理想搭档'. No price, no capacity, no certification, no invented technical claims, no added logos or watermarks. Typography precise dark charcoal Chinese sans-serif, high contrast, orderly margins. Photorealistic material texture and physically plausible floor contact. The text must be generated as part of the image."
+    },
+    {
+      "id": "laundry-scene",
+      "title": "把洗护，融入日常",
+      "subtitle": "场景图 · 无营销文字",
+      "file": "laundry-scene.png",
+      "width": 1086,
+      "height": 1448,
+      "purpose": "scene",
+      "tool": "scene_image",
+      "tags": [
+        "场景图",
+        "居家",
+        "自然光"
+      ],
+      "review": {
+        "status": "completed",
+        "product": 90,
+        "copywriting": null,
+        "layout": 94,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "开放门方向和深色外观与参考一致；没有新增营销文案。实测源图 1086×1448。",
+        "findings": [
+          {
+            "kind": "uncertain",
+            "message": "面板标识在场景光线下较小，不能确认每个字符。",
+            "evidence": "顶部面板区域。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: product-mockup. Asset type: one vertical 3:4 e-commerce lifestyle scene, around 1536x2048. Image 1 is the product identity reference, not a style example. Preserve EXACT graphite black washing machine, upper central metal dial, upper-right display, left-hinged open round door, stainless drum, front panel and visible right side. Do not redesign it. Premium realistic laundry alcove in a sunlit home, warm limestone and walnut, naturally scaled cabinetry that does NOT enclose the open door, soft linen basket and folded towel. Product fully visible with believable floor contact, open door unobstructed. Calm architectural editorial photography. NO added marketing text, no invented logos, no capability graphics, no numerical claims. Keep original labels only. One continuous photograph, no panels or collage."
+    },
+    {
+      "id": "laundry-selling",
+      "title": "细节之处，看见用心",
+      "subtitle": "卖点图 · 外观细节表达",
+      "file": "laundry-selling.png",
+      "width": 1254,
+      "height": 1254,
+      "purpose": "selling_point",
+      "tool": "selling_point_image",
+      "tags": [
+        "卖点图",
+        "细节",
+        "图文生成"
+      ],
+      "review": {
+        "status": "completed",
+        "product": 65,
+        "copywriting": 100,
+        "layout": 82,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "可用作效果展示，但外观标识和细节引线存在明确问题。无虚构容量或功效。",
+        "findings": [
+          {
+            "kind": "error",
+            "message": "原参考左上方的品牌标记在成图中缺失。",
+            "evidence": "对比原图与成图控制面板左侧区域。",
+            "critical": false
+          },
+          {
+            "kind": "error",
+            "message": "内筒放大细节的引线指向玻璃门，不是内筒。",
+            "evidence": "圆形放大图向右延伸的引线落点。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: ads-marketing. Asset type: single square product selling-point detail image, 1:1. Input image 1 is exact product appearance reference. Preserve graphite black front-loading washing machine, left hinged open round glass door, metal central dial and right display; no remodeling. Warm ivory premium editorial commerce layout consistent with a contemporary light oak home. Large full appliance right-lower half, small enlarged circular crop of the genuine stainless inner drum as a supporting detail, connected by a thin restrained line; no fictitious technology visualization. Generate exact Chinese headline '细节之处，看见用心' at upper left. Three short callouts only: '直观操控面板' / '金属质感内筒' / '简约深色外观'. These describe visible appearance, not unverified performance. Balanced typography, dark charcoal sans serif with generous margins. No capacity, washing efficacy, antibacterial rate, power, price, warranties or certification. No new brand marks. One coherent polished layout, photorealistic appliance, no text overlap with product."
+    },
+    {
+      "id": "laundry-aplus-hero",
+      "title": "A calmer laundry day",
+      "subtitle": "A+ 首屏 · 英文图文生成",
+      "file": "laundry-aplus-hero.png",
+      "width": 1672,
+      "height": 941,
+      "purpose": "hero",
+      "tool": "a_plus_detail",
+      "tags": ["A+ 详情图", "English", "横版首屏"],
+      "review": {
+        "status": "completed",
+        "product": 72,
+        "copywriting": 100,
+        "layout": 95,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "英文标题准确，主体与文案分区清楚；实际输出为 1672×941。商品控制面板和右侧结构有可确认偏差，适合作为待继续 AI 修改的案例。",
+        "findings": [
+          {
+            "kind": "error",
+            "message": "控制面板的分区、显示屏比例与原始参考不完全一致。",
+            "evidence": "对比参考图和成图上方旋钮及显示屏区域。",
+            "critical": false
+          },
+          {
+            "kind": "uncertain",
+            "message": "右侧机身的多处凹槽细节需要进一步核对。",
+            "evidence": "成图右侧板与原参考可见侧板。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: ads-marketing. Asset type: one premium Amazon A+ hero module, 16:9 horizontal. Input image is the exact product identity reference. Preserve the graphite-black front-loading washer, left-open round glass door, upper center metal dial, upper-right display, visible right side, proportions and visible product marks; do not invent specifications. Scene: calm warm white laundry room, pale oak shelves, soft morning light, generous negative space on the left. Product large on the right with physically plausible contact and no obstruction. Render exact English headline 'A calmer laundry day' and exact subheading 'Thoughtful details. A place in your home.' Clean dark charcoal sans serif, high contrast and safe margins. No capacity, efficacy, certification, price or feature claims. No new logos or watermark. The text is part of the generated image."
+    },
+    {
+      "id": "laundry-aplus-features",
+      "title": "Thoughtful by design",
+      "subtitle": "A+ 核心卖点模块 · 英文图文生成",
+      "file": "laundry-aplus-features.png",
+      "width": 1672,
+      "height": 941,
+      "purpose": "selling_point",
+      "tool": "a_plus_detail",
+      "tags": ["A+ 详情图", "English", "核心卖点"],
+      "review": {
+        "status": "completed",
+        "product": 70,
+        "copywriting": 100,
+        "layout": 94,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "三个可见外观细节表达清晰，英文标题和标注准确；实际输出为 1672×941。机身侧面与控制面板仍有偏差，不应视为原商品完全还原。",
+        "findings": [
+          {
+            "kind": "error",
+            "message": "控制面板与右侧机身结构与原始参考不完全一致。",
+            "evidence": "对比原始参考中旋钮、显示屏和右侧板。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: ads-marketing. Asset type: one premium Amazon A+ multi-feature module, 16:9 horizontal. Input image is the exact product identity reference. Preserve the graphite-black front-loading washer, left-open round glass door, upper center metal dial, upper-right display and visible right side; do not invent specifications. Show one large product at left and three restrained close-up panels at right. Render exact headline 'Thoughtful by design' and exact labels 'Clear controls', 'Metal drum detail', and 'Refined dark finish'. These describe visible appearance only. No capacity, performance, certification or price claims. Warm-white and pale-oak editorial laundry setting, precise English sans serif, high contrast and safe margins."
+    },
+    {
+      "id": "laundry-aplus-scene",
+      "title": "Designed for everyday calm",
+      "subtitle": "A+ 场景模块 · 英文图文生成",
+      "file": "laundry-aplus-scene.png",
+      "width": 1672,
+      "height": 941,
+      "purpose": "scene",
+      "tool": "a_plus_detail",
+      "tags": ["A+ 详情图", "English", "生活场景"],
+      "review": {
+        "status": "completed",
+        "product": 74,
+        "copywriting": 100,
+        "layout": 96,
+        "brand": null,
+        "source": "Codex 视觉检查 · 2026-09-04",
+        "note": "文案、留白和家居氛围符合 A+ 模块表达；实际输出为 1672×941。商品结构不足以通过严格的原型一致性验收。",
+        "findings": [
+          {
+            "kind": "error",
+            "message": "上方控制区和右侧外观细节与原始参考存在可见偏差。",
+            "evidence": "对比原始参考的控制区分区及侧板开孔。",
+            "critical": false
+          }
+        ]
+      },
+      "prompt": "Use case: ads-marketing. Asset type: one premium Amazon A+ lifestyle module, 16:9 horizontal. Input image is the exact product identity reference. Preserve the graphite-black front-loading washer, left-open round glass door, upper metal dial, upper-right display and visible right side; do not invent specifications. Place the product large on the right in a calm warm-white laundry room with pale oak and soft daylight. Keep generous text space on the left. Render exact headline 'Designed for everyday calm' and exact subheading 'A considered presence in your home.' No performance, capacity, certification or price claims. Clean dark charcoal English sans serif, high contrast and safe margins."
+    }
+  ]
+}

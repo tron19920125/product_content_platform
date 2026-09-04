@@ -12,5 +12,6 @@ frontend/vite.config.d.ts
 .vite/
 .run/
 data/
+data-refactor/
 .env
 .codex/
