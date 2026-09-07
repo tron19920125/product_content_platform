@@ -223,5 +223,5 @@ def catalog(*, reference_limit: int, max_upload_bytes: int) -> dict:
         "generation_submission_available": True,
         "demo_available": True,
         "deployment_validation": "pending",
-        "note": "可提交 Codex 辅助执行任务并回放预置案例；尚无常驻图片执行器。尺寸是应用预设，后续常驻模型接入时需逐档验收。",
+        "note": "可提交智能生成任务并回放预置案例；尚无常驻图片执行器。尺寸是应用预设，后续常驻模型接入时需逐档验收。",
     }

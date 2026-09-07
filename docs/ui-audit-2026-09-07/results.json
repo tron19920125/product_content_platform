@@ -1,0 +1,118 @@
+[
+  {
+    "name": "rapid-tool-navigation",
+    "status": "PASS"
+  },
+  {
+    "name": "library-pick-returns-to-creation",
+    "status": "PASS"
+  },
+  {
+    "name": "cannot-remove-final-page",
+    "status": "PASS"
+  },
+  {
+    "name": "modal-focus-containment",
+    "status": "PASS"
+  },
+  {
+    "name": "deleted-current-draft-not-reopened",
+    "status": "PASS"
+  },
+  {
+    "name": "editor-discard-clears-pending-save-and-undo",
+    "status": "PASS"
+  },
+  {
+    "name": "upload-does-not-cross-drafts",
+    "status": "PASS"
+  },
+  {
+    "name": "compact-settings-have-close-button",
+    "status": "PASS"
+  },
+  {
+    "name": "navigation-to-library-cancels-tool-load",
+    "status": "PASS"
+  },
+  {
+    "name": "tool-and-demo-replay-survive-reload",
+    "status": "PASS"
+  },
+  {
+    "name": "history-error-is-visible-and-handled",
+    "status": "PASS"
+  },
+  {
+    "name": "autosave-failure-preserves-input-and-retries",
+    "status": "PASS"
+  },
+  {
+    "name": "a-plus-planning-failure-preserves-edits",
+    "status": "PASS"
+  },
+  {
+    "name": "picker-excludes-trash-and-shows-errors-above-dialog",
+    "status": "PASS"
+  },
+  {
+    "name": "empty-library-search-and-rename-keyboard",
+    "status": "PASS"
+  },
+  {
+    "name": "selected-export-and-page-order",
+    "status": "PASS"
+  },
+  {
+    "name": "editor-finish-is-atomic-and-downloads-match",
+    "status": "PASS"
+  },
+  {
+    "name": "editor-lock-undo-redo-and-text-shortcuts",
+    "status": "PASS"
+  },
+  {
+    "name": "submit-double-click-and-stop",
+    "status": "PASS"
+  },
+  {
+    "name": "lost-submit-response-does-not-duplicate-jobs",
+    "status": "PASS"
+  },
+  {
+    "name": "library-work-continue-reuse-and-long-image",
+    "status": "PASS"
+  },
+  {
+    "name": "reference-limit-is-checked-before-upload",
+    "status": "PASS"
+  },
+  {
+    "name": "all-five-tools-keep-independent-drafts",
+    "status": "PASS"
+  },
+  {
+    "name": "new-creation-preserves-previous-draft",
+    "status": "PASS"
+  },
+  {
+    "name": "library-upload-trash-restore-purge",
+    "status": "PASS"
+  },
+  {
+    "name": "editor-drag-resize-image-and-persist",
+    "status": "PASS"
+  },
+  {
+    "name": "layout-1280",
+    "status": "PASS"
+  },
+  {
+    "name": "layout-1440",
+    "status": "PASS"
+  },
+  {
+    "name": "layout-1000",
+    "status": "PASS"
+  }
+]

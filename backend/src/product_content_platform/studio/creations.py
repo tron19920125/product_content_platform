@@ -93,6 +93,8 @@ class Creations:
                     raise RevisionConflict("提交标识已用于其他参数，不能复用")
                 return self._operation(db, existing["id"])
             draft = self.workspace._find(db, "studio_drafts", draft_id)
+            if draft["deleted_at"]:
+                raise ValueError("请先从回收站恢复创作记录，再提交生成")
             if draft["revision"] != expected_revision:
                 raise RevisionConflict("输入已变化，请保存并使用最新版本提交")
             content = DraftContent.model_validate_json(draft["content"])

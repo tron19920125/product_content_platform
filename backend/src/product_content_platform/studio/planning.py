@@ -44,7 +44,7 @@ class CodexPlanner:
         if content.tool != Tool.A_PLUS:
             raise ValueError("只有 A+ 详情图需要先生成模块方案")
         if not self.available:
-            raise RuntimeError("本机未找到 Codex 执行程序，仍可手动编辑当前模块方案")
+            raise RuntimeError("智能规划服务当前不可用，仍可手动编辑当前模块方案")
         invalid = [fact for fact in content.facts if _invalid_fact(fact.name, fact.value, fact.source)]
         if invalid:
             raise ValueError("商品事实尚未填写完整，请补充实际值和来源或删除空白条目")
@@ -63,18 +63,18 @@ class CodexPlanner:
                 command, input=prompt, text=True, capture_output=True, timeout=150, check=False,
             )
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError("Codex 规划超时，当前模块方案未被覆盖") from error
+            raise RuntimeError("智能规划超时，当前模块方案未被覆盖") from error
         if result.returncode != 0 or not output_path.is_file():
             message = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "没有返回方案"
-            raise RuntimeError(f"Codex 规划失败：{message[:300]}")
+            raise RuntimeError(f"智能规划失败：{message[:300]}")
         try:
             plan = PlanResult.model_validate_json(output_path.read_text(encoding="utf-8"))
         except (ValueError, OSError) as error:
-            raise RuntimeError("Codex 返回的模块方案格式无效，当前方案未被覆盖") from error
+            raise RuntimeError("智能规划返回的模块方案格式无效，当前方案未被覆盖") from error
         if len({page.purpose for page in plan.pages}) != len(plan.pages):
-            raise RuntimeError("Codex 返回了重复模块，当前方案未被覆盖")
+            raise RuntimeError("智能规划返回了重复模块，当前方案未被覆盖")
         if any(page.purpose not in A_PLUS_PURPOSES for page in plan.pages):
-            raise RuntimeError("Codex 返回了不支持的模块类型，当前方案未被覆盖")
+            raise RuntimeError("智能规划返回了不支持的模块类型，当前方案未被覆盖")
         return plan
 
 

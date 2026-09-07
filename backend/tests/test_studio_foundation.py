@@ -126,6 +126,19 @@ class StudioApiTest(unittest.TestCase):
             "expected_revision": draft["revision"], "content": draft["content"],
         })
 
+    def test_trashed_draft_rejects_stale_save_and_new_generation(self):
+        draft = self.draft()
+        draft["content"]["product_asset_ids"] = [self.upload()["id"]]
+        draft = self.save(draft).json()
+        self.client.post(f"/api/studio/drafts/{draft['id']}/lifecycle", json={"action": "trash"})
+        draft["content"]["product_name"] = "stale browser edit"
+        self.assertEqual(422, self.save(draft).status_code)
+        response = self.client.post(f"/api/studio/drafts/{draft['id']}/generate", json={
+            "expected_revision": draft["revision"], "mode": "codex", "submit_key": "trashed-draft",
+        })
+        self.assertEqual(422, response.status_code)
+        self.assertIn("回收站", response.json()["detail"])
+
     def test_startup_has_no_fake_history_legacy_tables_or_generated_results(self):
         health = self.client.get("/api/health").json()
         self.assertEqual("studio", health["workspace"])

@@ -30,7 +30,7 @@ def main() -> None:
     asset = workspace.upload_image(args.image.name, "style", args.image.read_bytes())
     version = Creations(workspace).complete(
         args.job_id, asset_id=asset["id"], review=review,
-        provenance={"provider": "codex-built-in", "note": "由 Codex 生图并完成证据化检查；实际像素由素材记录保存。"},
+        provenance={"provider": "platform-image-worker", "note": "图片已生成并完成质量检查；实际像素由素材记录保存。"},
     )
     print(json.dumps(version, ensure_ascii=False, indent=2))
 

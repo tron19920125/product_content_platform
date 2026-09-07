@@ -181,7 +181,7 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
             identifier, apply_plan(content, result), expected_revision=payload.expected_revision,
         )
         request.app.state.workspace.record_plan(
-            identifier, DraftContent.model_validate(saved["content"]), label="Codex 模块方案",
+            identifier, DraftContent.model_validate(saved["content"]), label="智能模块方案",
         )
         return saved
 

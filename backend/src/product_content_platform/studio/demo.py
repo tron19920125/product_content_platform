@@ -37,13 +37,13 @@ class DemoPack:
         ids = content["product_asset_ids"]
         manifest = self.manifest()
         if len(ids) != 1 or content["style_asset_ids"] or content["logo_asset_id"]:
-            raise ValueError("示例回放仅使用预置商品；自定义图片请提交 Codex 任务")
+            raise ValueError("示例回放仅使用预置商品；自定义图片请提交生成任务")
         path, _ = self.workspace.asset_file(ids[0], preview=False)
         reference = self.file(manifest["reference"]["file"])
         if hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(reference.read_bytes()).digest():
             raise ValueError("当前商品不是演示商品，不能用旧示例替代生成")
         if operation["kind"] != "generate":
-            raise ValueError("自定义 AI 修改应提交 Codex；不能用未修改的示例冒充结果")
+            raise ValueError("自定义 AI 修改应提交生成任务；不能用未修改的示例冒充结果")
 
         # A recorded result is valid only for the exact pre-filled request. Page IDs
         # are local identity and intentionally excluded from the comparison.
@@ -62,7 +62,7 @@ class DemoPack:
             return result
 
         if comparable(content) != comparable(expected):
-            raise ValueError("示例输入已改动，请提交 Codex 生成；不能用预置成图代替新请求")
+            raise ValueError("示例输入已改动，请重新提交生成；不能用预置成图代替新请求")
 
     @staticmethod
     def _fill_a_plus_plan(content: dict, manifest: dict) -> None:
@@ -100,13 +100,13 @@ class DemoPack:
                 tool = Tool(operation["snapshot"]["content"]["tool"])
                 items = self._matching_items(self.manifest(), tool, purpose)
                 if not items:
-                    raise ValueError("当前用途没有预置示例，请提交 Codex 进行生成")
+                    raise ValueError("当前用途没有预置示例，请提交生成任务")
                 item = items[(job["variant"] - 1) % len(items)]
                 path = self.file(item["file"])
                 asset = self.workspace.upload_image(path.name, "style", path.read_bytes())
                 self.creations.complete(job["id"], asset_id=asset["id"], review=Review.model_validate(item["review"]),
-                                        provenance={"provider": "codex-recorded-demo", "demo_id": item["id"],
-                                                    "note": "回放预置 Codex 成图，不是本次实时生成；保留示例实际像素，不按请求尺寸拉伸。"})
+                                        provenance={"provider": "platform-recorded-demo", "demo_id": item["id"],
+                                                    "note": "回放预置示例，不是本次实时生成；保留示例实际像素，不按请求尺寸拉伸。"})
             except (ValueError, KeyError, OSError) as error:
                 self.creations.fail(job["id"], message=str(error), outcome_known=True)
 

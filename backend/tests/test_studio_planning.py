@@ -45,7 +45,7 @@ class PlanningTest(unittest.TestCase):
                 self.assertEqual(2, response.json()["revision"])
                 self.assertEqual(1, planner.calls)
                 plans = client.get(f"/api/studio/drafts/{draft['id']}/plans").json()
-                self.assertEqual(["Codex 模块方案", "重新规划前"], [row["label"] for row in plans])
+                self.assertEqual(["智能模块方案", "重新规划前"], [row["label"] for row in plans])
                 before = next(row for row in plans if row["label"] == "重新规划前")
                 restored = client.post(
                     f"/api/studio/drafts/{draft['id']}/plans/{before['id']}/restore",

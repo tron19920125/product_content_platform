@@ -124,6 +124,8 @@ class StudioWorkspace:
             # Serializes revision checks and reference validation with the write.
             db.execute("BEGIN IMMEDIATE")
             old = self._find(db, "studio_drafts", identifier)
+            if old["deleted_at"]:
+                raise ValueError("请先从回收站恢复创作记录，再继续编辑")
             if old["revision"] != expected_revision:
                 raise RevisionConflict("草稿已在其他页面更新，请重新加载后再保存")
             if old["tool"] != content.tool.value:
