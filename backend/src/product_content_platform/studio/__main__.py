@@ -1,9 +1,11 @@
-"""Isolated, foreground-only development entry point. No legacy .env loading."""
+"""Isolated Studio entry point with explicit opt-in Azure credential loading."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+from dataclasses import replace
+from pathlib import Path
 from copy import deepcopy
 
 import uvicorn
@@ -16,10 +18,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Start the isolated studio input backend (not the old UI).")
     parser.add_argument("--check", action="store_true", help="Validate configuration without creating files or starting a server")
     parser.add_argument("--port", type=int, default=os.environ.get("PCP_STUDIO_PORT", "8010"))
+    parser.add_argument("--azure-env", type=Path, help="Explicitly load Azure credentials from this file and start the automatic executor")
     arguments = parser.parse_args()
     if not 1 <= arguments.port <= 65535:
         parser.error("port must be between 1 and 65535")
     settings = StudioSettings.from_environment()
+    if arguments.azure_env:
+        from .azure import load_azure_environment
+        load_azure_environment(arguments.azure_env)
+        settings = replace(settings, generation_provider="azure")
     settings.validate_data_root()
     print(json.dumps({
         "workspace": "studio", "data_root": str(settings.data_root),
@@ -27,6 +34,8 @@ def main() -> None:
         "stage": "local-studio-beta", "generation_available": False,
         "generation_submission_available": True, "demo_available": True,
         "legacy_environment_loaded": False,
+        "azure_environment_loaded": bool(arguments.azure_env),
+        "generation_provider": settings.generation_provider,
     }, ensure_ascii=False), flush=True)
     if arguments.check:
         return

@@ -74,6 +74,21 @@ class CreationTest(unittest.TestCase):
             self.submit(instruction="different request")
         self.assertEqual(1, len(self.creations.snapshot(self.draft["id"])["operations"]))
 
+    def test_history_distinguishes_waiting_from_actual_execution(self):
+        self.submit()
+        self.assertEqual("queued", self.creations.history()[0]["history_status"])
+        job = self.creations.claim()
+        self.assertEqual("processing", self.creations.history()[0]["history_status"])
+        self.finish(job)
+        self.assertEqual("completed", self.creations.history()[0]["history_status"])
+
+    def test_unknown_result_is_not_hidden_by_another_queued_job(self):
+        self.submit()
+        self.creations.claim()
+        self.creations.recover()
+        self.submit(key="another")
+        self.assertEqual("unknown", self.creations.history()[0]["history_status"])
+
     def test_incomplete_or_placeholder_fact_is_saved_but_never_generated(self):
         for facts in (
             [{"name": "容量", "value": "", "source": "规格书"}],

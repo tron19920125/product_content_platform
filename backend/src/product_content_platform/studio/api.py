@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -19,6 +20,8 @@ from .quality import Review
 from .quality_tasks import QualityChecks
 from .demo import DemoPack
 from .planning import CodexPlanner, Planner, apply_plan
+from .azure import AzureServices, AzurePlanner
+from .worker import StudioWorker, WorkspaceLease
 
 
 class CreateDraft(StrictModel):
@@ -93,17 +96,30 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.workspace = StudioWorkspace(configuration)
-        app.state.creations = Creations(app.state.workspace)
-        app.state.creations.recover()
-        app.state.creations.clean_expired_drafts()
-        app.state.quality = QualityChecks(app.state.workspace, app.state.creations)
-        app.state.quality.recover()
-        app.state.library = Library(app.state.workspace)
-        app.state.library.clean_expired()
-        app.state.demo = DemoPack(app.state.workspace, app.state.creations)
-        app.state.planner = planner or CodexPlanner(configuration.data_root)
-        yield
+        configuration.initialize()
+        lease = WorkspaceLease(configuration.data_root)
+        app.state.worker = None
+        try:
+            app.state.workspace = StudioWorkspace(configuration)
+            app.state.creations = Creations(app.state.workspace)
+            app.state.creations.recover()
+            app.state.creations.clean_expired_drafts()
+            app.state.quality = QualityChecks(app.state.workspace, app.state.creations)
+            app.state.quality.recover()
+            app.state.library = Library(app.state.workspace)
+            app.state.library.clean_expired()
+            app.state.demo = DemoPack(app.state.workspace, app.state.creations)
+            app.state.azure = AzureServices() if configuration.generation_provider == "azure" else None
+            app.state.planner = planner or (AzurePlanner(app.state.azure) if app.state.azure else CodexPlanner(configuration.data_root))
+            app.state.worker = StudioWorker(app.state.workspace, app.state.creations, app.state.quality, app.state.azure) if app.state.azure else None
+            if app.state.worker:
+                app.state.worker.start()
+            yield
+        finally:
+            if app.state.worker:
+                await asyncio.to_thread(app.state.worker.stop)
+            if lease:
+                lease.close()
 
     app = FastAPI(title="Product Studio · Refactor", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
@@ -130,16 +146,31 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
 
     @app.get("/api/health")
     def health() -> dict:
+        worker = app.state.worker
         return {
             "status": "ok", "workspace": "studio", "stage": "local-studio-beta",
-            "generation_available": False, "generation_submission_available": True,
+            "generation_available": bool(worker and worker.available), "generation_submission_available": True,
             "demo_available": True, "planning_available": request_planner_available(app),
-            "azure_configured": False,
+            "azure_configured": bool(app.state.azure and app.state.azure.configured),
+            "generation_provider": configuration.generation_provider,
+            "executor_state": worker.state if worker else "unconfigured",
+            "generation_error": worker.error if worker else "",
+            "review_error": worker.review_error if worker else "",
         }
+
+    @app.post("/api/studio/service/recheck")
+    def recheck_service() -> dict:
+        if app.state.worker:
+            app.state.worker.recheck()
+        return health()
 
     @app.get("/api/studio/catalog")
     def get_catalog() -> dict:
-        return catalog(reference_limit=configuration.max_references, max_upload_bytes=configuration.max_upload_bytes)
+        result = catalog(reference_limit=configuration.max_references, max_upload_bytes=configuration.max_upload_bytes)
+        result["generation_available"] = bool(app.state.worker and app.state.worker.available)
+        if configuration.generation_provider == "azure":
+            result["note"] = "Azure 自动执行器已接入；支持的尺寸以实际任务返回为准。图片会先保存，再独立质检。"
+        return result
 
     @app.post("/api/studio/drafts", status_code=201)
     def create_draft(payload: CreateDraft, request: Request) -> dict:

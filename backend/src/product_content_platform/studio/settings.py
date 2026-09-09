@@ -10,6 +10,7 @@ class StudioSettings:
     data_root: Path
     max_references: int = 6
     max_upload_bytes: int = 25 * 1024 * 1024
+    generation_provider: str = "manual"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_root", self.data_root.expanduser().resolve())
@@ -17,6 +18,8 @@ class StudioSettings:
             raise ValueError("PCP_STUDIO_MAX_REFERENCES 必须在 1–16 之间")
         if self.max_upload_bytes < 1:
             raise ValueError("上传大小限制必须为正整数")
+        if self.generation_provider not in {"manual", "azure"}:
+            raise ValueError("PCP_STUDIO_GENERATION_PROVIDER 只能是 manual 或 azure")
 
     @classmethod
     def from_environment(cls) -> StudioSettings:
@@ -26,6 +29,7 @@ class StudioSettings:
         return cls(
             data_root=Path(os.environ.get("PCP_STUDIO_DATA_ROOT", str(default_root))),
             max_references=int(os.environ.get("PCP_STUDIO_MAX_REFERENCES", "6")),
+            generation_provider=os.environ.get("PCP_STUDIO_GENERATION_PROVIDER", "manual"),
         )
 
     def validate_data_root(self) -> None:

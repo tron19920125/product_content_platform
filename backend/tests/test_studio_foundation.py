@@ -145,8 +145,9 @@ class StudioApiTest(unittest.TestCase):
         self.assertFalse(health["generation_available"])
         self.assertEqual([], self.client.get("/api/studio/drafts").json())
         self.assertFalse((self.root / "platform.db").exists())
-        for name in ["production", "exports", "fonts", "cache", "logs", "run"]:
+        for name in ["production", "exports", "fonts", "cache", "logs"]:
             self.assertEqual([], list((self.root / name).iterdir()))
+        self.assertEqual(["azure-worker.lock"], [path.name for path in (self.root / "run").iterdir()])
         self.assertEqual(404, self.client.get("/api/projects").status_code)
 
     def test_catalog_exposes_limits_not_a_fake_deployment_guarantee(self):
@@ -212,10 +213,12 @@ class StudioApiTest(unittest.TestCase):
         self.assertEqual("", other["content"]["product_name"])
         listed = self.client.get("/api/studio/drafts", params={"tool": "scene_image"}).json()
         self.assertEqual([draft["id"]], [value["id"] for value in listed])
-        with TestClient(create_app(self.settings)) as reopened:
-            restored = reopened.get(f"/api/studio/drafts/{draft['id']}").json()
-            self.assertEqual(saved.json(), restored)
-            self.assertEqual(200, reopened.get(asset["source_url"]).status_code)
+        self.client.__exit__(None, None, None)
+        self.client = TestClient(create_app(self.settings))
+        self.client.__enter__()
+        restored = self.client.get(f"/api/studio/drafts/{draft['id']}").json()
+        self.assertEqual(saved.json(), restored)
+        self.assertEqual(200, self.client.get(asset["source_url"]).status_code)
 
     def test_stale_save_is_conflict_not_last_writer_wins(self):
         draft = self.draft()

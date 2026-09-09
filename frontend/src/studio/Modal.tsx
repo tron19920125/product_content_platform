@@ -16,7 +16,7 @@ export function Modal({title, children, onClose, wide = false, busy = false}: {t
     const previous = opener.current;
     dialogs.push(element);
     const focusable = () => Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]')).filter(item => item.getClientRects().length);
-    if (!element.contains(document.activeElement)) (focusable().find(item => item.matches('input,textarea,select')) ?? focusable()[0] ?? element).focus();
+    if (!element.contains(document.activeElement)) (focusable()[0] ?? element).focus({preventScroll: true});
     const onKey = (event: KeyboardEvent) => {
       if (dialogs.at(-1) !== element) return;
       if (event.key === "Escape") {event.preventDefault(); event.stopPropagation(); if (!pending.current) close.current();}

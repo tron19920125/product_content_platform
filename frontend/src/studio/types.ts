@@ -1,4 +1,5 @@
 export type Tool = "ecom_suite" | "a_plus_detail" | "marketing_main_image" | "scene_image" | "selling_point_image";
+export type StudioHealth = {status: "ok"; workspace: "studio"; generation_available: boolean; generation_submission_available: boolean; demo_available: boolean; planning_available: boolean; azure_configured: boolean; generation_provider?: string; executor_state?: string; generation_error?: string; review_error?: string};
 export type Output = {ratio: string; resolution: string};
 export type Page = {id: string; purpose: string; title: string; body: string; visual_goal: string; output: Output | null; skipped: boolean};
 export type Content = {tool: Tool; product_asset_ids: string[]; style_asset_ids: string[]; logo_asset_id: string | null; product_name: string; sku: string; category: string; requirements: string; facts: {name: string; value: string; source: string}[]; market: string; style: string; brand_color: string; brand_font: string; text_mode: string; output: Output; candidate_count: number; pages: Page[]};

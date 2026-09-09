@@ -1,4 +1,4 @@
-import type {Asset, Catalog, Content, DemoPack, Draft, Layer, LibraryEntry, PlanVersion, Results, Tool, Version} from "./types";
+import type {Asset, Catalog, Content, DemoPack, Draft, Layer, LibraryEntry, PlanVersion, Results, StudioHealth, Tool, Version} from "./types";
 
 const origin = (import.meta.env.VITE_STUDIO_API_ORIGIN as string | undefined) ?? "";
 export const mediaUrl = (value: string) => value.startsWith("/api/") ? `${origin}${value}` : value;
@@ -15,6 +15,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 const json = (method: string, body: unknown) => ({method, body: JSON.stringify(body)});
 export const studio = {
+  recheckService: () => request<StudioHealth>("/service/recheck", json("POST", {})),
+  health: async (): Promise<StudioHealth> => {
+    const response = await fetch(`${origin}/api/health`, {cache: "no-store", signal: AbortSignal.timeout(5000)});
+    if (!response.ok) throw new Error("创作服务未连接");
+    const value = await response.json();
+    if (value.status !== "ok" || value.workspace !== "studio" ||
+        ["generation_available", "generation_submission_available", "demo_available", "planning_available", "azure_configured"].some(key => typeof value[key] !== "boolean")) throw new Error("创作服务状态无法确认");
+    return value;
+  },
   catalog: () => request<Catalog>("/catalog"),
   demos: () => fetch("/studio-demo/manifest.json").then(r => {if (!r.ok) throw new Error("演示素材未安装"); return r.json() as Promise<DemoPack>;}),
   drafts: (tool?: Tool, trash = false) => request<Draft[]>(`/drafts?trash=${trash}${tool ? `&tool=${tool}` : ""}`),

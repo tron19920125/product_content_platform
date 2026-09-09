@@ -17,11 +17,36 @@
 新 Studio 默认不读取旧 `.env`，不调用 Azure，也不依赖旧平台的项目、模板、审批或演示数据。
 
 - 六张 Codex 生成的商品图已作为静态示例资源随前端提供，可直接浏览；“回放示例”会明确标记来源，不冒充本次实时生成。
-- 自定义生图会按页和候选数生成持久化任务，由 Codex 执行端领取。仓库提供 `scripts/next_codex_job.py` 和 `scripts/complete_codex_job.py`，目前不宣称已有常驻的全自动图片 Worker。
-- A+ 规划已接入本机 Codex CLI 适配器，在当前运行环境允许外部文本处理时执行。界面在每次发送前明确告知范围；商品图不随规划请求发送。
+- 默认手动模式下，自定义生图生成持久化队列，由 `scripts/next_codex_job.py` 和 `scripts/complete_codex_job.py` 辅助执行。
+- 显式启用 Azure 后，服务自带常驻执行器，自动处理普通生图、AI 修改和一次低分修复；示例回放保持独立。图片收到后先保存，再由独立队列完成质检。
+- A+ 规划在 Azure 模式下使用原文案模型，手动模式下使用本机 Codex CLI 适配器；商品图不随规划请求发送。
 - 质检对 AI 底图生效，人工图层不重检。质检服务失败最多自动重试两次，仍失败时保留“检查未完成”，可手动重检。
 
 Codex 辅助执行的具体操作见 [`docs/本地Codex执行说明.md`](docs/本地Codex执行说明.md)。
+
+### 服务配置提醒
+
+右上角“服务配置”显示创作服务、自动生图、智能规划、Azure 接入和示例回放的实际状态。页面会定期检查连接，也可手动“重新检测”；断线时保留当前输入并提示恢复服务。
+
+手动模式下，自定义任务先提示“仅加入队列”。Azure 模式下，认证检查通过后自动执行；配置错误时阻止新提交并显示恢复步骤。排队任务显示“等待执行”，只有领取后的任务才显示“生成中”。页面提供认证、权限、端点、配额与网络错误提示，不返回服务端密钥或原始错误响应。
+
+已有排队任务会继续处理，无需重复提交。明确失败的任务可手动重试；超时或连接中断导致的结果待确认任务不会自动重发。服务中断时，已保存的 Azure 响应会在下次启动时恢复成图；没有收到响应的任务保留“结果待确认”。同一工作区只允许一个服务进程，避免重复执行和错误恢复。
+
+### 恢复原 Azure 配置（Windows）
+
+在构建前端后运行 `scripts/start_studio.ps1`，会显式读取仓库 `.env` 中的 `AZURE_*` 配置，启用后台执行器并保留独立的 `data-refactor/` 数据目录。不会加载旧版 `PCP_DATA_ROOT` 等设置，也不会改写 `.env`。日志位于 `.run/studio-azure-*.log` 和 `data-refactor/logs/backend.log`。
+
+```powershell
+.\scripts\start_studio.ps1
+```
+
+也可前台启动（先设置 `PYTHONPATH=backend/src`）：
+
+```powershell
+.\.venv\Scripts\python.exe -m product_content_platform.studio --port 8010 --azure-env .env
+```
+
+通过已有进程环境配置时，设置 `PCP_STUDIO_GENERATION_PROVIDER=azure`；省略则保持手动模式。认证支持原 `AZURE_AUTH_MODE`、图像端点/部署、文案模型及 API Key/Entra 登录。恢复登录后可在网页重新检测；修改配置文件后需要重启服务。停止服务前应等待执行中的请求完成。
 
 ## 本地启动
 

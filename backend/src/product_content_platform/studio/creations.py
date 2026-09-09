@@ -144,14 +144,15 @@ class Creations:
                                (str(uuid4()), identifier, page.id, variant, "ai_edit" if source else "generate", source_version_id, selection, now, now))
             return self._operation(db, identifier)
 
-    def claim(self, operation_id: str | None = None) -> dict | None:
+    def claim(self, operation_id: str | None = None, *, mode: str | None = None) -> dict | None:
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT COUNT(*) FROM studio_jobs WHERE status='running'").fetchone()[0] >= 2:
                 return None
             row = db.execute("""SELECT j.* FROM studio_jobs j JOIN studio_operations o ON j.operation_id=o.id
                 WHERE j.status='queued' AND o.stopped=0 AND (? IS NULL OR o.id=?)
-                ORDER BY j.created_at, j.variant, j.id LIMIT 1""", (operation_id, operation_id)).fetchone()
+                AND (? IS NULL OR o.mode=?)
+                ORDER BY j.created_at, j.variant, j.id LIMIT 1""", (operation_id, operation_id, mode, mode)).fetchone()
             if row is None:
                 return None
             db.execute("UPDATE studio_jobs SET status='running', updated_at=? WHERE id=?", (timestamp(), row["id"]))
@@ -251,10 +252,12 @@ class Creations:
                 statuses = [row[0] for row in db.execute("""SELECT j.status FROM studio_jobs j
                     JOIN studio_operations o ON o.id=j.operation_id WHERE o.draft_id=?""", (record["id"],))]
                 version_count = db.execute("SELECT COUNT(*) FROM studio_versions WHERE draft_id=?", (record["id"],)).fetchone()[0]
-                if any(value in {"running", "queued"} for value in statuses):
+                if "running" in statuses:
                     status = "processing"
                 elif any(value == "unknown" for value in statuses):
                     status = "unknown"
+                elif "queued" in statuses:
+                    status = "queued"
                 elif any(value == "failed" for value in statuses) and version_count:
                     status = "partial"
                 elif any(value == "failed" for value in statuses):
