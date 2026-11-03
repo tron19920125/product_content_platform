@@ -13,34 +13,33 @@ from product_content_platform.studio.creations import Creations
 from product_content_platform.studio.demo import DemoPack
 from product_content_platform.studio.execution import package_job, package_review
 from product_content_platform.studio.library import Library
-from product_content_platform.studio.quality import Finding, Review, should_repair
+from product_content_platform.studio.quality import Finding, Review
 from product_content_platform.studio.quality_tasks import QualityChecks
 from product_content_platform.studio.settings import StudioSettings
 from product_content_platform.studio.workspace import RevisionConflict, StudioWorkspace
 
 
 def review(score):
-    return Review(status="completed", product=float(score), layout=float(score), source="test-fixture")
+    return Review(status="completed", summary="主体清楚，标题可提高对比度。", strengths=["商品完整"],
+                  findings=[Finding(kind="suggestion", message="标题对比度偏低", evidence="浅色标题接近背景色",
+                                    action="仅加深标题文字颜色，保留构图、商品和文案内容。")], source="test-fixture")
 
 
 class QualityTest(unittest.TestCase):
-    def test_exact_repair_threshold_and_unknown_status(self):
-        self.assertTrue(should_repair(review(59), repair_used=False))
-        self.assertFalse(should_repair(review(60), repair_used=False))
-        self.assertFalse(should_repair(review(20), repair_used=True))
-        self.assertFalse(should_repair(review(20), repair_used=False, stopped=True))
-        self.assertFalse(should_repair(Review(status="unavailable"), repair_used=False))
-        self.assertIsNone(Review(status="checking", product=90.).score)
+    def test_review_schema_and_legacy_records_have_no_numeric_ratings(self):
+        legacy = Review.model_validate({"status": "completed", "product": 10., "layout": 99., "score": 40., "note": "原点评"})
+        self.assertEqual("原点评", legacy.summary)
+        for key in ("score", "product", "copywriting", "layout", "brand"):
+            self.assertNotIn(key, legacy.public())
+            self.assertNotIn(key, Review.model_json_schema()["properties"])
+        self.assertEqual([], Review(status="checking", findings=review(40).findings).repair_actions)
 
-    def test_only_evidence_backed_critical_errors_cap_score(self):
-        critical = Finding(kind="error", message="型号不符", evidence="底图标记 X，而参考为 Y", critical=True)
-        result = Review(status="completed", product=96., layout=98., findings=[critical])
-        self.assertEqual(59, result.score)
-        uncertainty = Finding(kind="uncertain", message="反光较强，标签待核对")
-        result = Review(status="completed", product=96., layout=98., findings=[uncertainty])
-        self.assertGreater(result.score, 90)
+    def test_uncertainty_never_becomes_a_repair_instruction(self):
+        uncertainty = Finding(kind="uncertain", message="标签待核对", action="猜测补写型号")
+        self.assertEqual("", uncertainty.action)
+        self.assertEqual([], Review(status="completed", summary="待核对", findings=[uncertainty]).repair_actions)
         with self.assertRaises(ValueError):
-            Finding(kind="suggestion", message="我不喜欢这个背景", critical=True)
+            Finding(kind="error", message="型号不符", action="改成别的型号")
 
 
 class CreationTest(unittest.TestCase):
@@ -145,33 +144,35 @@ class CreationTest(unittest.TestCase):
         ))
         self.assertFalse(version["provenance"]["matches_requested_pixels"])
 
-    def test_single_repair_survives_low_repair_and_repeated_result_delivery(self):
+    def test_repair_requires_explicit_request_and_is_idempotent(self):
         operation = self.submit()
         first = self.creations.claim(operation["id"])
         version = self.finish(first, 40)
-        same = self.finish(first, 40)
-        self.assertEqual(version["id"], same["id"])
-        repair = self.creations.claim(operation["id"])
-        self.assertEqual("repair", repair["kind"])
-        self.finish(repair, 50)
+        self.assertEqual(version["id"], self.finish(first, 40)["id"])
         self.assertIsNone(self.creations.claim(operation["id"]))
-        snapshot = self.creations.snapshot(self.draft["id"])
-        self.assertEqual(2, len(snapshot["versions"]))
-        self.assertEqual(2, len(snapshot["operations"][0]["jobs"]))
+        repaired = self.creations.repair(version["id"], submit_key="repair-request")
+        self.assertEqual(repaired["id"], self.creations.repair(version["id"], submit_key="repair-request")["id"])
+        self.assertEqual(repaired["id"], self.creations.repair(version["id"], submit_key="duplicate-click")["id"])
+        repair_job = self.creations.claim(repaired["id"])
+        self.assertEqual("repair", repair_job["kind"])
+        result = self.finish(repair_job, 20)
+        self.assertEqual(version["id"], result["parent_id"])
+        self.assertIsNone(self.creations.claim())
+        self.assertEqual(2, len(self.creations.snapshot(self.draft["id"])["versions"]))
 
     def test_repair_does_not_steal_user_selection(self):
         operation = self.submit()
         first = self.finish(self.creations.claim(operation["id"]), 40)
         self.creations.select(self.draft["id"], self.page_id, first["id"])
-        fixed = self.finish(self.creations.claim(operation["id"]), 90)
+        repair = self.creations.repair(first["id"], submit_key="fix")
+        fixed = self.finish(self.creations.claim(repair["id"]), 90)
         self.assertNotEqual(first["id"], fixed["id"])
         self.assertEqual(first["id"], self.creations.snapshot(self.draft["id"])["selections"][0]["version_id"])
 
-    def test_higher_repair_is_selected_without_manual_intervention(self):
-        operation = self.submit()
-        self.finish(self.creations.claim(operation["id"]), 40)
-        fixed = self.finish(self.creations.claim(operation["id"]), 90)
-        self.assertEqual(fixed["id"], self.creations.snapshot(self.draft["id"])["selections"][0]["version_id"])
+    def test_new_candidate_does_not_replace_the_current_image(self):
+        original = self.finish(self.creations.claim(self.submit()["id"]), 40)
+        self.finish(self.creations.claim(self.submit("another")["id"]), 99)
+        self.assertEqual(original["id"], self.creations.snapshot(self.draft["id"])["selections"][0]["version_id"])
 
     def test_stop_keeps_inflight_result_without_dispatching_repair(self):
         operation = self.submit()
@@ -204,7 +205,7 @@ class CreationTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.workspace.get_draft(self.draft["id"])
 
-    def test_quality_check_retries_twice_then_allows_manual_recheck_and_one_repair(self):
+    def test_failed_commentary_can_be_retried_without_regenerating_the_image(self):
         operation = self.submit()
         job = self.creations.claim(operation["id"])
         version = self.creations.complete(
@@ -220,13 +221,13 @@ class CreationTest(unittest.TestCase):
         claimed = quality.claim()
         self.assertEqual(3, claimed["attempt"])
         self.assertEqual("failed", quality.fail(claimed["id"], message="still unavailable")["status"])
-        self.assertIsNone(self.creations.get_version(version["id"])["review"]["score"])
+        self.assertEqual("unavailable", self.creations.get_version(version["id"])["review"]["status"])
 
         quality.request(version["id"])
         recheck = quality.claim()
         quality.complete(recheck["id"], review(40))
-        repair = self.creations.claim(operation["id"])
-        self.assertEqual("repair", repair["kind"])
+        self.assertIsNone(self.creations.claim(operation["id"]))
+        self.assertEqual("completed", self.creations.get_version(version["id"])["review"]["status"])
 
     def test_quality_recheck_uses_the_generation_snapshot_not_later_draft_facts(self):
         operation = self.submit()
@@ -243,13 +244,26 @@ class CreationTest(unittest.TestCase):
         task = checks.claim()
         self.assertEqual([], package_review(task, self.workspace)["facts"])
 
-    def test_manual_version_cannot_be_sent_to_quality_check(self):
-        operation = self.submit()
-        generated = self.finish(self.creations.claim(operation["id"]))
+    def test_manual_version_is_reviewed_as_a_fresh_complete_composition(self):
+        generated = self.finish(self.creations.claim(self.submit()["id"]))
         edit = self.creations.save_edit(generated["id"], layers=[{"id": "text"}], expected_revision=0)
-        manual = self.creations.apply_edit(generated["id"], expected_revision=edit["revision"], rendered_asset_id=self.output["id"])
-        with self.assertRaisesRegex(ValueError, "手动编辑"):
-            QualityChecks(self.workspace, self.creations).request(manual["id"])
+        rendered = self.workspace.upload_image("manual.png", "style", self.image)
+        manual = self.creations.apply_edit(generated["id"], expected_revision=edit["revision"], rendered_asset_id=rendered["id"])
+        self.assertEqual("unavailable", manual["review"]["status"])
+        self.assertEqual([], manual["review"]["findings"])
+        checks = QualityChecks(self.workspace, self.creations)
+        checks.request(manual["id"])
+        task = checks.claim()
+        package = package_review(task, self.workspace)
+        self.assertEqual(str(self.workspace.asset_file(rendered["id"], preview=False)[0]), package["references"][0]["path"])
+        self.assertTrue(package["brief"]["manual_composition"])
+        self.assertTrue(any(reference["role"] == "before_edit" for reference in package["references"]))
+        checks.complete(task["id"], review(40))
+        repair = self.creations.repair(manual["id"], submit_key="manual-fix")
+        job = self.creations.claim(repair["id"])
+        self.assertEqual(rendered["id"], package_job(job, self.workspace)["references"][0]["asset_id"])
+        self.assertIn("保留这些文字及其排版", package_job(job, self.workspace)["prompt"])
+        self.assertEqual([], self.finish(job)["layers"])
 
     def test_editor_layers_are_normalized_and_reject_untrusted_image_references(self):
         operation = self.submit()
@@ -279,7 +293,7 @@ class CreationTest(unittest.TestCase):
         self.assertEqual(base["id"], self.creations.snapshot(self.draft["id"])["selections"][0]["version_id"])
         manual = self.creations.apply_edit(base["id"], expected_revision=saved["revision"], rendered_asset_id=self.output["id"])
         self.assertEqual("manual", manual["kind"])
-        self.assertEqual("AI 底图评分", manual["score_label"])
+        self.assertEqual("AI 设计点评", manual["review_label"])
         self.creations.save_edit(manual["id"], layers=[{"id": "not-applied", "text": "未应用草稿"}], expected_revision=0)
         edited_operation = self.submit("edit", page_ids=[self.page_id], source_version_id=manual["id"], instruction="背景暖一点")
         job = self.creations.claim(edited_operation["id"])
@@ -331,11 +345,47 @@ class CreationTest(unittest.TestCase):
         copied = self.creations.restore_work(entry)
         self.assertNotEqual(self.draft["id"], copied["draft"]["id"])
         self.assertNotEqual(generated["id"], copied["results"]["versions"][0]["id"])
-        self.assertEqual(generated["review"]["score"], copied["results"]["versions"][0]["review"]["score"])
+        self.assertEqual(generated["review"], copied["results"]["versions"][0]["review"])
         self.assertEqual(generated["id"], copied["results"]["versions"][0]["provenance"]["copied_from"])
         edited = {**copied["draft"]["content"], "product_name": "副本中的新名称"}
         self.workspace.save_draft(copied["draft"]["id"], DraftContent.model_validate(edited), expected_revision=1)
         self.assertNotEqual("副本中的新名称", self.workspace.get_draft(self.draft["id"])["content"]["product_name"])
+
+
+    def test_repair_rejects_unfinished_uncertain_and_rechecking_reviews(self):
+        version = self.finish(self.creations.claim(self.submit()["id"]))
+        for state in [Review(), Review(status="checking"), Review(status="completed", summary="核对", findings=[Finding(kind="uncertain", message="待核对")])]:
+            self.creations.update_review(version["id"], state)
+            with self.assertRaisesRegex(ValueError, "点评完成"):
+                self.creations.repair(version["id"], submit_key="blocked")
+        self.creations.update_review(version["id"], review(40))
+        checks = QualityChecks(self.workspace, self.creations)
+        checks.request(version["id"])
+        self.assertEqual("checking", self.creations.get_version(version["id"])["review"]["status"])
+        with self.assertRaises(ValueError):
+            self.creations.repair(version["id"], submit_key="rechecking")
+        self.assertIsNone(self.creations.claim())
+
+    def test_repair_keeps_original_brief_after_draft_changes_and_unknown_result(self):
+        version = self.finish(self.creations.claim(self.submit()["id"]))
+        changed = {**self.draft["content"], "requirements": "后来改动", "facts": [{"name":"容量", "value":"10 kg", "source":"后来提供"}]}
+        self.workspace.save_draft(self.draft["id"], DraftContent.model_validate(changed), expected_revision=self.draft["revision"])
+        operation = self.creations.repair(version["id"], submit_key="snapshot-repair")
+        job = self.creations.claim(operation["id"])
+        self.assertEqual([], job["operation"]["snapshot"]["content"]["facts"])
+        self.assertEqual("", job["operation"]["snapshot"]["content"]["requirements"])
+        self.assertIn("仅加深标题", package_job(job, self.workspace)["prompt"])
+        self.creations.fail(job["id"], message="response lost", outcome_known=False)
+        self.assertEqual(operation["id"], self.creations.repair(version["id"], submit_key="repeat-unknown")["id"])
+
+    def test_old_queued_automatic_repairs_are_retired_on_upgrade(self):
+        version = self.finish(self.creations.claim(self.submit()["id"]))
+        operation = self.creations.repair(version["id"], submit_key="old-auto-repair")
+        with self.workspace._connect() as db:
+            db.execute("UPDATE studio_operations SET kind='generate' WHERE id=?", (operation["id"],))
+        upgraded = Creations(self.workspace)
+        self.assertIsNone(upgraded.claim())
+        self.assertEqual("stopped", upgraded.snapshot(self.draft["id"])["operations"][0]["jobs"][0]["status"])
 
 
 class DemoPackTest(unittest.TestCase):

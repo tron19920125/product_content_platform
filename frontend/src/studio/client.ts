@@ -9,7 +9,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const detail = body?.detail;
-    throw new Error(typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((row: {msg: string}) => row.msg).join("；") : `请求失败（${response.status}）`);
+    throw Object.assign(new Error(typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((row: {msg: string}) => row.msg).join("；") : `请求失败（${response.status}）`), {status: response.status});
   }
   return response.json() as Promise<T>;
 }
@@ -25,8 +25,8 @@ export const studio = {
     return value;
   },
   catalog: () => request<Catalog>("/catalog"),
-  demos: () => fetch("/studio-demo/manifest.json").then(r => {if (!r.ok) throw new Error("演示素材未安装"); return r.json() as Promise<DemoPack>;}),
-  drafts: (tool?: Tool, trash = false) => request<Draft[]>(`/drafts?trash=${trash}${tool ? `&tool=${tool}` : ""}`),
+  demos: () => request<DemoPack>("/demo"),
+  drafts: (tool?: Tool, trash = false, resume = false) => request<Draft[]>(`/drafts?trash=${trash}${tool ? `&tool=${tool}` : ""}${resume ? "&resume=true" : ""}`),
   history: (trash = false) => request<Draft[]>(`/history?trash=${trash}`),
   draft: (id: string) => request<Draft>(`/drafts/${id}`),
   create: (tool: Tool, demo = false) => request<Draft>(demo ? "/demo/drafts" : "/drafts", json("POST", {tool})),
@@ -47,6 +47,7 @@ export const studio = {
   stop: (id: string) => request(`/operations/${id}/stop`, json("POST", {})),
   retry: (id: string) => request(`/jobs/${id}/retry`, json("POST", {})),
   recheck: (id: string) => request(`/versions/${id}/recheck`, json("POST", {})),
+  repair: (id: string, submitKey: string) => request(`/versions/${id}/repair`, json("POST", {submit_key: submitKey})),
   edit: (id: string) => request<{layers: Layer[]; revision: number}>(`/versions/${id}/edit`),
   saveEdit: (id: string, layers: Layer[], revision: number) => request<{layers: Layer[]; revision: number}>(`/versions/${id}/edit`, json("PUT", {layers, expected_revision: revision})),
   apply: (id: string, revision: number, assetId: string) => request<Version>(`/versions/${id}/apply`, json("POST", {expected_revision: revision, rendered_asset_id: assetId})),

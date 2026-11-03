@@ -21,7 +21,10 @@ class DemoPack:
         path = self.root / "manifest.json"
         if not path.is_file():
             return {"items": [], "description": "尚未安装演示素材包"}
-        return json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        for item in manifest.get("items", []):
+            item["review"] = Review.model_validate(item["review"]).public()
+        return manifest
 
     def create_draft(self, tool: Tool) -> dict:
         manifest = self.manifest()

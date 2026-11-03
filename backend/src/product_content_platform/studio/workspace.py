@@ -77,6 +77,9 @@ class StudioWorkspace:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(studio_drafts)")}
             if "deleted_at" not in columns:
                 db.execute("ALTER TABLE studio_drafts ADD COLUMN deleted_at TEXT")
+            for name in ("planning_status", "planning_error"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE studio_drafts ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _connect(self):
@@ -123,7 +126,22 @@ class StudioWorkspace:
         with self._connect() as db:
             # Serializes revision checks and reference validation with the write.
             db.execute("BEGIN IMMEDIATE")
-            old = self._find(db, "studio_drafts", identifier)
+            old = db.execute("SELECT * FROM studio_drafts WHERE id=?", (identifier,)).fetchone()
+            if expected_revision == 0:
+                from uuid import UUID
+                UUID(identifier)
+                if old:
+                    if not old["deleted_at"] and old["revision"] == 1 and json.loads(old["content"]) == content.model_dump(mode="json"):
+                        return self._draft(old)
+                    raise RevisionConflict("草稿已存在且内容发生变化，请重新加载后继续编辑")
+                now = timestamp()
+                db.execute("""INSERT INTO studio_drafts
+                    (id, tool, revision, content, created_at, updated_at, deleted_at)
+                    VALUES (?, ?, 0, ?, ?, ?, NULL)""",
+                    (identifier, content.tool.value, content.model_dump_json(), now, now))
+                old = self._find(db, "studio_drafts", identifier)
+            elif old is None:
+                raise KeyError("记录不存在")
             if old["deleted_at"]:
                 raise ValueError("请先从回收站恢复创作记录，再继续编辑")
             if old["revision"] != expected_revision:
@@ -148,6 +166,21 @@ class StudioWorkspace:
                 [(identifier, asset_id) for asset_id, _ in references],
             )
             return self._draft(self._find(db, "studio_drafts", identifier))
+
+    def begin_planning(self, identifier: str, *, expected_revision: int) -> None:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            draft = self._find(db, "studio_drafts", identifier)
+            if draft["deleted_at"] or draft["revision"] != expected_revision:
+                raise RevisionConflict("输入已变化，请保存后重新规划")
+            if draft["planning_status"] == "running":
+                raise RevisionConflict("当前方案仍在生成，请等待本次规划完成")
+            db.execute("UPDATE studio_drafts SET planning_status='running', planning_error='', updated_at=? WHERE id=?", (timestamp(), identifier))
+
+    def finish_planning(self, identifier: str, *, error: str = "") -> None:
+        with self._connect() as db:
+            db.execute("UPDATE studio_drafts SET planning_status=?, planning_error=?, updated_at=? WHERE id=?",
+                       ("failed" if error else "done", error, timestamp(), identifier))
 
     def upload_image(self, name: str, usage: AssetUsage, content: bytes) -> dict:
         if usage not in {"product", "style", "logo"}:

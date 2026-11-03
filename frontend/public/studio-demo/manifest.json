@@ -1,7 +1,7 @@
 {
   "version": 1,
   "title": "日常洗护 · 暖木生活",
-  "description": "使用本地商品参考制作的预置示例。无需现场生成即可浏览；示例回放不作为本次实时生成结果。",
+  "description": "使用商品参考制作的示例作品，可直接浏览。",
   "reference": {
     "file": "laundry-product.jpg",
     "name": "深色滚筒洗衣机 · 原始参考",
@@ -12,7 +12,7 @@
     {
       "id": "laundry-marketing",
       "title": "让洗护，回归从容",
-      "subtitle": "营销主图 · 原生中文文案",
+      "subtitle": "营销主图 · 中文文案",
       "file": "laundry-marketing.png",
       "width": 1254,
       "height": 1254,
@@ -30,7 +30,7 @@
         "layout": 94,
         "brand": null,
         "source": "平台视觉检查 · 2026-09-04",
-        "note": "示例成图实测为 1254×1254，保留原始像素，不冒充原生 2K。细小面板文字仍需业务核对。",
+        "note": "细小面板文字仍需核对。",
         "findings": [
           {
             "kind": "uncertain",

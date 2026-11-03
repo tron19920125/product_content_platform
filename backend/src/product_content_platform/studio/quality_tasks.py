@@ -28,9 +28,7 @@ class QualityChecks:
             """)
 
     def request(self, version_id: str) -> dict:
-        version = self.creations.get_version(version_id)
-        if version["kind"] == "manual":
-            raise ValueError("手动编辑版本不进行自动质检")
+        self.creations.get_version(version_id)
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             active = db.execute("""SELECT * FROM studio_review_tasks
@@ -41,6 +39,8 @@ class QualityChecks:
             identifier, now = str(uuid4()), timestamp()
             db.execute("INSERT INTO studio_review_tasks VALUES (?, ?, 'queued', 0, '', ?, ?)",
                        (identifier, version_id, now, now))
+            db.execute("UPDATE studio_versions SET review=? WHERE id=?",
+                       (Review(status="checking", note="正在点评当前版本，图片可继续查看和下载。").model_dump_json(), version_id))
             return dict(db.execute("SELECT * FROM studio_review_tasks WHERE id=?", (identifier,)).fetchone())
 
     def claim(self) -> dict | None:
@@ -59,11 +59,11 @@ class QualityChecks:
         with self.workspace._connect() as db:
             task = db.execute("SELECT * FROM studio_review_tasks WHERE id=?", (identifier,)).fetchone()
             if not task:
-                raise KeyError("质检任务不存在")
+                raise KeyError("点评任务不存在")
             if task["status"] == "done":
                 return self.creations.get_version(task["version_id"])
             if task["status"] != "running":
-                raise ValueError("质检任务尚未领取")
+                raise ValueError("点评任务尚未领取")
             version_id = task["version_id"]
         version = self.creations.update_review(version_id, review)
         with self.workspace._connect() as db:
@@ -75,9 +75,9 @@ class QualityChecks:
             db.execute("BEGIN IMMEDIATE")
             task = db.execute("SELECT * FROM studio_review_tasks WHERE id=?", (identifier,)).fetchone()
             if not task:
-                raise KeyError("质检任务不存在")
+                raise KeyError("点评任务不存在")
             if task["status"] != "running":
-                raise ValueError("只能标记正在执行的质检任务")
+                raise ValueError("只能标记正在执行的点评任务")
             status = "queued" if task["attempt"] < 3 else "failed"
             db.execute("UPDATE studio_review_tasks SET status=?, error=?, updated_at=? WHERE id=?",
                        (status, message[:2000], timestamp(), identifier))
@@ -85,7 +85,7 @@ class QualityChecks:
         if status == "failed":
             self.creations.update_review(task["version_id"], Review(
                 status="unavailable", source="quality-check",
-                note="质检服务已自动尝试 3 次，仍未完成；未伪造分数，可手动重检。",
+                note="点评暂未完成，图片已保留，可稍后重新点评。",
             ))
         return result
 

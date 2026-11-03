@@ -1,0 +1,14 @@
+平台核心操作链路-外发版.html	5594692 bytes
+平台核心操作链路.md	11428 bytes
+platform-core-flow\01-projects.png	520156 bytes
+platform-core-flow\02-layout-center.png	201920 bytes
+platform-core-flow\03-generation-config.png	155481 bytes
+platform-core-flow\04-project-profile.png	57660 bytes
+platform-core-flow\05-content-planning.png	500888 bytes
+platform-core-flow\06-image-production.png	317050 bytes
+platform-core-flow\07-quality-review.png	665984 bytes
+platform-core-flow\08-delivery-export.png	52108 bytes
+platform-core-flow\09-batch-tasks.png	46491 bytes
+platform-core-flow\10-layout-template-editor.png	247607 bytes
+platform-core-flow\11-text-layout-editor.png	1416905 bytes
+README.txt	354 bytes

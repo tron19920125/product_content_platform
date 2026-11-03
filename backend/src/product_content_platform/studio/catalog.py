@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .briefs import PURPOSE_SUMMARIES
+
 
 class Tool(StrEnum):
     ECOM_SUITE = "ecom_suite"
@@ -197,6 +199,16 @@ def default_draft(tool: Tool) -> DraftContent:
     )
 
 
+def is_empty_draft(content: DraftContent) -> bool:
+    """Only untouched defaults are empty; page UUIDs are not user input."""
+    def comparable(value: DraftContent) -> dict:
+        result = value.model_dump(mode="json")
+        for page in result["pages"]:
+            page.pop("id")
+        return result
+    return comparable(content) == comparable(default_draft(content.tool))
+
+
 def catalog(*, reference_limit: int, max_upload_bytes: int) -> dict:
     return {
         "schema_version": 1,
@@ -204,7 +216,7 @@ def catalog(*, reference_limit: int, max_upload_bytes: int) -> dict:
             {
                 "id": tool.value, "label": TOOL_LABELS[tool],
                 "max_pages": page_limit(tool), "requires_plan": tool == Tool.A_PLUS,
-                "purposes": [{"id": key, "label": value} for key, value in purposes_for(tool).items()],
+                "purposes": [{"id": key, "label": value, "description": PURPOSE_SUMMARIES[key]} for key, value in purposes_for(tool).items()],
                 "defaults": default_draft(tool).model_dump(mode="json"),
             }
             for tool in Tool

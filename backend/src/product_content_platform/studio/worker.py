@@ -113,7 +113,7 @@ class StudioWorker:
                 temporary.replace(receipt)
             version = self.creations.complete(job["id"], asset_id=asset_id, provenance=output["provenance"], review=Review(
                 status="checking" if self.services.planning_available else "unavailable", source="azure-openai",
-                note="图片已保存，正在进行独立质检。" if self.services.planning_available else "图片已保存；尚未配置质检模型。",
+                note="图片已保存，正在进行独立点评。" if self.services.planning_available else "图片已保存；尚未配置点评模型。",
             ))
             if self.services.planning_available:
                 self.quality.request(version["id"])
@@ -170,7 +170,7 @@ class StudioWorker:
                     self.review_error = ""
                     continue
             except Exception:
-                self.review_error = "Azure 质检暂未完成，已有图片可查看和下载；请检查文案模型的连接与权限。"
+                self.review_error = "Azure 点评暂未完成，已有图片可查看和下载；请检查文案模型的连接与权限。"
                 if task:
                     try:
                         self.quality.fail(task["id"], message=self.review_error)

@@ -29,7 +29,7 @@ class CreateDraft(StrictModel):
 
 
 class SaveDraft(StrictModel):
-    expected_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
     content: DraftContent
 
 
@@ -46,6 +46,10 @@ class CompleteJob(StrictModel):
     asset_id: str
     review: Review
     provenance: dict = Field(default_factory=dict)
+
+
+class RepairVersion(StrictModel):
+    submit_key: str = Field(min_length=1, max_length=100)
 
 
 class SelectVersion(StrictModel):
@@ -169,7 +173,7 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
         result = catalog(reference_limit=configuration.max_references, max_upload_bytes=configuration.max_upload_bytes)
         result["generation_available"] = bool(app.state.worker and app.state.worker.available)
         if configuration.generation_provider == "azure":
-            result["note"] = "Azure 自动执行器已接入；支持的尺寸以实际任务返回为准。图片会先保存，再独立质检。"
+            result["note"] = "Azure 自动执行器已接入；支持的尺寸以实际任务返回为准。图片会先保存，再独立点评。"
         return result
 
     @app.post("/api/studio/drafts", status_code=201)
@@ -177,7 +181,10 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
         return request.app.state.workspace.create_draft(payload.tool)
 
     @app.get("/api/studio/drafts")
-    def list_drafts(request: Request, tool: Tool | None = None, trash: bool = False) -> list[dict]:
+    def list_drafts(request: Request, tool: Tool | None = None, trash: bool = False, resume: bool = False) -> list[dict]:
+        if resume:
+            return [row for row in request.app.state.creations.history()
+                    if row["history_kind"] == "draft" and (tool is None or row["tool"] == tool.value)]
         return request.app.state.workspace.list_drafts(tool, trash=trash)
 
     @app.get("/api/studio/drafts/{identifier}")
@@ -206,15 +213,20 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
         content = DraftContent.model_validate(draft["content"])
         if content.tool != Tool.A_PLUS:
             raise ValueError("只有 A+ 详情图需要生成模块方案")
-        result = request.app.state.planner.plan(content)
-        request.app.state.workspace.record_plan(identifier, content, label="重新规划前")
-        saved = request.app.state.workspace.save_draft(
-            identifier, apply_plan(content, result), expected_revision=payload.expected_revision,
-        )
-        request.app.state.workspace.record_plan(
-            identifier, DraftContent.model_validate(saved["content"]), label="智能模块方案",
-        )
-        return saved
+        for fact in content.facts:
+            fact.validate_for_generation()
+        workspace = request.app.state.workspace
+        workspace.begin_planning(identifier, expected_revision=payload.expected_revision)
+        try:
+            result = request.app.state.planner.plan(content)
+            workspace.record_plan(identifier, content, label="重新规划前")
+            saved = workspace.save_draft(identifier, apply_plan(content, result), expected_revision=payload.expected_revision)
+            workspace.record_plan(identifier, DraftContent.model_validate(saved["content"]), label="智能模块方案")
+        except Exception:
+            workspace.finish_planning(identifier, error="模块方案未完成，已保留输入和已有方案。请检查服务状态后重新规划。")
+            raise
+        workspace.finish_planning(identifier)
+        return workspace.get_draft(identifier)
 
     @app.get("/api/studio/drafts/{identifier}/plans")
     def list_plan_versions(identifier: str, request: Request) -> list[dict]:
@@ -294,6 +306,10 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
     @app.post("/api/studio/versions/{identifier}/recheck", status_code=202)
     def recheck_version(identifier: str, request: Request) -> dict:
         return request.app.state.quality.request(identifier)
+
+    @app.post("/api/studio/versions/{identifier}/repair", status_code=202)
+    def repair_version(identifier: str, payload: RepairVersion, request: Request) -> dict:
+        return request.app.state.creations.repair(identifier, submit_key=payload.submit_key)
 
     @app.get("/api/studio/versions/{identifier}/review-task")
     def review_task(identifier: str, request: Request) -> dict | None:

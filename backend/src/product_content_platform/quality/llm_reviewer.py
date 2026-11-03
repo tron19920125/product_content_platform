@@ -490,7 +490,8 @@ def _build_responses_request(messages: list[dict[str, Any]], *, model: str) -> d
 
 
 def _ensure_json_request_in_input(response_input: list[dict[str, Any]]) -> None:
-    input_text = json.dumps(response_input, ensure_ascii=False).casefold()
+    # Azure validates text instructions, not random characters in encoded images.
+    input_text = "\n".join(text for message in response_input for text in _text_parts(message.get("content"))).casefold()
     if "json" in input_text:
         return
     json_instruction = {"type": "input_text", "text": "Return only valid JSON."}

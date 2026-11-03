@@ -40,7 +40,7 @@ export function ServiceBanner({service, onConfigure}: {service: ServiceState; on
   const offline = service.connection === "offline";
   const health = service.health;
   if (health?.generation_available && health.planning_available && !health.generation_error && !health.review_error) return null;
-  const title = offline ? "创作服务已断开" : service.connection === "checking" ? "正在检查服务连接" : health?.executor_state === "checking" ? "正在验证 Azure 连接" : health?.generation_error ? "生图服务需要处理" : health?.review_error ? "图片已保留，质检暂未完成" : !health?.generation_available ? "自动生图尚未配置" : "智能规划尚未配置";
+  const title = offline ? "创作服务已断开" : service.connection === "checking" ? "正在检查服务连接" : health?.executor_state === "checking" ? "正在验证 Azure 连接" : health?.generation_error ? "生图服务需要处理" : health?.review_error ? "图片已保留，点评暂未完成" : !health?.generation_available ? "自动生图尚未配置" : "智能规划尚未配置";
   const detail = offline ? "暂时无法保存或更新任务。请恢复本地服务后重新检测；已保存的记录仍保留。" : service.connection === "checking" ? "确认服务状态后再提交任务。" : health?.executor_state === "checking" ? "认证通过后，后台会自动处理排队任务；无需重复提交。" : health?.generation_error || health?.review_error || (!health?.generation_available ? "当前任务只会排队，需执行人员手动处理；继续等待不会自动出图。可先体验示例回放。" : "可以生成图片；A+ 模块方案目前需要手动填写。");
   return <section className={`st-service-banner ${offline ? "offline" : ""}`} role="status" aria-label="服务连接状态">
     <Icon name="info" size={19}/><div><strong>{title}</strong><p>{detail}</p></div>

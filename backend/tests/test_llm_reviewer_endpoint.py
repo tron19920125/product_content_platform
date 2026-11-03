@@ -8,6 +8,7 @@ from PIL import Image
 
 from product_content_platform.quality.llm_reviewer import (
     ReviewEvidence,
+    _build_responses_request,
     _is_responses_endpoint,
     build_review_messages,
     default_review_endpoint,
@@ -15,6 +16,23 @@ from product_content_platform.quality.llm_reviewer import (
 
 
 class LlmReviewerEndpointTest(unittest.TestCase):
+    def test_json_mode_instruction_is_not_satisfied_by_image_encoding_or_url(self):
+        for image_url in ['data:image/png;base64,AAAAjSoNAAAA', 'https://example.test/json/image.png']:
+            with self.subTest(image_url=image_url):
+                payload = _build_responses_request([
+                    {'role':'system','content':'Return JSON matching the schema.'},
+                    {'role':'user','content':[{'type':'text','text':'核验这张商品图'},
+                                             {'type':'image_url','image_url':{'url':image_url}}]},
+                ], model='test-model')
+                parts = payload['input'][0]['content']
+                visible_text = ' '.join(part.get('text','') for part in parts if part['type']=='input_text')
+                self.assertIn('JSON', visible_text)
+                self.assertIn({'type':'input_image','image_url':image_url}, parts)
+
+    def test_existing_visible_json_instruction_is_preserved_without_duplication(self):
+        payload = _build_responses_request([{'role':'user','content':'请返回 JSON。'}], model='test-model')
+        self.assertEqual([{'type':'input_text','text':'请返回 JSON。'}], payload['input'][0]['content'])
+
     def test_review_messages_include_every_product_reference_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -36,6 +36,13 @@ class AzureStudioTest(unittest.TestCase):
             'AZURE_OPENAI_IMAGE_DEPLOYMENT': 'gpt-image-2',
         }, clear=True)
         self.env.start()
+        # Existing worker/network tests isolate the new copy stage from HTTP transport.
+        def prepared_copy(messages):
+            if '独立核验候选文案' in messages[0]['content']:
+                return json.dumps({'approved':True,'issues':[]})
+            return json.dumps({'lines':[{'role':'title','text':'商品展示','basis':'neutral'}]})
+        self.copy_mock = patch.object(AzureServices, 'json_response', side_effect=prepared_copy)
+        self.copy_mock.start()
         self.services = AzureServices()
         self.workspace = StudioWorkspace(StudioSettings(self.root / 'data'))
         self.creations = Creations(self.workspace)
@@ -52,6 +59,7 @@ class AzureStudioTest(unittest.TestCase):
                         'requested_output': {'width': 2048, 'height': 2048}, 'prompt': 'Test product identity.'}
 
     def tearDown(self):
+        self.copy_mock.stop()
         self.env.stop()
         self.temp.cleanup()
 

@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import uuid4
 
-from .catalog import IMAGE_SIZES, DraftContent, StudioLayer, Tool
-from .quality import Review, should_repair
+from .catalog import IMAGE_SIZES, DraftContent, StudioLayer, Tool, is_empty_draft
+from .quality import Review
 from .workspace import RevisionConflict, StudioWorkspace, timestamp
 
 
@@ -74,6 +74,10 @@ class Creations:
                 CREATE INDEX IF NOT EXISTS studio_reviews_by_status
                     ON studio_review_tasks (status, created_at);
             """)
+            # Retire queued automatic repairs from older releases. In-flight results remain recoverable.
+            db.execute("""UPDATE studio_jobs SET status='stopped', error='旧版自动修图已取消，可在点评完成后主动修复'
+                WHERE kind='repair' AND status='queued' AND operation_id IN
+                (SELECT id FROM studio_operations WHERE kind!='repair')""")
 
     def submit(self, draft_id: str, *, submit_key: str, expected_revision: int,
                mode: Literal["demo", "codex"], page_ids: list[str] | None = None,
@@ -176,6 +180,8 @@ class Creations:
             snapshot = operation["snapshot"]
             source = self._version(db, job["source_version_id"]) if job["source_version_id"] else None
             layers = source["layers"] if source else snapshot["source_layers"]
+            if source and source["kind"] == "manual" and job["kind"] == "repair":
+                layers = []  # The repair edits the full composition; do not overlay its text twice.
             page = next(value for value in snapshot["pages"] if value["id"] == job["page_id"])
             output = page.get("output") or snapshot["content"]["output"]
             expected_width, expected_height = IMAGE_SIZES[output["ratio"]][output["resolution"]]
@@ -193,14 +199,8 @@ class Creations:
             db.execute("UPDATE studio_jobs SET status='done', version_id=?, updated_at=? WHERE id=?", (identifier, now, job_id))
             selection = db.execute("SELECT * FROM studio_selections WHERE draft_id=? AND page_id=?", (operation["draft_id"], job["page_id"])).fetchone()
             current = self._version(db, selection["version_id"]) if selection["version_id"] else None
-            current_score = current["review"]["score"] if current else None
-            better = current is None or (review.score is not None and (current_score is None or review.score > current_score))
-            if selection["revision"] == job["expected_selection"] and better:
+            if selection["revision"] == job["expected_selection"] and current is None:
                 db.execute("UPDATE studio_selections SET version_id=? WHERE draft_id=? AND page_id=?", (identifier, operation["draft_id"], job["page_id"]))
-            if should_repair(review, repair_used=bool(job["repair_used"]), stopped=bool(operation["stopped"])):
-                db.execute("UPDATE studio_jobs SET repair_used=1 WHERE id=?", (job_id,))
-                db.execute("INSERT INTO studio_jobs VALUES (?, ?, ?, ?, 'repair', 'queued', 1, ?, NULL, ?, '', ?, ?)",
-                           (str(uuid4()), operation["id"], job["page_id"], job["variant"], identifier, job["expected_selection"], now, now))
             return self._version(db, identifier)
 
     def fail(self, job_id: str, *, message: str, outcome_known: bool) -> None:
@@ -233,6 +233,9 @@ class Creations:
     def recover(self) -> int:
         with self.workspace._connect() as db:
             # A process crash does not establish whether an external request ran.
+            db.execute("""UPDATE studio_drafts SET planning_status='unknown',
+                planning_error='服务在规划过程中中断，请检查已有方案后重新规划。'
+                WHERE planning_status='running'""")
             return db.execute("UPDATE studio_jobs SET status='unknown', error='服务中断，外部执行结果待确认' WHERE status='running'").rowcount
 
     def snapshot(self, draft_id: str) -> dict:
@@ -247,11 +250,17 @@ class Creations:
 
     def history(self, *, trash: bool = False) -> list[dict]:
         records = self.workspace.list_drafts(trash=trash)
+        visible = []
         with self.workspace._connect() as db:
             for record in records:
                 statuses = [row[0] for row in db.execute("""SELECT j.status FROM studio_jobs j
                     JOIN studio_operations o ON o.id=j.operation_id WHERE o.draft_id=?""", (record["id"],))]
                 version_count = db.execute("SELECT COUNT(*) FROM studio_versions WHERE draft_id=?", (record["id"],)).fetchone()[0]
+                plan_count = db.execute("SELECT COUNT(*) FROM studio_plan_versions WHERE draft_id=?", (record["id"],)).fetchone()[0]
+                operation_count = db.execute("SELECT COUNT(*) FROM studio_operations WHERE draft_id=?", (record["id"],)).fetchone()[0]
+                has_activity = bool(operation_count or version_count or plan_count or record["planning_status"])
+                if not trash and not has_activity and is_empty_draft(DraftContent.model_validate(record["content"])):
+                    continue
                 if "running" in statuses:
                     status = "processing"
                 elif any(value == "unknown" for value in statuses):
@@ -264,6 +273,16 @@ class Creations:
                     status = "failed"
                 elif version_count:
                     status = "completed"
+                elif "stopped" in statuses:
+                    status = "stopped"
+                elif record["planning_status"] == "running":
+                    status = "planning"
+                elif record["planning_status"] == "failed":
+                    status = "plan_failed"
+                elif record["planning_status"] == "unknown":
+                    status = "plan_unknown"
+                elif plan_count:
+                    status = "planned"
                 else:
                     status = "draft"
                 selected = db.execute("""SELECT v.render_asset_id FROM studio_selections s
@@ -271,10 +290,12 @@ class Creations:
                     WHERE s.draft_id=? ORDER BY v.created_at DESC LIMIT 1""", (record["id"],)).fetchone()
                 record.update(
                     history_status=status,
+                    history_kind="generation" if has_activity else "draft",
                     result_count=version_count,
                     thumbnail_url=f"/api/studio/assets/{selected[0]}/preview" if selected else None,
                 )
-        return records
+                visible.append(record)
+        return visible
 
     def select(self, draft_id: str, page_id: str, version_id: str) -> dict:
         with self.workspace._connect() as db:
@@ -289,23 +310,71 @@ class Creations:
             return self._version(db, identifier)
 
     def update_review(self, version_id: str, review: Review) -> dict:
-        """Attach a fresh AI review and apply the same one-repair policy once."""
+        """Attach commentary only; image edits require a separate user request."""
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            version = self._version(db, version_id)
-            if version["kind"] == "manual":
-                raise ValueError("手动编辑版本不进行自动质检")
+            self._version(db, version_id)
             db.execute("UPDATE studio_versions SET review=? WHERE id=?", (review.model_dump_json(), version_id))
-            job = db.execute("SELECT * FROM studio_jobs WHERE version_id=?", (version_id,)).fetchone()
-            if job:
-                operation = self._operation(db, job["operation_id"])
-                already_queued = db.execute("SELECT 1 FROM studio_jobs WHERE source_version_id=? AND kind='repair'", (version_id,)).fetchone()
-                if not already_queued and should_repair(review, repair_used=bool(job["repair_used"]), stopped=bool(operation["stopped"])):
-                    now = timestamp()
-                    db.execute("UPDATE studio_jobs SET repair_used=1 WHERE id=?", (job["id"],))
-                    db.execute("INSERT INTO studio_jobs VALUES (?, ?, ?, ?, 'repair', 'queued', 1, ?, NULL, ?, '', ?, ?)",
-                               (str(uuid4()), operation["id"], job["page_id"], job["variant"], version_id, job["expected_selection"], now, now))
             return self._version(db, version_id)
+
+    def repair(self, version_id: str, *, submit_key: str) -> dict:
+        """Explicit, idempotent repair of a reviewed version using its original inputs."""
+        if not submit_key.strip() or len(submit_key) > 100:
+            raise ValueError("提交标识无效")
+        with self.workspace._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT * FROM studio_operations WHERE submit_key=?", (submit_key,)).fetchone()
+            if existing:
+                if existing["kind"] != "repair" or json.loads(existing["snapshot"]).get("source_version_id") != version_id:
+                    raise RevisionConflict("提交标识已用于其他请求")
+                return self._operation(db, existing["id"])
+            source = self._version(db, version_id)
+            draft = self.workspace._find(db, "studio_drafts", source["draft_id"])
+            if draft["deleted_at"]:
+                raise ValueError("请先恢复创作记录，再按点评修复")
+            review = Review.model_validate(source["review"])
+            if not review.repair_actions:
+                raise ValueError("请等待点评完成并给出可执行的修改建议")
+            if db.execute("SELECT 1 FROM studio_review_tasks WHERE version_id=? AND status IN ('queued', 'running')", (version_id,)).fetchone():
+                raise ValueError("正在重新点评，请等待新的点评完成")
+            active = db.execute("""SELECT operation_id FROM studio_jobs WHERE source_version_id=?
+                AND kind='repair' AND status IN ('queued', 'running', 'unknown')""", (version_id,)).fetchone()
+            if active:
+                return self._operation(db, active["operation_id"])
+            snapshot = self.version_snapshot(db, source)
+            content = DraftContent.model_validate(snapshot["content"])
+            pages = [page for page in snapshot["pages"] if page["id"] == source["page_id"]]
+            if not pages:
+                raise ValueError("找不到此版本的原始页面要求")
+            references = content.product_asset_ids + content.style_asset_ids + ([content.logo_asset_id] if content.logo_asset_id else [])
+            if len(references) + 1 > self.workspace.settings.max_references:
+                raise ValueError("参考图已达上限，无法为待修复图片预留位置")
+            for asset_id in references:
+                self.workspace._find(db, "studio_assets", asset_id)
+            snapshot.update(pages=pages, requested_page_ids=[source["page_id"]], source_version_id=version_id,
+                            instruction="\n".join(review.repair_actions), repair_actions=review.repair_actions,
+                            source_layers=[] if source["kind"] == "manual" else source["layers"])
+            identifier, now = str(uuid4()), timestamp()
+            db.execute("INSERT INTO studio_operations VALUES (?, ?, ?, 'repair', 'codex', ?, 0, ?)",
+                       (identifier, submit_key, source["draft_id"], encoded(snapshot), now))
+            db.executemany("INSERT INTO studio_operation_assets VALUES (?, ?)", [(identifier, value) for value in set(references)])
+            selection = db.execute("SELECT revision FROM studio_selections WHERE draft_id=? AND page_id=?", (source["draft_id"], source["page_id"])).fetchone()
+            db.execute("INSERT INTO studio_jobs VALUES (?, ?, ?, 1, 'repair', 'queued', 1, ?, NULL, ?, '', ?, ?)",
+                       (str(uuid4()), identifier, source["page_id"], version_id, selection[0], now, now))
+            return self._operation(db, identifier)
+
+    @staticmethod
+    def version_snapshot(db, version: dict) -> dict:
+        """Manual versions inherit the nearest generation's immutable brief."""
+        current, visited = version, set()
+        while current and current["id"] not in visited:
+            visited.add(current["id"])
+            if current["operation_id"]:
+                return json.loads(db.execute("SELECT snapshot FROM studio_operations WHERE id=?", (current["operation_id"],)).fetchone()[0])
+            current = Creations._version(db, current["parent_id"]) if current["parent_id"] else None
+        draft = db.execute("SELECT * FROM studio_drafts WHERE id=?", (version["draft_id"],)).fetchone()
+        content = json.loads(draft["content"])
+        return {"content": content, "pages": content["pages"], "draft_revision": draft["revision"], "instruction": ""}
 
     def restore_work(self, entry: dict) -> dict:
         """Create an independent editable draft/version graph from a library snapshot."""
@@ -363,6 +432,8 @@ class Creations:
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = self.workspace._find(db, "studio_drafts", draft_id)
+            if row["planning_status"] == "running" and action in {"trash", "purge"}:
+                raise ValueError("模块方案正在生成，请等待本次规划结束后再删除")
             if action == "trash":
                 now = timestamp()
                 db.execute("UPDATE studio_operations SET stopped=1 WHERE draft_id=?", (draft_id,))
@@ -456,8 +527,8 @@ class Creations:
             identifier = str(uuid4())
             db.execute("INSERT INTO studio_versions VALUES (?, ?, ?, NULL, ?, 'manual', ?, ?, ?, ?, ?, ?)",
                        (identifier, source["draft_id"], source["page_id"], version_id, source["base_asset_id"],
-                        rendered_asset_id, edit["layers"], encoded({k: v for k, v in source["review"].items() if k != "score"}),
-                        encoded({"provider": "manual", "note": "人工编辑，未重新质检"}), timestamp()))
+                        rendered_asset_id, edit["layers"], Review(note="图片已手动编辑，可对当前成图重新点评。").model_dump_json(),
+                        encoded({"provider": "manual", "note": "人工编辑，点评将检查当前完整成图。"}), timestamp()))
             db.execute("UPDATE studio_selections SET version_id=?, revision=revision+1 WHERE draft_id=? AND page_id=?", (identifier, source["draft_id"], source["page_id"]))
             db.execute("DELETE FROM studio_edit_drafts WHERE version_id=?", (version_id,))
             return self._version(db, identifier)
@@ -502,5 +573,5 @@ class Creations:
         result["width"], result["height"] = asset["width"], asset["height"]
         result["image_url"] = f"/api/studio/assets/{row['render_asset_id']}/source"
         result["base_url"] = f"/api/studio/assets/{row['base_asset_id']}/source"
-        result["score_label"] = "AI 底图评分" if row["kind"] == "manual" else "AI 评分"
+        result["review_label"] = "AI 设计点评"
         return result

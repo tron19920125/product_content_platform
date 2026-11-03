@@ -15,8 +15,10 @@ async function api(path, data, method = 'POST') {
   assert.ok(response.ok, `${path}: ${await response.clone().text()}`);
   return response.json();
 }
+let latestFixture;
 async function seed(tool = 'ecom_suite', generated = false) {
   const draft = await api('/demo/drafts', {tool});
+  latestFixture = {draft, generated};
   if (generated) {
     await api(`/drafts/${draft.id}/generate`, {expected_revision: draft.revision, submit_key: crypto.randomUUID(), mode: 'demo'});
     for (let i = 0; i < 80; i++) {
@@ -30,7 +32,13 @@ async function seed(tool = 'ecom_suite', generated = false) {
 }
 async function ready(page) {
   await page.goto(origin);
-  await page.locator('.st-ref-grid img').first().waitFor({state: 'attached'});
+  await page.locator('.st-input h1').waitFor({state:'attached'});
+  await page.waitForFunction(()=>document.querySelector('.st-workspace') && !document.querySelector('.st-workspace').hasAttribute('inert'));
+  if (latestFixture?.generated) {
+    await page.locator('.st-nav').getByRole('button', {name:'创作记录',exact:true}).click();
+    await page.locator(`[data-draft-id="${latestFixture.draft.id}"] .st-history-open`).click();
+    await page.locator('.st-result-grid').waitFor();
+  }
 }
 async function confirmManualQueue(page) {
   await page.getByRole('dialog', {name: '当前只能加入待执行队列', exact: true}).getByRole('button', {name: '仅加入队列', exact: true}).click();
@@ -106,6 +114,7 @@ await test('modal-focus-containment', async page => {
 await test('deleted-current-draft-not-reopened', async page => {
   const {draft} = await seed(); await ready(page);
   await nav(page, '创作记录').click();
+  await page.getByRole('tab', {name:'草稿',exact:true}).click();
   await page.locator('.st-history-item').first().getByRole('button', {name: /^更多操作/}).click();
   await page.getByRole('menuitem', {name: /^删除/}).click();
   await page.getByRole('button', {name: '确认', exact: true}).click();
@@ -133,6 +142,8 @@ await test('editor-discard-clears-pending-save-and-undo', async page => {
 });
 await test('upload-does-not-cross-drafts', async page => {
   await api('/drafts', {tool: 'scene_image'});
+  // An explicit blank scene avoids resuming a valid draft left by an earlier run.
+  await page.addInitScript(() => localStorage.setItem('studio.draft.scene_image', 'new:upload-isolation'));
   await seed(); await ready(page);
   let started; const uploading = new Promise(resolve => {started = resolve;});
   await page.route('**/api/studio/assets?*', async route => {started(); await pause(700); await route.continue();});
@@ -172,6 +183,7 @@ await test('tool-and-demo-replay-survive-reload', async page => {
 });
 await test('history-error-is-visible-and-handled', async page => {
   await seed(); await ready(page); await nav(page, '创作记录').click();
+  await page.getByRole('tab', {name:'草稿',exact:true}).click();
   await page.route('**/api/studio/drafts/*', route => route.fulfill({status: 503, json: {detail: '读取记录失败，请重试'}}));
   await page.locator('.st-history-open').first().click();
   await page.getByRole('alert').waitFor();
@@ -461,7 +473,13 @@ await test('initial-disconnection-recovers-without-page-reload', async page => {
   await dialog.getByRole('button', {name: '重新检测', exact: true}).click();
   await dialog.getByText('已连接', {exact: true}).waitFor();
   await dialog.getByRole('button', {name: '返回工作台', exact: true}).click();
-  await page.locator('.st-ref-grid img').first().waitFor({state: 'attached'});
+  await page.locator('.st-input h1').waitFor({state:'attached'});
+  await page.waitForFunction(()=>document.querySelector('.st-workspace') && !document.querySelector('.st-workspace').hasAttribute('inert'));
+  if (latestFixture?.generated) {
+    await page.locator('.st-nav').getByRole('button', {name:'创作记录',exact:true}).click();
+    await page.locator(`[data-draft-id="${latestFixture.draft.id}"] .st-history-open`).click();
+    await page.locator('.st-result-grid').waitFor();
+  }
 });
 await test('demo-replay-works-without-auto-generation', async page => {
   await seed(); await ready(page);
@@ -547,7 +565,7 @@ await test('purpose-menu-keyboard-size-and-undo', async page => {
 });
 await test('a-plus-module-editing-and-result-stage', async page => {
   const {draft} = await seed('a_plus_detail', true); await ready(page);
-  await nav(page, 'A+ 详情图').click();
+  // ready() opens the submitted record explicitly; tool navigation now resumes only unsubmitted drafts.
   await page.locator('.st-result-grid').waitFor();
   assert.equal(await page.locator('.st-plan-grid').count(), 0, 'Existing A+ results should be the default stage');
   await page.getByRole('button', {name: '编辑方案与模块', exact: true}).click();
@@ -709,7 +727,7 @@ await test('text-contrast-and-target-sizes', async page => {
       });
     }, selectors);
   }
-  const report = await measure(['.st-results-heading p','.st-purpose-heading>strong','.st-purpose-size select','.st-card-title strong','.st-score','.st-card-buttons button','.st-result-actions small','.st-field input','.st-primary','.st-nav nav button.active']);
+  const report = await measure(['.st-results-heading p','.st-purpose-heading>strong','.st-purpose-size select','.st-card-title strong','.st-review-badge','.st-card-buttons button','.st-result-actions small','.st-field input','.st-primary','.st-nav nav button.active']);
   await page.getByRole('button', {name:'查看图片详情',exact:true}).first().click();
   report.push(...await measure(['.st-output-proof','.st-finding p','.st-finding>span','.st-note','.st-filmstrip span']));
   await writeFile(`${output}/contrast-and-targets.json`, JSON.stringify(report,null,2));
@@ -734,6 +752,63 @@ await test('editor-numeric-keyboard-input-is-not-prematurely-clamped', async pag
   const first = initial.versions.find(version => version.page_id === initial.operations[0].snapshot.content.pages[0].id);
   const saved = await api(`/versions/${first.id}/edit`);
   assert.equal(saved.layers[0].width,700); assert.equal(saved.layers[0].x,-25); assert.equal(saved.layers[0].fontSize,42);
+});
+
+await test('purpose-briefs-save-to-the-correct-page', async page => {
+  const {draft} = await seed(); await ready(page);
+  assert.equal(await page.locator('.st-purpose-description').count(), 3);
+  await page.locator('.st-image-briefs>summary').click();
+  await page.getByLabel('编辑哪张图片', {exact:true}).selectOption(draft.content.pages[2].id);
+  await page.getByLabel('图片 3 标题', {exact:true}).fill('旋钮与舱门细节');
+  await page.getByLabel('图片 3 文案', {exact:true}).fill('展示清楚可见的外观特点');
+  await page.getByLabel('图片 3 构图要求', {exact:true}).fill('左侧商品，右侧细节');
+  await page.getByLabel('编辑哪张图片', {exact:true}).selectOption(draft.content.pages[0].id);
+  assert.equal(await page.getByLabel('图片 1 标题', {exact:true}).inputValue(), '');
+  await nav(page, '创作记录').click();
+  const saved = await api(`/drafts/${draft.id}`);
+  assert.equal(saved.content.pages[2].title,'旋钮与舱门细节');
+  assert.equal(saved.content.pages[0].title,'');
+  assert.equal((await api(`/drafts/${draft.id}/results`)).operations.length,0);
+});
+
+await test('purpose-selling-guidance-and-background-mode', async page => {
+  await seed('selling_point_image'); await ready(page);
+  await nav(page,'卖点图').click();
+  await page.getByText('让卖点有具体依据',{exact:true}).waitFor();
+  assert.match(await page.locator('.st-selling-guidance').innerText(),/尚未提供商品事实/);
+  await page.getByRole('button',{name:'填写商品事实与来源',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'添加事实',exact:true}).isVisible(),true);
+  await page.getByLabel('图片文字', {exact:true}).selectOption('background_only');
+  await page.locator('.st-image-briefs>summary').click();
+  assert.match(await page.locator('.st-image-brief-body').innerText(),/不会画进图片/);
+  await page.getByLabel('图片 1 标题',{exact:true}).fill('之后再排版的标题');
+  await page.getByLabel('图片文字', {exact:true}).selectOption('native');
+  assert.equal(await page.getByLabel('图片 1 标题',{exact:true}).inputValue(),'之后再排版的标题');
+  assert.doesNotMatch(await page.locator('.st-image-brief-body').innerText(),/不会画进图片/);
+  await page.screenshot({path:`${output}/selling-guidance.png`});
+});
+
+await test('purpose-briefs-mobile-layout', async page => {
+  await seed(); await ready(page);
+  await page.locator('.st-image-briefs>summary').click();
+  await page.getByLabel('图片 1 构图要求',{exact:true}).fill('暖木空间');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+  await page.locator('.st-image-briefs').screenshot({path:`${output}/mobile-briefs.png`});
+}, {width:390,height:844});
+
+await test('approved-copy-is-visible-in-image-details', async page => {
+  await seed('ecom_suite', true);
+  await page.route('**/api/studio/drafts/*/results', async route => {
+    const response = await route.fetch(); const body = await response.json();
+    for (const version of body.versions) version.provenance.copy_plan = {lines:[{role:'title',text:'旋钮与显示区域',basis:'visual',evidence:'参考图上方清晰可见旋钮和显示区域'}]};
+    await route.fulfill({response,json:body});
+  });
+  await ready(page);
+  await page.getByRole('button',{name:'查看图片详情',exact:true}).first().click();
+  await page.locator('.st-approved-copy>summary').click();
+  assert.match(await page.locator('.st-approved-copy').innerText(),/旋钮与显示区域/);
+  assert.match(await page.locator('.st-approved-copy').innerText(),/参考图可见特点/);
+  await page.screenshot({path:`${output}/approved-copy-detail.png`});
 });
 
 await browser.close();
