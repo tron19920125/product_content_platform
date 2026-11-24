@@ -92,7 +92,7 @@ export default function Studio() {
   const [selectedDemo, setSelectedDemo] = useState<DemoItem | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<Version | null>(null);
   const aiInstructionRef = useRef<HTMLTextAreaElement>(null);
-  const repairKeys = useRef(new Map<string, string>());
+  const repairAttempts = useRef(new Map<string, {instruction: string; submitKey: string}>());
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [selectedWork, setSelectedWork] = useState<LibraryEntry | null>(null);
   const [editor, setEditor] = useState<Version | null>(null);
@@ -101,6 +101,7 @@ export default function Studio() {
   const [compareAssetId, setCompareAssetId] = useState<string | null>(null);
   const [detailFit, setDetailFit] = useState(true);
   const [aiInstruction, setAiInstruction] = useState("");
+  const [aiReviewActions, setAiReviewActions] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [confirm, setConfirm] = useState<{title: string; message: string; confirmLabel?: string; run: () => Promise<void>} | null>(null);
   const [rename, setRename] = useState<{entry: LibraryEntry; value: string} | null>(null);
@@ -362,7 +363,10 @@ export default function Studio() {
         const content = saved.content;
         if (content.product_asset_ids.length + content.style_asset_ids.length + (content.logo_asset_id ? 1 : 0) + 1 > catalog.limits.total_references) throw new Error("AI 修改需要为当前底图预留一张参考图位置，请先移除一张可选参考图");
       }
-      const options = {mode: demoMode && !source ? "demo" : "codex", page_ids: pageIds, ...(source ? {source_version_id: source.id, instruction: aiInstruction} : {})};
+      const options = {
+        mode: demoMode && !source ? "demo" : "codex", page_ids: pageIds,
+        ...(source ? {source_version_id: source.id, instruction: aiInstruction.trim(), review_actions: aiReviewActions} : {}),
+      };
       const fingerprint = canonicalJson({draft_id: saved.id, content: saved.content, options});
       const key = `studio.submission.${saved.id}`;
       let attempt = {fingerprint, draft: saved, options: {...options, submit_key: newKey()}};
@@ -378,22 +382,26 @@ export default function Studio() {
     else await queueOrRun(submit);
   }
   async function repairVersion(version: Version) {
+    const instruction = aiInstruction.trim();
     await queueOrRun(async () => {
       const storageKey = `studio.repair.${version.id}`;
-      let key = repairKeys.current.get(version.id);
-      try {key ||= sessionStorage.getItem(storageKey) || undefined;} catch { /* optional storage */ }
-      key ||= newKey();
-      repairKeys.current.set(version.id, key);
-      try {sessionStorage.setItem(storageKey, key);} catch { /* in-memory key still prevents repeats */ }
-      await studio.repair(version.id, key);
-      repairKeys.current.delete(version.id);
+      let attempt = repairAttempts.current.get(version.id);
+      try {
+        const stored = sessionStorage.getItem(storageKey);
+        if (!attempt && stored) attempt = stored.startsWith("{") ? JSON.parse(stored) : {instruction: "", submitKey: stored};
+      } catch { /* optional storage */ }
+      if (!attempt || attempt.instruction !== instruction || !attempt.submitKey) attempt = {instruction, submitKey: newKey()};
+      repairAttempts.current.set(version.id, attempt);
+      try {sessionStorage.setItem(storageKey, JSON.stringify(attempt));} catch { /* in-memory key still prevents repeats */ }
+      await studio.repair(version.id, attempt.submitKey, instruction);
+      repairAttempts.current.delete(version.id);
       try {sessionStorage.removeItem(storageKey);} catch { /* optional storage */ }
       await refresh(version.draft_id);
       setNotice("修复已提交。原图保留，新版本完成后可对比并选择。");
     });
   }
-  function addReviewAction(action: string) {
-    setAiInstruction(current => current.includes(action) ? current : [current, action].filter(Boolean).join("\n").slice(0, 8000));
+  function toggleReviewAction(action: string) {
+    setAiReviewActions(current => current.includes(action) ? current.filter(value => value !== action) : [...current, action]);
     aiInstructionRef.current?.focus();
     aiInstructionRef.current?.scrollIntoView({block: "nearest", behavior: "smooth"});
   }
@@ -504,7 +512,7 @@ export default function Studio() {
   const settingsChanged = Boolean(draft && results.operations[0] && canonicalJson(results.operations[0].snapshot.content) !== canonicalJson(draft.content));
   const selectedReviewTask = selectedVersion ? [...results.review_tasks].reverse().find(value => value.version_id === selectedVersion.id) : undefined;
   const reviewRepairPending = Boolean(selectedVersion && allJobs.some(job => job.source_version_id === selectedVersion.id && job.kind === "repair" && ["queued", "running", "unknown"].includes(job.status)));
-  useEffect(() => {setAiInstruction("");}, [selectedVersion?.id]);
+  useEffect(() => {setAiInstruction(""); setAiReviewActions([]);}, [selectedVersion?.id]);
   const cardImage = (entry: LibraryEntry) => entry.payload.images?.[0] ?? entry.payload.asset?.preview_url ?? (entry.payload.demo ? demoUrl(entry.payload.demo.file) : "");
   const exportRows = pickedVersions.map((version, index) => {const page = activePages.find(value => value.id === version.page_id); const label = toolConfig?.purposes.find(value => value.id === page?.purpose)?.label ?? "作品"; return {version, filename: `${String(index + 1).padStart(2, "0")}-${label.replace(/[\\/:*?"<>|]/g, "-")}`};});
   const missingExportPages = Math.max(0, activePages.length - currentVersions.length);
@@ -615,7 +623,24 @@ export default function Studio() {
           <div className="st-output-proof"><span>图片尺寸 {selectedVersion.width} × {selectedVersion.height} px</span></div>
           <div className="st-filmstrip">{results.versions.filter(version => version.page_id === selectedVersion.page_id).map(version => <button key={version.id} className={version.id === selectedVersion.id ? "active" : ""} onClick={() => setSelectedVersion(version)}><img src={mediaUrl(version.image_url)} alt={version.kind}/><span>{version.kind === "repair" ? "修复版" : version.kind === "manual" ? "手动版" : "AI 版本"}</span></button>)}</div>
         </div>
-        <aside className="st-detail-info st-version-info"><div className="st-detail-scroll"><DesignReview key={selectedVersion.id} review={selectedVersion.review} task={selectedReviewTask} busy={busy} repairPending={reviewRepairPending} onAdd={addReviewAction} onRepair={() => void repairVersion(selectedVersion)} onRecheck={() => void queueOrRun(async () => {await studio.recheck(selectedVersion.id); await refresh(selectedVersion.draft_id); setNotice("点评已排队，图片可继续查看和下载。");})}/>{selectedVersion.provenance.copy_plan && <ApprovedCopy plan={selectedVersion.provenance.copy_plan}/>}<button className="st-secondary" onClick={() => setCompare(!compare)}>{compare ? "关闭参考对比" : "对比商品参考"}</button><label className="st-field">AI 修改<textarea ref={aiInstructionRef} maxLength={8000} rows={3} placeholder="描述需要调整的地方，也可从点评中加入建议。" value={aiInstruction} onChange={event => setAiInstruction(event.target.value)}/></label><button className="st-secondary" disabled={!aiInstruction.trim() || busy} onClick={() => void generate([selectedVersion.page_id], selectedVersion)}><Icon name="spark" size={17}/>提交 AI 修改</button></div><div className="st-detail-bottom"><button className="st-primary" onClick={() => setEditor(selectedVersion)}><Icon name="edit" size={17}/>手动编辑</button><button className="st-secondary" onClick={() => void act(async () => {await studio.select(selectedVersion.draft_id, selectedVersion.page_id, selectedVersion.id); if (draft) await refresh(draft.id); setNotice("已选用此版本");})}>选用此版本</button><div className="st-two-buttons"><button className="st-secondary" onClick={() => void act(() => downloadVersion(selectedVersion, `作品-${selectedVersion.id.slice(0, 6)}`, "png"))}><Icon name="download" size={16}/>PNG</button><button className="st-secondary" onClick={() => void act(() => downloadVersion(selectedVersion, `作品-${selectedVersion.id.slice(0, 6)}`, "jpg"))}><Icon name="download" size={16}/>JPG</button><button className="st-secondary" onClick={() => void act(() => saveWork([selectedVersion]))}><Icon name="folder" size={16}/>收藏</button></div></div></aside>
+        <aside className="st-detail-info st-version-info">
+          <div className="st-detail-scroll">
+            <DesignReview key={selectedVersion.id} review={selectedVersion.review} task={selectedReviewTask}
+              busy={busy} repairPending={reviewRepairPending} selectedActions={aiReviewActions} onToggleAction={toggleReviewAction}
+              onRepair={() => void repairVersion(selectedVersion)} onRecheck={() => void queueOrRun(async () => {
+                await studio.recheck(selectedVersion.id);
+                setAiReviewActions([]);
+                await refresh(selectedVersion.draft_id);
+                setNotice("点评已排队，图片可继续查看和下载。");
+              })}/>
+            {selectedVersion.provenance.copy_plan && <ApprovedCopy plan={selectedVersion.provenance.copy_plan}/>}
+            <button className="st-secondary" onClick={() => setCompare(!compare)}>{compare ? "关闭参考对比" : "对比商品参考"}</button>
+            <label className="st-field">AI 修改<textarea ref={aiInstructionRef} maxLength={8000} rows={3} placeholder="描述本次要修改和要保留的内容。" value={aiInstruction} onChange={event => setAiInstruction(event.target.value)}/></label>
+            {aiReviewActions.length > 0 && <p className="st-note">已加入 {aiReviewActions.length} 条点评建议，本次填写的要求优先。</p>}
+            <button className="st-secondary" disabled={busy || (!aiInstruction.trim() && !aiReviewActions.length)} onClick={() => void generate([selectedVersion.page_id], selectedVersion)}><Icon name="spark" size={17}/>提交 AI 修改</button>
+          </div>
+          <div className="st-detail-bottom"><button className="st-primary" onClick={() => setEditor(selectedVersion)}><Icon name="edit" size={17}/>手动编辑</button><button className="st-secondary" onClick={() => void act(async () => {await studio.select(selectedVersion.draft_id, selectedVersion.page_id, selectedVersion.id); if (draft) await refresh(draft.id); setNotice("已选用此版本");})}>选用此版本</button><div className="st-two-buttons"><button className="st-secondary" onClick={() => void act(() => downloadVersion(selectedVersion, `作品-${selectedVersion.id.slice(0, 6)}`, "png"))}><Icon name="download" size={16}/>PNG</button><button className="st-secondary" onClick={() => void act(() => downloadVersion(selectedVersion, `作品-${selectedVersion.id.slice(0, 6)}`, "jpg"))}><Icon name="download" size={16}/>JPG</button><button className="st-secondary" onClick={() => void act(() => saveWork([selectedVersion]))}><Icon name="folder" size={16}/>收藏</button></div></div>
+        </aside>
       </div>
     </Modal>}
     {picker && <Modal busy={busy} title={picker === "product" ? "选择商品图片" : picker === "style" ? "选择风格参考" : "选择 Logo"} wide onClose={() => setPicker(null)}><div className="st-picker"><p className="st-note">{picker === "product" ? "原始商品图用于外观与身份依据，生成作品不能自动替代。" : picker === "style" ? "参考构图、颜色和氛围，不采用图片中的商品事实或旧文案。" : "Logo 作为明确的品牌素材传给 AI；上传后会同时保存到素材库。"}</p><div className="st-gallery">{picker === "product" && demo && <button className="st-picker-card" onClick={() => void act(() => chooseDemoReference(demo.reference.file, "product"))}><img src={demoUrl(demo.reference.file)} alt="示例商品原始图"/><strong>示例商品 · 原始图</strong></button>}{picker === "style" && demo?.items.map(item => <button className="st-picker-card" key={item.id} onClick={() => void act(() => chooseDemoReference(item.file, "style"))}><img src={demoUrl(item.file)} alt={item.title}/><strong>{item.title}</strong></button>)}{library.filter(entry => !entry.deleted_at && entry.payload.asset?.usage === picker).map(entry => <button key={entry.id} className="st-picker-card" onClick={() => void act(() => chooseAsset(entry.payload.asset!, picker))}><img src={mediaUrl(cardImage(entry))} alt={entry.name}/><strong>{entry.name}</strong></button>)}</div><button className="st-secondary" onClick={() => styleInput.current?.click()}><Icon name="upload" size={17}/>上传新的{picker === "product" ? "商品图" : picker === "style" ? "风格参考" : "Logo"}</button><input hidden ref={styleInput} type="file" multiple={picker !== "logo"} accept="image/png,image/jpeg,image/webp" onChange={event => {void upload(Array.from(event.target.files ?? []), picker); setPicker(null); event.target.value = "";}}/></div></Modal>}

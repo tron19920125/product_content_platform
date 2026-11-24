@@ -101,7 +101,8 @@ class BriefTest(unittest.TestCase):
         package = package_job(self.job(0,source_version_id=version['id'],instruction='只修改标题颜色'), self.workspace)
         self.assertEqual('edit_target', package['references'][0]['role'])
         self.assertIn('输入图片 1：待修改', package['prompt'])
-        self.assertIn('不要求借此重新设计整页', package['prompt'])
+        self.assertIn('保留无关的版式', package['prompt'])
+        self.assertNotIn('修改测试', package['prompt'])
 
     def test_review_uses_original_task_after_draft_changes(self):
         self.draft['content']['pages'][2]['body'] = '原始卖点文案'
@@ -157,12 +158,12 @@ class BriefTest(unittest.TestCase):
             with self.subTest(index=index):
                 job = self.job(index)
                 job['kind'] = 'repair'
-                job['operation']['snapshot']['instruction'] = '根据参考修复右上 Logo 的第二个字母缺失，保留其他内容。'
+                job['operation']['snapshot']['review_actions'] = ['根据参考修复右上 Logo 的第二个字母缺失，保留其他内容。']
                 job['source_version'] = {'base_asset_id':self.product['id'], 'provenance':{'copy_plan':plan}, 'review':{'findings':[{'kind':'error','message':'Logo 缺字','evidence':'右上 Logo 的第二个字母缺失'}]}}
                 package = package_job(job, self.workspace)
                 self.assertEqual(bool(plan['lines']), package['copy_request']['enabled'])
                 self.assertEqual(plan, package['copy_request']['source_copy'])
-                self.assertEqual('', package['copy_request']['title'])
+                self.assertNotIn('title', package['copy_request'])
                 self.assertIn('右上 Logo 的第二个字母缺失', package['prompt'])
 
 

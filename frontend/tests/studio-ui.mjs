@@ -616,6 +616,41 @@ await test('detail-footer-focus-and-ai-edit-submission', async page => {
   assert.equal(body.instruction, '保持商品外观，背景增加柔和日光。');
   assert.equal(body.page_ids.length, 1);
 });
+await test('aplus-repair-and-ai-edit-submit-user-scope-separately', async page => {
+  const {draft, results} = await seed('a_plus_detail', true);
+  const version = results.versions.find(value => value.page_id === draft.content.pages[0].id);
+  const suggestion = '继续缩小标题字号并增加留白。';
+  await api(`/versions/${version.id}/recheck`, {});
+  const reviewTask = await api('/execution/next-review', {});
+  assert.equal(reviewTask.version_id, version.id);
+  await api(`/reviews/${reviewTask.id}/complete`, {status:'completed', summary:'标题可再调整。', findings:[
+    {kind:'suggestion', message:'标题占用空间较多', evidence:'标题靠近主体', action:suggestion},
+  ]});
+  await ready(page);
+  await page.getByRole('button', {name:'查看图片详情', exact:true}).first().click();
+  const dialog = page.getByRole('dialog', {name:'图片详情', exact:true});
+  const instruction = '保持当前字号和留白，只改标题字体、字重和字距。';
+  const field = dialog.getByRole('textbox', {name:'AI 修改', exact:true});
+  await field.fill(instruction);
+  await dialog.getByRole('button', {name:'加入修改要求', exact:true}).click();
+  assert.equal(await field.inputValue(), instruction);
+  assert.equal(await dialog.getByRole('button', {name:'移出修改要求', exact:true}).count(), 1);
+  const repairResponse = page.waitForResponse(response => response.url().endsWith(`/versions/${version.id}/repair`));
+  await dialog.getByRole('button', {name:'按点评修复', exact:true}).click();
+  await confirmManualQueue(page);
+  const repair = await repairResponse;
+  assert.equal(repair.status(), 202);
+  assert.equal((await repair.json()).snapshot.instruction, instruction);
+  const editResponse = page.waitForResponse(response => response.url().endsWith(`/drafts/${draft.id}/generate`));
+  await dialog.getByRole('button', {name:'提交 AI 修改', exact:true}).click();
+  await confirmManualQueue(page);
+  const submitted = await editResponse;
+  assert.equal(submitted.status(), 202);
+  const edit = (await submitted.json()).snapshot;
+  assert.equal(edit.source_version_id, version.id);
+  assert.equal(edit.instruction, instruction);
+  assert.deepEqual(edit.review_actions, [suggestion]);
+});
 await test('partial-failure-and-unknown-show-safe-actions', async page => {
   const {draft, results: saved} = await seed('ecom_suite', true);
   const fixture = structuredClone(saved);

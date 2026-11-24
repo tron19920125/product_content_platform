@@ -114,11 +114,17 @@ export function reviewDisplayText(value: string | undefined): string {
     .trim();
 }
 
-export function ReviewFindings({review, onAdd}: {review: Review; onAdd?: (action: string) => void}) {
+export function ReviewFindings({review, selectedActions = [], onToggleAction}: {
+  review: Review; selectedActions?: string[]; onToggleAction?: (action: string) => void;
+}) {
   const labels: Record<string, string> = {error: "需要调整", uncertain: "需要核对", suggestion: "调整建议"};
   return <div className="st-review-findings">{Object.entries(labels).map(([kind, label]) => {
     const findings = review.findings.filter(finding => finding.kind === kind);
     if (!findings.length) return null;
-    return <details key={kind} open className={`st-review-group ${kind}`}><summary>{label}<span>{findings.length} 项</span></summary>{findings.map((finding, index) => <div className="st-finding" key={index}><p>{finding.message}</p>{finding.evidence && <span>依据：{finding.evidence}</span>}{finding.action && kind !== "uncertain" && <div className="st-review-action"><p>{finding.action}</p>{onAdd && <button className="st-link" onClick={() => onAdd(finding.action)}>加入修改要求</button>}</div>}</div>)}</details>;
+    return <details key={kind} open className={`st-review-group ${kind}`}><summary>{label}<span>{findings.length} 项</span></summary>{findings.map((finding, index) => {
+      const action = finding.action?.trim();
+      const selected = selectedActions.includes(action);
+      return <div className="st-finding" key={index}><p>{finding.message}</p>{finding.evidence && <span>依据：{finding.evidence}</span>}{action && kind !== "uncertain" && <div className="st-review-action"><p>{action}</p>{onToggleAction && <button className="st-link" aria-pressed={selected} onClick={() => onToggleAction(action)}>{selected ? "移出修改要求" : "加入修改要求"}</button>}</div>}</div>;
+    })}</details>;
   })}{review.status === "completed" && !review.findings.length && <p className="st-note">本次点评没有提出需要调整的内容。</p>}</div>;
 }

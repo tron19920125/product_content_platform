@@ -81,9 +81,13 @@ class Creations:
 
     def submit(self, draft_id: str, *, submit_key: str, expected_revision: int,
                mode: Literal["demo", "codex"], page_ids: list[str] | None = None,
-               source_version_id: str | None = None, instruction: str = "") -> dict:
+               source_version_id: str | None = None, instruction: str = "",
+               review_actions: list[str] | None = None) -> dict:
         if not submit_key.strip() or len(submit_key) > 100 or mode not in {"demo", "codex"}:
             raise ValueError("提交标识或执行方式无效")
+        review_actions = list(dict.fromkeys(review_actions or []))
+        if review_actions and source_version_id is None:
+            raise ValueError("请先打开需要修改的图片版本")
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM studio_operations WHERE submit_key=?", (submit_key,)).fetchone()
@@ -93,7 +97,8 @@ class Creations:
                         or previous["draft_revision"] != expected_revision
                         or previous["requested_page_ids"] != page_ids
                         or previous["source_version_id"] != source_version_id
-                        or previous["instruction"] != instruction):
+                        or previous["instruction"] != instruction
+                        or previous.get("review_actions", []) != review_actions):
                     raise RevisionConflict("提交标识已用于其他参数，不能复用")
                 return self._operation(db, existing["id"])
             draft = self.workspace._find(db, "studio_drafts", draft_id)
@@ -109,22 +114,26 @@ class Creations:
                 raise ValueError("请先上传至少一张原始商品图")
             if not pages:
                 raise ValueError("请至少保留一个待生成页面")
-            if content.tool == Tool.A_PLUS and any(
+            if source_version_id is None and content.tool == Tool.A_PLUS and any(
                 not (page.title.strip() or page.body.strip()) or not page.visual_goal.strip()
                 for page in pages
             ):
                 raise ValueError("请先生成 A+ 模块方案，或手动补齐每个模块的文案与画面描述")
             for fact in content.facts:
                 fact.validate_for_generation()
-            if any(page.purpose in {"dimensions", "comparison", "package_contents", "brand_story"} for page in pages) and not content.facts:
+            if source_version_id is None and not content.facts and any(
+                page.purpose in {"dimensions", "comparison", "package_contents", "brand_story"} for page in pages
+            ):
                 raise ValueError("尺寸、规格对比、包装清单或品牌介绍需要事实及来源，请补充、删页或跳过")
             source = None
             if source_version_id:
                 source = self._version(db, source_version_id)
                 if source["draft_id"] != draft_id or [p.id for p in pages] != [source["page_id"]]:
                     raise ValueError("AI 修改必须针对来源版本所在的单页")
-                if not instruction.strip():
-                    raise ValueError("请填写 AI 修改要求")
+                if not instruction.strip() and not review_actions:
+                    raise ValueError("请填写 AI 修改要求或加入点评建议")
+                if review_actions and not set(review_actions).issubset(Review.model_validate(source["review"]).repair_actions):
+                    raise ValueError("点评建议已变化，请在图片详情确认后重新提交")
             references = content.product_asset_ids + content.style_asset_ids + ([content.logo_asset_id] if content.logo_asset_id else [])
             if len(references) + bool(source) > self.workspace.settings.max_references:
                 raise ValueError("参考图超过总上限；AI 修改还需为底图预留一张位置")
@@ -135,7 +144,7 @@ class Creations:
                 "content": content.model_dump(mode="json"), "draft_revision": expected_revision,
                 "requested_page_ids": page_ids, "source_version_id": source_version_id,
                 "instruction": instruction, "pages": [page.model_dump(mode="json") for page in pages],
-                "source_layers": source["layers"] if source else [],
+                "source_layers": source["layers"] if source else [], "review_actions": review_actions,
             }
             db.execute("INSERT INTO studio_operations VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
                        (identifier, submit_key, draft_id, "ai_edit" if source else "generate", mode, encoded(snapshot), now))
@@ -317,15 +326,18 @@ class Creations:
             db.execute("UPDATE studio_versions SET review=? WHERE id=?", (review.model_dump_json(), version_id))
             return self._version(db, version_id)
 
-    def repair(self, version_id: str, *, submit_key: str) -> dict:
-        """Explicit, idempotent repair of a reviewed version using its original inputs."""
+    def repair(self, version_id: str, *, submit_key: str, instruction: str = "") -> dict:
+        """Keep the current user request separate from the reviewed version's suggestions."""
         if not submit_key.strip() or len(submit_key) > 100:
             raise ValueError("提交标识无效")
+        instruction = instruction.strip()
         with self.workspace._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM studio_operations WHERE submit_key=?", (submit_key,)).fetchone()
             if existing:
-                if existing["kind"] != "repair" or json.loads(existing["snapshot"]).get("source_version_id") != version_id:
+                previous = json.loads(existing["snapshot"])
+                previous_instruction = previous.get("instruction", "") if "review_actions" in previous else ""
+                if existing["kind"] != "repair" or previous.get("source_version_id") != version_id or instruction != previous_instruction:
                     raise RevisionConflict("提交标识已用于其他请求")
                 return self._operation(db, existing["id"])
             source = self._version(db, version_id)
@@ -333,14 +345,20 @@ class Creations:
             if draft["deleted_at"]:
                 raise ValueError("请先恢复创作记录，再按点评修复")
             review = Review.model_validate(source["review"])
-            if not review.repair_actions:
+            actions = review.repair_actions
+            if not actions:
                 raise ValueError("请等待点评完成并给出可执行的修改建议")
             if db.execute("SELECT 1 FROM studio_review_tasks WHERE version_id=? AND status IN ('queued', 'running')", (version_id,)).fetchone():
                 raise ValueError("正在重新点评，请等待新的点评完成")
             active = db.execute("""SELECT operation_id FROM studio_jobs WHERE source_version_id=?
                 AND kind='repair' AND status IN ('queued', 'running', 'unknown')""", (version_id,)).fetchone()
             if active:
-                return self._operation(db, active["operation_id"])
+                operation = self._operation(db, active["operation_id"])
+                current = operation["snapshot"]
+                pending_instruction = current.get("instruction", "") if "review_actions" in current else ""
+                if instruction != pending_instruction:
+                    raise RevisionConflict("这张图片已有修复任务，请在本次结果确认后再提交新要求")
+                return operation
             snapshot = self.version_snapshot(db, source)
             content = DraftContent.model_validate(snapshot["content"])
             pages = [page for page in snapshot["pages"] if page["id"] == source["page_id"]]
@@ -352,7 +370,7 @@ class Creations:
             for asset_id in references:
                 self.workspace._find(db, "studio_assets", asset_id)
             snapshot.update(pages=pages, requested_page_ids=[source["page_id"]], source_version_id=version_id,
-                            instruction="\n".join(review.repair_actions), repair_actions=review.repair_actions,
+                            instruction=instruction, review_actions=actions,
                             source_layers=[] if source["kind"] == "manual" else source["layers"])
             identifier, now = str(uuid4()), timestamp()
             db.execute("INSERT INTO studio_operations VALUES (?, ?, ?, 'repair', 'codex', ?, 0, ?)",

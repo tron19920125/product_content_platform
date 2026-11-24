@@ -41,13 +41,13 @@ export const studio = {
     if (!response.ok) {const error = await response.json(); throw new Error(typeof error.detail === "string" ? error.detail : "图片上传失败");}
     return response.json() as Promise<Asset>;
   },
-  generate: (draft: Draft, options: {mode: string; submit_key: string; page_ids?: string[]; source_version_id?: string; instruction?: string}) => request(`/drafts/${draft.id}/generate`, json("POST", {expected_revision: draft.revision, ...options})),
+  generate: (draft: Draft, options: {mode: string; submit_key: string; page_ids?: string[]; source_version_id?: string; instruction?: string; review_actions?: string[]}) => request(`/drafts/${draft.id}/generate`, json("POST", {expected_revision: draft.revision, ...options})),
   results: (id: string) => request<Results>(`/drafts/${id}/results`),
   select: (draftId: string, pageId: string, versionId: string) => request<Results>(`/drafts/${draftId}/selection`, json("POST", {page_id: pageId, version_id: versionId})),
   stop: (id: string) => request(`/operations/${id}/stop`, json("POST", {})),
   retry: (id: string) => request(`/jobs/${id}/retry`, json("POST", {})),
   recheck: (id: string) => request(`/versions/${id}/recheck`, json("POST", {})),
-  repair: (id: string, submitKey: string) => request(`/versions/${id}/repair`, json("POST", {submit_key: submitKey})),
+  repair: (id: string, submitKey: string, instruction: string) => request(`/versions/${id}/repair`, json("POST", {submit_key: submitKey, instruction})),
   edit: (id: string) => request<{layers: Layer[]; revision: number}>(`/versions/${id}/edit`),
   saveEdit: (id: string, layers: Layer[], revision: number) => request<{layers: Layer[]; revision: number}>(`/versions/${id}/edit`, json("PUT", {layers, expected_revision: revision})),
   apply: (id: string, revision: number, assetId: string) => request<Version>(`/versions/${id}/apply`, json("POST", {expected_revision: revision, rendered_asset_id: assetId})),

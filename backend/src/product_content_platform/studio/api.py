@@ -40,6 +40,7 @@ class Generate(StrictModel):
     page_ids: list[str] | None = None
     source_version_id: str | None = None
     instruction: str = Field(default="", max_length=8000)
+    review_actions: list[str] = Field(default_factory=list, max_length=30)
 
 
 class CompleteJob(StrictModel):
@@ -50,6 +51,7 @@ class CompleteJob(StrictModel):
 
 class RepairVersion(StrictModel):
     submit_key: str = Field(min_length=1, max_length=100)
+    instruction: str = Field(default="", max_length=8000)
 
 
 class SelectVersion(StrictModel):
@@ -309,7 +311,7 @@ def create_app(settings: StudioSettings | None = None, planner: Planner | None =
 
     @app.post("/api/studio/versions/{identifier}/repair", status_code=202)
     def repair_version(identifier: str, payload: RepairVersion, request: Request) -> dict:
-        return request.app.state.creations.repair(identifier, submit_key=payload.submit_key)
+        return request.app.state.creations.repair(identifier, **payload.model_dump())
 
     @app.get("/api/studio/versions/{identifier}/review-task")
     def review_task(identifier: str, request: Request) -> dict | None:
