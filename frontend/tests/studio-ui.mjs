@@ -583,6 +583,35 @@ await test('a-plus-module-editing-and-result-stage', async page => {
   assert.equal(await page.locator('.st-result-grid .st-art-card').count(), 3);
   assert.equal(saved.content.pages[0].id, draft.content.pages[0].id);
 });
+await test('a-plus-result-count-matches-visible-images', async page => {
+  const {draft} = await seed('a_plus_detail', true);
+  const path = `/drafts/${draft.id}`;
+  const firstPageId = draft.content.pages[0].id;
+  for (const expectedTotal of [4, 5]) {
+    await api(`${path}/generate`, {expected_revision: draft.revision, submit_key: crypto.randomUUID(), mode: 'demo', page_ids: [firstPageId]});
+    let versionCount = 0;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      versionCount = (await api(`${path}/results`)).versions.length;
+      if (versionCount >= expectedTotal) break;
+      await pause(100);
+    }
+    assert.equal(versionCount, expectedTotal, 'Replaying the first module adds one history version');
+  }
+
+  await ready(page);
+  const cards = page.locator('.st-result-grid .st-art-card');
+  assert.equal(await cards.count(), 4);
+  assert.equal((await page.getByRole('button', {name: /^查看结果/}).innerText()).trim(), '查看结果 (4)');
+  await page.locator('.st-result-actions').getByText('共 4 张 · 已勾选 0 张', {exact: true}).waitFor();
+
+  await cards.first().getByRole('button', {name: '查看图片详情', exact: true}).click();
+  const detail = page.getByRole('dialog', {name: '图片详情', exact: true});
+  assert.equal(await detail.locator('.st-filmstrip button').count(), 3);
+  await page.keyboard.press('Escape');
+  await detail.waitFor({state: 'hidden'});
+  await page.getByRole('button', {name: '导出', exact: true}).click();
+  assert.match(await page.getByRole('dialog', {name: '导出当前选图', exact: true}).textContent(), /按当前页面顺序导出\s*3 张图片/);
+});
 await test('library-defaults-to-my-assets-and-history-resumes', async page => {
   const {draft} = await seed('ecom_suite', true); await ready(page);
   await nav(page, '素材库').click();
